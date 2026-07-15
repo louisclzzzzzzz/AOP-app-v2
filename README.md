@@ -12,8 +12,17 @@ Phase 1 (« Socle ») livrée : upload d'un ZIP, dézippage récursif (zips imbr
 inventaire complet, extraction de texte (natif + OCR Mistral avec cache persistant),
 suivi de progression live par WebSocket, UI d'upload et de suivi.
 
-Les étapes 1 (réorganisation), 2 (complétude) et 3 (extraction) — cf. `PLAN.md` §4-6 —
-seront livrées dans les phases suivantes.
+Phase 2 (« Étape 1 — Réorganisation & renommage ») livrée : classification automatique de
+chaque document par 3 signaux combinés (nom de fichier, contenu OCR, LLM `mistral-large`
+en sortie structurée contrainte à la taxonomie — jamais une catégorie inventée), plan de
+réorganisation éditable dans l'UI (catégorie, lot, nom cible), correction manuelle au
+checkpoint humain, puis application d'une copie triée dans `workspace/<id>/organized/`
+(la source n'est jamais modifiée) avec rapport JSON + Markdown. Validé contre le golden-set
+de `arborescence.md` (signal nom de fichier) et par un run réel de bout en bout via l'API
+Mistral (OCR + classification LLM).
+
+Les étapes 2 (complétude) et 3 (extraction) — cf. `PLAN.md` §5-6 — seront livrées dans les
+phases suivantes.
 
 ## Prérequis
 
@@ -75,9 +84,13 @@ en bout via l'API réelle sur des documents natifs (texte dense, aucun OCR décl
 
 - **`models.yaml`** — modèles Mistral utilisés (versions épinglées), seuils de confiance,
   seuils de densité de texte pour le routage natif/OCR, flags de fonctionnalités
-  (`precompute_rcmo_trc` désactivé par défaut, cf. PLAN §12).
-- `taxonomy.yaml`, `pieces_checklist.yaml`, `extraction_schema.yaml` — à venir avec les
-  étapes 1, 2 et 3.
+  (`precompute_rcmo_trc` désactivé par défaut, cf. PLAN §12). Les versions datées se
+  périment côté API Mistral (modèles retirés) : si l'upload échoue en erreur
+  `invalid_model`, mettez à jour `ocr.model` / `llm.model` avec une version listée par
+  `client.models.list()`.
+- **`taxonomy.yaml`** — taxonomie de classement de l'étape 1 (catégories, mots-clés
+  filename/contenu, lot-awareness), dérivée de `PLAN.md` §4.2 et du golden-set.
+- `pieces_checklist.yaml`, `extraction_schema.yaml` — à venir avec les étapes 2 et 3.
 
 Toute évolution de version de modèle ou de seuil se fait dans ces fichiers, jamais en dur
 dans le code.
@@ -91,16 +104,25 @@ backend/
 │   ├── api/                # routes REST + WebSocket
 │   ├── ingestion/          # dézip récursif, inventaire, routage extraction de texte
 │   ├── ocr/                 # appel Mistral OCR haut niveau + cache persistant
-│   ├── mistral/             # wrapper SDK bas niveau (retry, upload, appel OCR)
+│   ├── classify/            # étape 1 : taxonomie, moteur 3 signaux, renommage, copie triée
+│   ├── mistral/             # wrapper SDK bas niveau (retry, upload, OCR, chat structuré)
 │   ├── store/               # modèles SQLAlchemy, session, repository
 │   └── settings.py          # config .env + config/*.yaml
-├── config/models.yaml
+├── config/{models,taxonomy}.yaml
 └── tests/
 frontend/                    # React + Vite + TypeScript + Tailwind
-workspace/                   # dossiers en cours (source immuable / cache OCR / DB SQLite)
+workspace/                   # dossiers en cours (source immuable / organized / cache / DB)
                               # — jamais versionné, recréé au fil de l'eau
 start.sh                     # lancement en une commande
 ```
+
+### AOP_WORKSPACE_DIR : toujours un chemin absolu si personnalisé
+
+`start.sh` lance le serveur depuis `backend/`. Si vous personnalisez `AOP_WORKSPACE_DIR`
+dans `.env`, utilisez un chemin **absolu** — une valeur relative comme `./workspace`
+pointerait alors vers `backend/workspace/` (non couvert par `.gitignore`) plutôt que vers
+la racine du dépôt. Par défaut (variable non définie), le code résout déjà
+`<racine_du_dépôt>/workspace` en absolu, indépendamment du répertoire de lancement.
 
 ### Traçabilité et cache OCR
 
@@ -110,5 +132,8 @@ start.sh                     # lancement en une commande
   ré-extrait ni ré-OCRisé.
 - `workspace/cache/text/<hash[:2]>/<hash>.ocr.json` : réponse OCR brute (confiance par page,
   bounding boxes) conservée pour une citation précise dans les étapes suivantes.
-- `workspace/aop.db` (SQLite) : état des dossiers, inventaire, cache — toute décision porte
-  confiance, méthode, modèle+version et horodatage.
+- `workspace/aop.db` (SQLite) : état des dossiers, inventaire, cache, classification — toute
+  décision porte confiance, méthode, modèle+version et horodatage.
+- `workspace/<dossier_id>/organized/` : copie triée générée à l'étape 1 (jamais la source).
+- `workspace/<dossier_id>/organized_report.{json,md}` : rapport source → cible, confiance,
+  justification, pour chaque fichier copié.

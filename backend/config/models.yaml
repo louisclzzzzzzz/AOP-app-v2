@@ -4,17 +4,18 @@
 # "-latest" reste utilisable en dev pour suivre les dernières améliorations Mistral.
 
 ocr:
-  model: "mistral-ocr-2503"
+  model: "mistral-ocr-2512"
   fallback_latest: "mistral-ocr-latest"
   # Seuil de confiance moyenne par bloc en-dessous duquel un document est marqué "à vérifier"
   min_confidence: 0.70
 
 llm:
   # Classification (étape 1), complétude (étape 2), extraction (étape 3)
-  model: "mistral-large-2411"
+  model: "mistral-large-2512"
   fallback_latest: "mistral-large-latest"
-  # Documents à forte composante image (plans, schémas) : modèle multimodal
-  multimodal_model: "pixtral-large-2411"
+  # Documents à forte composante image (plans, schémas) : modèle multimodal (Pixtral a été
+  # retiré du catalogue Mistral ; mistral-medium est nativement multimodal depuis 2505)
+  multimodal_model: "mistral-medium-2604"
   # Température basse partout : on veut de la reproductibilité, pas de créativité
   temperature: 0.0
   max_retries: 3

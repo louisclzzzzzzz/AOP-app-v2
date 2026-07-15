@@ -14,6 +14,7 @@ from typing import Any, Callable, TypeVar
 from mistralai.client import Mistral
 from mistralai.client.errors.mistralerror import MistralError
 from mistralai.client.models.ocrresponse import OCRResponse
+from pydantic import BaseModel
 
 from app.settings import get_models_config, get_settings
 
@@ -101,3 +102,44 @@ def call_ocr(
         )
 
     return _retry(_do, what="appel OCR")
+
+
+ModelT = TypeVar("ModelT", bound=BaseModel)
+
+
+def call_structured_chat(
+    *,
+    system_prompt: str,
+    user_prompt: str,
+    response_model: type[ModelT],
+    what: str,
+) -> tuple[ModelT, str | None]:
+    """Appel LLM (`mistral-large`) avec Structured Outputs (JSON Schema strict dérivé du
+    modèle Pydantic fourni). Utilisé par la classification (étape 1), et plus tard par la
+    complétude (étape 2) et l'extraction (étape 3). Retourne (résultat parsé, nom du modèle
+    réellement utilisé côté API)."""
+    client = get_client()
+    cfg = get_models_config()["llm"]
+    model = cfg["model"]
+    temperature = float(cfg.get("temperature", 0.0))
+    timeout = cfg.get("timeout_seconds")
+
+    def _do():
+        return client.chat.parse(
+            model=model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            response_format=response_model,
+            temperature=temperature,
+            timeout_ms=int(timeout) * 1000 if timeout else None,
+        )
+
+    response = _retry(_do, what=what)
+    if not response.choices:
+        raise RuntimeError(f"Réponse LLM vide pour : {what}")
+    parsed = response.choices[0].message.parsed if response.choices[0].message else None
+    if parsed is None:
+        raise RuntimeError(f"Réponse LLM structurée invalide (aucun contenu parsé) pour : {what}")
+    return parsed, getattr(response, "model", None)

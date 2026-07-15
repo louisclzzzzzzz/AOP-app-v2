@@ -9,6 +9,8 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
+from app.api.classification import router as classification_router
+from app.api.classification import taxonomy_router
 from app.api.dossiers import router as dossiers_router
 from app.api.websocket import router as websocket_router
 from app.store.db import init_db
@@ -35,6 +37,8 @@ app.add_middleware(
 )
 
 app.include_router(dossiers_router)
+app.include_router(classification_router)
+app.include_router(taxonomy_router)
 app.include_router(websocket_router)
 
 

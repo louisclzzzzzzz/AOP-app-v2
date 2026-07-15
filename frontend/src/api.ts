@@ -1,4 +1,13 @@
-import type { Dossier, DocumentItem, DocumentText } from './types'
+import type {
+  ClassificationCorrection,
+  ClassificationEntry,
+  Dossier,
+  DocumentItem,
+  DocumentText,
+  ReorgApplyResult,
+  ReorgReport,
+  TaxonomyCategory,
+} from './types'
 
 async function handle<T>(res: Response): Promise<T> {
   if (!res.ok) {
@@ -33,6 +42,39 @@ export async function getDossierDocuments(id: string): Promise<DocumentItem[]> {
 export async function getDocumentText(dossierId: string, documentId: string): Promise<DocumentText> {
   const res = await fetch(`/api/dossiers/${dossierId}/documents/${documentId}/text`)
   return handle<DocumentText>(res)
+}
+
+export async function getTaxonomy(): Promise<TaxonomyCategory[]> {
+  const res = await fetch('/api/taxonomy')
+  return handle<TaxonomyCategory[]>(res)
+}
+
+export async function getClassification(dossierId: string): Promise<ClassificationEntry[]> {
+  const res = await fetch(`/api/dossiers/${dossierId}/classification`)
+  return handle<ClassificationEntry[]>(res)
+}
+
+export async function correctClassification(
+  dossierId: string,
+  documentId: string,
+  correction: ClassificationCorrection,
+): Promise<ClassificationEntry> {
+  const res = await fetch(`/api/dossiers/${dossierId}/documents/${documentId}/classification`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(correction),
+  })
+  return handle<ClassificationEntry>(res)
+}
+
+export async function applyReorganization(dossierId: string): Promise<ReorgApplyResult> {
+  const res = await fetch(`/api/dossiers/${dossierId}/reorganize/apply`, { method: 'POST' })
+  return handle<ReorgApplyResult>(res)
+}
+
+export async function getReorganizationReport(dossierId: string): Promise<ReorgReport> {
+  const res = await fetch(`/api/dossiers/${dossierId}/reorganize/report`)
+  return handle<ReorgReport>(res)
 }
 
 export function dossierWebSocketUrl(id: string): string {

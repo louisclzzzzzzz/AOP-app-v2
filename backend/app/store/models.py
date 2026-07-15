@@ -31,6 +31,10 @@ class DossierStatus(str, enum.Enum):
     INVENTORYING = "inventorying"
     EXTRACTING_TEXT = "extracting_text"
     READY_STEP1 = "ready_step1"
+    CLASSIFYING = "classifying"
+    CLASSIFIED = "classified"  # [CHECKPOINT étape 1] plan de réorg proposé, en attente de validation humaine
+    REORGANIZING = "reorganizing"
+    REORGANIZED = "reorganized"  # copie triée appliquée — prêt pour l'étape 2
     ERROR = "error"
 
 
@@ -68,6 +72,13 @@ class CacheStatus(str, enum.Enum):
     FAILED = "failed"
 
 
+class ClassificationStatus(str, enum.Enum):
+    PENDING = "pending"  # pas encore classifié
+    PROPOSED = "proposed"  # proposition du moteur (3 signaux), pas encore revue
+    CORRECTED = "corrected"  # corrigée manuellement par l'utilisateur (checkpoint)
+    ERROR = "error"
+
+
 class Dossier(Base):
     __tablename__ = "dossiers"
 
@@ -81,6 +92,13 @@ class Dossier(Base):
     files_text_extracted: Mapped[int] = mapped_column(Integer, default=0)
     files_non_analyzable: Mapped[int] = mapped_column(Integer, default=0)
     files_error: Mapped[int] = mapped_column(Integer, default=0)
+
+    files_classified: Mapped[int] = mapped_column(Integer, default=0)
+
+    # Rapport de réorganisation (§4.4), écrit à l'application de la copie triée
+    reorg_report_json_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    reorg_report_md_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    reorg_applied_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_now)
     updated_at: Mapped[dt.datetime] = mapped_column(
@@ -124,6 +142,35 @@ class Document(Base):
     detected_title: Mapped[str | None] = mapped_column(String(512), nullable=True)
     preview_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     key_mentions_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # --- Étape 1 : classification + réorganisation (§4) -----------------------------
+    classification_status: Mapped[str] = mapped_column(
+        String(16), default=ClassificationStatus.PENDING.value
+    )
+    classification_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # Proposition du moteur (3 signaux), jamais écrasée après coup — trace de la décision d'origine
+    proposed_category: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    proposed_lot: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    proposed_doc_type: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    proposed_filename: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    classification_confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+    classification_justification: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # JSON: signaux ayant contribué (mots-clés filename/contenu matchés, sortie brute LLM)
+    classification_signals_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    classification_model: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    classification_model_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    classified_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    # Valeurs finales (= proposition par défaut, écrasées par une correction humaine au checkpoint)
+    final_category: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    final_lot: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    final_doc_type: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    final_filename: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    is_manually_corrected: Mapped[bool] = mapped_column(default=False)
+
+    # Chemin relatif à workspace/<dossier_id>/organized/ une fois la copie triée appliquée
+    organized_relative_path: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_now)
     updated_at: Mapped[dt.datetime] = mapped_column(

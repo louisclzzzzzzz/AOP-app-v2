@@ -1,6 +1,7 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { dossierWebSocketUrl, getDossier, getDossierDocuments } from '../api'
 import type { Dossier, DocumentItem, ProgressEvent } from '../types'
+import { ReorganizationPlan } from './ReorganizationPlan'
 import { StatusBadge } from './StatusBadge'
 
 interface Props {
@@ -12,9 +13,13 @@ const STAGE_LABELS: Record<string, string> = {
   unzip: 'Décompression',
   inventory: 'Inventaire',
   text_extraction: 'Extraction de texte / OCR',
+  classify: 'Classification (étape 1)',
+  reorganize: 'Copie triée',
   done: 'Terminé',
   error: 'Erreur',
 }
+
+const STEP1_STATUSES: Dossier['status'][] = ['classified', 'reorganizing', 'reorganized']
 
 export function DossierProgress({ dossierId, onBack }: Props) {
   const [dossier, setDossier] = useState<Dossier | null>(null)
@@ -49,10 +54,14 @@ export function DossierProgress({ dossierId, onBack }: Props) {
   }, [events])
 
   useEffect(() => {
-    if (dossier?.status === 'ready_step1' && documents === null) {
+    if (dossier && dossier.status !== 'uploaded' && dossier.status !== 'unzipping' && documents === null) {
       getDossierDocuments(dossierId).then(setDocuments)
     }
-  }, [dossier?.status, dossierId, documents])
+  }, [dossier, dossierId, documents])
+
+  const handleApplied = useCallback(() => {
+    getDossier(dossierId).then(setDossier)
+  }, [dossierId])
 
   if (!dossier) {
     return <p className="text-sm text-slate-400">Chargement…</p>
@@ -121,6 +130,10 @@ export function DossierProgress({ dossierId, onBack }: Props) {
           <div ref={logEndRef} />
         </div>
       </div>
+
+      {STEP1_STATUSES.includes(dossier.status) && (
+        <ReorganizationPlan dossierId={dossierId} status={dossier.status} onApplied={handleApplied} />
+      )}
 
       {documents && (
         <div>

@@ -1,6 +1,10 @@
 """Test d'intégration bout-en-bout : upload via l'API -> pipeline d'ingestion complet ->
 inventaire + texte extrait, sans appel réel à l'API Mistral (documents natifs uniquement,
-aucune page à faible densité -> aucun OCR déclenché)."""
+aucune page à faible densité -> aucun OCR déclenché).
+
+L'ingestion enchaîne automatiquement sur la classification (étape 1, voir
+test_api_classification_integration.py) : le LLM de classification est monkeypatché ici aussi
+pour que ce test reste focalisé sur l'ingestion elle-même sans dépendre du réseau."""
 from __future__ import annotations
 
 import io
@@ -9,6 +13,23 @@ import zipfile
 
 from fastapi.testclient import TestClient
 from reportlab.pdfgen import canvas
+
+
+def _stub_classification_llm(monkeypatch):
+    import app.classify.engine as engine
+
+    def _fake(*, system_prompt, user_prompt, response_model, what):
+        decision = response_model(
+            category_path="AUTRES",
+            lot=None,
+            document_type="AUTRES",
+            normalized_label="Document",
+            confidence=0.5,
+            justification="stub de test",
+        )
+        return decision, "mistral-large-test-stub"
+
+    monkeypatch.setattr(engine, "call_structured_chat", _fake)
 
 
 def _dense_pdf_bytes(text: str) -> bytes:
@@ -44,6 +65,7 @@ def _build_test_zip() -> bytes:
 def test_upload_and_full_ingestion_via_api(isolated_workspace, monkeypatch):
     # Le pipeline importe déjà app.main indirectement ; s'assurer que la DB init_db()
     # utilise bien le workspace isolé du test (TestClient déclenche lifespan au premier appel).
+    _stub_classification_llm(monkeypatch)
     from app.main import app
 
     client = TestClient(app)
@@ -58,18 +80,19 @@ def test_upload_and_full_ingestion_via_api(isolated_workspace, monkeypatch):
     dossier_id = dossier["id"]
     assert dossier["original_filename"] == "root.zip"
 
-    # Le pipeline tourne en tâche de fond (BackgroundTasks) ; on attend l'état final.
+    # Le pipeline tourne en tâche de fond (BackgroundTasks) ; l'ingestion enchaîne
+    # automatiquement sur la classification (étape 1) — on attend l'état final des deux.
     deadline = time.time() + 20
     final = None
     while time.time() < deadline:
         detail = client.get(f"/api/dossiers/{dossier_id}").json()
-        if detail["status"] in ("ready_step1", "error"):
+        if detail["status"] in ("classified", "error"):
             final = detail
             break
         time.sleep(0.1)
 
     assert final is not None, "le pipeline n'a pas terminé dans le délai imparti"
-    assert final["status"] == "ready_step1", final.get("error_message")
+    assert final["status"] == "classified", final.get("error_message")
     assert final["counters"]["total_files"] == 4
     assert final["counters"]["text_extracted"] == 2
     assert final["counters"]["non_analyzable"] == 2
@@ -100,7 +123,14 @@ def test_upload_rejects_non_zip(isolated_workspace):
     assert response.status_code == 400
 
 
-def test_websocket_receives_progress_events(isolated_workspace):
+def test_websocket_receives_progress_events(isolated_workspace, monkeypatch):
+    # La classification (étape 1) est désormais enchaînée après l'ingestion : le dernier
+    # évènement diffusé (et donc rejoué à un client qui se connecte tard, cf. ProgressManager)
+    # peut être n'importe quel évènement de classification, plus "done" (fin de l'ingestion
+    # seule). On attend donc le statut terminal réel du pipeline complet, pas un stage
+    # intermédiaire précis — sinon un client qui se connecte après la fin (pipeline rapide sur
+    # un petit zip de test) attendrait indéfiniment un évènement "done" déjà dépassé.
+    _stub_classification_llm(monkeypatch)
     from app.main import app
 
     client = TestClient(app)
@@ -113,8 +143,11 @@ def test_websocket_receives_progress_events(isolated_workspace):
 
     with client.websocket_connect(f"/ws/dossiers/{dossier_id}") as ws:
         stages_seen = set()
+        final_status = None
         deadline = time.time() + 20
-        while time.time() < deadline and "done" not in stages_seen:
+        while time.time() < deadline and final_status not in ("classified", "error"):
             event = ws.receive_json()
             stages_seen.add(event["stage"])
-        assert "done" in stages_seen
+            final_status = event["status"]
+        assert final_status == "classified", stages_seen
+        assert stages_seen  # au moins un évènement de progression a été reçu

@@ -1,6 +1,7 @@
 """Fonctions CRUD pour dossiers, documents et cache de texte."""
 from __future__ import annotations
 
+import datetime as dt
 import json
 from typing import Any
 
@@ -9,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from app.store.models import (
     CacheStatus,
+    ClassificationStatus,
     Dossier,
     DossierStatus,
     Document,
@@ -51,6 +53,26 @@ def recompute_dossier_counters(session: Session, dossier: Dossier) -> None:
     dossier.files_text_extracted = sum(1 for d in docs if d.stage == "text_extracted")
     dossier.files_non_analyzable = sum(1 for d in docs if d.stage == "non_analyzable")
     dossier.files_error = sum(1 for d in docs if d.stage == "error")
+    dossier.files_classified = sum(
+        1
+        for d in docs
+        if d.classification_status
+        in (
+            ClassificationStatus.PROPOSED.value,
+            ClassificationStatus.CORRECTED.value,
+            ClassificationStatus.ERROR.value,
+        )
+    )
+    session.add(dossier)
+    session.flush()
+
+
+def mark_reorg_applied(
+    session: Session, dossier: Dossier, *, json_path: str, md_path: str
+) -> None:
+    dossier.reorg_report_json_path = json_path
+    dossier.reorg_report_md_path = md_path
+    dossier.reorg_applied_at = dt.datetime.now(dt.timezone.utc)
     session.add(dossier)
     session.flush()
 
@@ -95,6 +117,72 @@ def set_document_text_result(
     else:
         document.stage = DocumentStage.TEXT_EXTRACTED.value
         document.stage_error = None
+    session.add(document)
+    session.flush()
+
+
+def set_document_classification_result(
+    session: Session,
+    document: Document,
+    *,
+    category: str,
+    lot: str | None,
+    doc_type: str,
+    filename: str,
+    confidence: float,
+    justification: str,
+    signals: dict[str, Any],
+    model_name: str,
+    model_version: str,
+    error: str | None,
+) -> None:
+    document.proposed_category = category
+    document.proposed_lot = lot
+    document.proposed_doc_type = doc_type
+    document.proposed_filename = filename
+    document.classification_confidence = confidence
+    document.classification_justification = justification
+    document.classification_signals_json = json.dumps(signals, ensure_ascii=False)
+    document.classification_model = model_name
+    document.classification_model_version = model_version
+    document.classified_at = dt.datetime.now(dt.timezone.utc)
+    document.classification_error = error
+    document.classification_status = (
+        ClassificationStatus.ERROR.value if error else ClassificationStatus.PROPOSED.value
+    )
+    # Les valeurs finales démarrent égales à la proposition (même en cas d'erreur, où le moteur
+    # retombe déjà sur la catégorie de repli AUTRES — jamais un fichier sans destination) —
+    # écrasées seulement par une correction humaine explicite (checkpoint), jamais silencieusement.
+    document.final_category = category
+    document.final_lot = lot
+    document.final_doc_type = doc_type
+    document.final_filename = filename
+
+    session.add(document)
+    session.flush()
+
+
+def set_document_classification_correction(
+    session: Session,
+    document: Document,
+    *,
+    category: str,
+    lot: str | None,
+    doc_type: str,
+    filename: str,
+) -> None:
+    document.final_category = category
+    document.final_lot = lot
+    document.final_doc_type = doc_type
+    document.final_filename = filename
+    document.is_manually_corrected = True
+    document.classification_status = ClassificationStatus.CORRECTED.value
+    session.add(document)
+    session.flush()
+
+
+def set_document_organized_path(session: Session, document: Document, relative_path: str) -> None:
+    document.organized_relative_path = relative_path
     session.add(document)
     session.flush()
 

@@ -7,7 +7,10 @@ from app.mistral.client import get_client as get_client_fn
 
 
 def test_get_client_raises_when_api_key_missing(isolated_workspace, monkeypatch):
-    monkeypatch.delenv("MISTRAL_API_KEY", raising=False)
+    # isolated_workspace neutralise déjà MISTRAL_API_KEY (jamais un delenv : le dépôt a un
+    # vrai .env sur disque que pydantic-settings relirait sinon dès que la variable de
+    # process est absente).
+    monkeypatch.setenv("MISTRAL_API_KEY", "")
     from app.settings import get_settings
 
     get_settings.cache_clear()

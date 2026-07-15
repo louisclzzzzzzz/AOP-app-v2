@@ -1,0 +1,281 @@
+# Taxonomie de classement — Étape 1 (§4.2, §7.1 du PLAN).
+#
+# Dérivée de l'arborescence-squelette de PLAN.md §4.2 et de l'analyse des 6 dossiers
+# de référence triés par l'expert (arborescence.md, golden set). Chaque catégorie est un
+# chemin cible RELATIF à workspace/<dossier_id>/organized/ (on ne reproduit pas le double
+# niveau <AAAA>_<TYPE>_<STATUT>/AO<aa>_<COMMUNE>.../ de l'arborescence de l'expert : ce
+# niveau-là identifie le DOSSIER lui-même dans son classement documentaire global, pas son
+# contenu — un run de l'app traite UN DCE à la fois).
+#
+# Champs par catégorie :
+#   path             : chemin cible (utilisé tel quel comme dossier dans organized/)
+#   label            : libellé humain (justifications, UI)
+#   alt_names        : autres noms de dossiers observés pour ce même type (signal filename +
+#                      matching sur le chemin d'origine dans le zip)
+#   filename_keywords: mots-clés / motifs recherchés dans le nom de fichier d'origine (signal 1)
+#   content_indices  : mots-clés / expressions recherchées dans le texte extrait (OCR ou natif),
+#                      décisif quand le nom de fichier ment (signal 2)
+#   lot_aware        : si vrai, un sous-dossier "LOT <n>" est créé quand un numéro de lot est
+#                       détecté pour le document (nom de fichier, contenu, ou décision LLM)
+#   doc_type_hint    : code court utilisé dans la convention de renommage [TYPE]
+
+categories:
+  - path: "1.ETUDE BD"
+    label: "Étude BD — AE, mémoire de gestion, déclarations, listing pièces"
+    alt_names: ["1.ETUDE BD", "ETUDE BD"]
+    filename_keywords: ["\\bae\\b", "acte d.?engagement", "memoire de gestion", "m[ée]moire de gestion",
+      "declaration sur l.?honneur", "d[ée]claration sur l.?honneur", "listing pieces", "listing pi[èe]ces"]
+    content_indices: ["acte d'engagement", "mémoire de gestion", "déclaration sur l'honneur"]
+    lot_aware: true
+    doc_type_hint: "AE"
+
+  - path: "ADMIN/AAPC"
+    label: "Avis d'appel public à la concurrence"
+    alt_names: ["AAPC"]
+    filename_keywords: ["\\baapc\\b"]
+    content_indices: ["avis d'appel public à la concurrence", "aapc"]
+    lot_aware: false
+    doc_type_hint: "AAPC"
+
+  - path: "ADMIN/GAN"
+    label: "Guide / fiche d'accompagnement (missionnement AOP)"
+    alt_names: ["GAN"]
+    filename_keywords: ["\\bgan\\b", "missionnement"]
+    content_indices: ["fiche de missionnement", "missionnement pour étude aop"]
+    lot_aware: false
+    doc_type_hint: "GAN"
+
+  - path: "ADMIN/PF"
+    label: "Pièces financières / captures achat public (consultation)"
+    alt_names: ["PF"]
+    filename_keywords: ["\\bpf\\b", "capture achat public", "achats publics", "capture d.?ecran"]
+    content_indices: ["marches-publics.gouv.fr", "achat public"]
+    lot_aware: false
+    doc_type_hint: "PF"
+
+  - path: "ADMIN/RC"
+    label: "Règlement de consultation (DCE)"
+    alt_names: ["RC", "RC DCE"]
+    filename_keywords: ["rc[ _-]?dce", "reglement de consultation", "r[èe]glement de consultation"]
+    content_indices: ["règlement de consultation"]
+    lot_aware: false
+    doc_type_hint: "RC-DCE"
+
+  - path: "ASS/CCAP"
+    label: "CCAP assurance"
+    alt_names: ["CCAP", "CG CCP CCAP"]
+    filename_keywords: ["ccap"]
+    content_indices: ["cahier des clauses administratives particulières", "assurance construction"]
+    lot_aware: true
+    doc_type_hint: "CCAP"
+
+  - path: "ASS/CCTP"
+    label: "CCTP / CCP assurance"
+    alt_names: ["CCTP", "CCP", "CG CCP CCAP"]
+    filename_keywords: ["cctp", "\\bccp\\b"]
+    content_indices: ["cahier des clauses techniques particulières", "garanties demandées", "trc", "rcmo"]
+    lot_aware: true
+    doc_type_hint: "CCTP-ASS"
+
+  - path: "ASS/RC"
+    label: "RC assurance"
+    alt_names: ["RC"]
+    filename_keywords: ["rc[ _-]?assurance"]
+    content_indices: ["dommage ouvrage", "responsabilité civile maîtrise d'ouvrage", "trc", "rcmo"]
+    lot_aware: false
+    doc_type_hint: "RC-ASS"
+
+  - path: "ASS/GAN"
+    label: "Guide / fiche d'accompagnement assurance"
+    alt_names: ["GAN"]
+    filename_keywords: ["\\bgan\\b", "missionnement"]
+    content_indices: ["fiche de missionnement"]
+    lot_aware: false
+    doc_type_hint: "GAN"
+
+  - path: "ASS/PF"
+    label: "Pièces financières assurance"
+    alt_names: ["PF"]
+    filename_keywords: ["\\bpf\\b", "capture"]
+    content_indices: []
+    lot_aware: false
+    doc_type_hint: "PF"
+
+  - path: "ASS/ATT ASS/ENT"
+    label: "Attestations d'assurance — entreprises / constructeurs"
+    alt_names: ["ENT", "Constructeurs", "ATT ASS"]
+    filename_keywords: ["attestation", "assurance", "\\brcd\\b", "rc decennale", "rc d[ée]cennale",
+      "rc professionnelle", "assurance civile", "assurance decennale"]
+    content_indices: ["responsabilité civile décennale", "attestation d'assurance", "garantie décennale"]
+    lot_aware: true
+    doc_type_hint: "ATT-ENT"
+
+  - path: "ASS/ATT ASS/MOE"
+    label: "Attestations d'assurance — maîtrise d'œuvre / prestataires intellectuels"
+    alt_names: ["MOE", "Prestataires intellectuels"]
+    filename_keywords: ["assurance.*(architecte|ingenierie|ing[ée]nierie|moe)", "\\bmoe\\b"]
+    content_indices: ["assurance responsabilité civile professionnelle", "architecte"]
+    lot_aware: false
+    doc_type_hint: "ATT-MOE"
+
+  - path: "ASS/LISTE INTERVENANTS"
+    label: "Liste des intervenants / CRC"
+    alt_names: ["LISTE INTERVENANTS"]
+    filename_keywords: ["\\bcrc\\b", "liste.*intervenants"]
+    content_indices: ["liste des intervenants"]
+    lot_aware: false
+    doc_type_hint: "LISTE-INTERV"
+
+  - path: "ASS/DEROG COM"
+    label: "Dérogations communales IARD"
+    alt_names: ["DEROG COM", "DEROG"]
+    filename_keywords: ["derogation", "d[ée]rogation", "\\biard\\b"]
+    content_indices: ["dérogation", "iard"]
+    lot_aware: true
+    doc_type_hint: "DEROG"
+
+  - path: "ASS/MARCHE SIGNE"
+    label: "Actes d'engagement & marchés signés, notifications (assurance)"
+    alt_names: ["MARCHE SIGNE"]
+    filename_keywords: ["marche signe", "march[ée] sign[ée]", "acte d.?engagement.*signe",
+      "notification", "convention"]
+    content_indices: ["notification du marché", "acte d'engagement", "convention"]
+    lot_aware: true
+    doc_type_hint: "MARCHE-SIGNE"
+
+  - path: "ENVOI DEMAT/CANDIDATURE"
+    label: "Pièces de candidature (dépôt dématérialisé)"
+    alt_names: ["CANDIDATURE", "candidature"]
+    filename_keywords: ["^c[.\\s]", "\\bdc1\\b", "\\bdc2\\b", "kbis", "urssaf", "pouvoir",
+      "candidature", "kbis"]
+    content_indices: ["extrait k-bis", "déclaration du candidat"]
+    lot_aware: false
+    doc_type_hint: "CANDID"
+
+  - path: "ENVOI DEMAT/OFFRE"
+    label: "Pièces d'offre (dépôt dématérialisé)"
+    alt_names: ["OFFRE", "offre"]
+    filename_keywords: ["^o[._]", "\\boffre\\b", "memoire tech", "m[ée]moire tech",
+      "declaration sur honneur"]
+    content_indices: []
+    lot_aware: true
+    doc_type_hint: "OFFRE"
+
+  - path: "ENVOI DEMAT/COPIE DEPOT"
+    label: "Preuve de dépôt + copie de sauvegarde (dépôt dématérialisé)"
+    alt_names: ["COPIE DEPOT", "depot", "COPIE_SAUVEGARDE"]
+    filename_keywords: ["preuve.*depot", "preuve.*d[ée]p[ôo]t", "mail confirmation depot",
+      "^csl_", "^rapport\\.pdf$"]
+    content_indices: ["preuve de dépôt"]
+    lot_aware: false
+    doc_type_hint: "DEPOT"
+
+  - path: "QR"
+    label: "Questions / réponses de la consultation"
+    alt_names: ["QR", "QUESTIONS REPONSES"]
+    filename_keywords: ["question", "\\bqr\\b", "reponse", "r[ée]ponse"]
+    content_indices: ["questions et réponses", "questions/réponses"]
+    lot_aware: false
+    doc_type_hint: "QR"
+
+  - path: "TECH/CCTP TRAVAUX"
+    label: "CCTP travaux (par lot)"
+    alt_names: ["CCTP TRAVAUX", "CCTP"]
+    filename_keywords: ["cctp", "dce.*cahier", "\\blot ?0?\\d"]
+    content_indices: ["cahier des clauses techniques particulières"]
+    lot_aware: true
+    doc_type_hint: "CCTP-TRX"
+
+  - path: "TECH/ETUDE DE SOL"
+    label: "Étude de sol / géotechnique (G1, G2 AVP, G2 PRO, G4, G5)"
+    alt_names: ["ETUDE DE SOL", "ETUDES SOL", "G2PRO", "Geotechnique", "Géotechnique"]
+    filename_keywords: ["\\bg1\\b", "\\bg2\\b", "\\bg4\\b", "\\bg5\\b", "etude de sol",
+      "[ée]tude de sol", "geotechnique", "g[ée]otechnique"]
+    content_indices: ["mission g2", "étude géotechnique", "dtu 13.1", "fondations"]
+    lot_aware: false
+    doc_type_hint: "SOL"
+
+  - path: "TECH/PLANS"
+    label: "Plans (archi, structure, fluides, VRD…)"
+    alt_names: ["PLANS", "01 - ARCHITECTURE", "04 - STRUCTURE", "Plans repérage bâtiment",
+      "plans et descriptifs des travaux"]
+    filename_keywords: ["\\bplan\\b", "a\\.\\d", "facade", "fa[çc]ade", "coupe", "\\.dwg$"]
+    content_indices: []
+    lot_aware: false
+    doc_type_hint: "PLAN"
+
+  - path: "TECH/NOTICE"
+    label: "Notice descriptive / notice architecturale"
+    alt_names: ["NOTICE DESCRIPTIVE", "NOTICE"]
+    filename_keywords: ["notice descriptive", "notice"]
+    content_indices: ["notice descriptive"]
+    lot_aware: false
+    doc_type_hint: "NOTICE"
+
+  - path: "TECH/PLANNING"
+    label: "Planning d'exécution / des travaux"
+    alt_names: ["PLANNING"]
+    filename_keywords: ["planning"]
+    content_indices: ["planning des travaux", "planning d'exécution"]
+    lot_aware: false
+    doc_type_hint: "PLANNING"
+
+  - path: "TECH/RICT"
+    label: "Rapport initial de contrôle technique"
+    alt_names: ["RICT", "RIT"]
+    filename_keywords: ["rict", "\\brit\\b"]
+    content_indices: ["rapport initial de contrôle technique"]
+    lot_aware: false
+    doc_type_hint: "RICT"
+
+  - path: "TECH/ARRETE PC"
+    label: "Permis de construire & arrêtés"
+    alt_names: ["ARRETE PC", "PC", "PC initial", "PC mod"]
+    filename_keywords: ["arrete pc", "arr[êe]t[ée] pc", "permis de construire", "\\bpc\\b"]
+    content_indices: ["permis de construire", "arrêté"]
+    lot_aware: false
+    doc_type_hint: "PC"
+
+  - path: "TECH/CONTRAT MOE"
+    label: "Contrat(s) de maîtrise d'œuvre"
+    alt_names: ["CONTRAT MOE", "Maitrise d'Oeuvre"]
+    filename_keywords: ["contrat moe", "maitrise d.?oeuvre", "ma[îi]trise d.?[œoe]uvre"]
+    content_indices: ["contrat de maîtrise d'œuvre"]
+    lot_aware: false
+    doc_type_hint: "CONTRAT-MOE"
+
+  - path: "TECH/CONTRAT CT"
+    label: "Contrat(s) de contrôle technique"
+    alt_names: ["CONTRAT CT", "CT", "Contrôle technique"]
+    filename_keywords: ["contrat ct", "controle technique", "contr[ôo]le technique"]
+    content_indices: ["contrat de contrôle technique"]
+    lot_aware: false
+    doc_type_hint: "CONTRAT-CT"
+
+  - path: "TECH/SOCABAT"
+    label: "Études de risque / avis Socabat"
+    alt_names: ["SOCABAT"]
+    filename_keywords: ["socabat", "etude de risque", "[ée]tude de risque", "avoisinant"]
+    content_indices: ["socabat", "étude de risque"]
+    lot_aware: false
+    doc_type_hint: "SOCABAT"
+
+  - path: "TECH/AUTRES"
+    label: "Pièces techniques non classables ailleurs (DOC/DROC, OS, divers)"
+    alt_names: ["AUTRES", "AUTRES PIECES", "DROC", "DOC"]
+    filename_keywords: []
+    content_indices: ["déclaration d'ouverture de chantier", "ordre de service"]
+    lot_aware: true
+    doc_type_hint: "AUTRES"
+
+  - path: "AUTRES"
+    label: "Non classable — aucune correspondance suffisamment fiable"
+    alt_names: []
+    filename_keywords: []
+    content_indices: []
+    lot_aware: false
+    doc_type_hint: "AUTRES"
+
+# Catégorie de repli absolue : jamais de perte de fichier (§9 du PLAN). Utilisée quand aucun
+# signal n'atteint le seuil minimal et que le LLM lui-même ne peut pas trancher avec confiance.
+fallback_category: "AUTRES"
