@@ -13,12 +13,28 @@ from pathlib import Path
 
 from sqlalchemy.orm import Session
 
+from app.classify.taxonomy import load_taxonomy
 from app.ingestion.classify_extension import classify_extension
 from app.ingestion.unzip import EXTRACTED_SUFFIX
 from app.store.models import Dossier, Document, DocumentStage, FileCategory
 from app.store.repository import create_document
 
 _HASH_CHUNK_SIZE = 1024 * 1024
+_PLANS_TAXONOMY_PATH = "TECH/PLANS"
+_OCR_SKIPPABLE_CATEGORIES = {FileCategory.PDF, FileCategory.IMAGE}
+_PLAN_FILENAME_REASON = (
+    "Plan identifié par nom de fichier — OCR non nécessaire, classification par nom uniquement"
+)
+
+
+def _looks_like_plan(filename: str) -> bool:
+    """Signal nom de fichier seul (taxonomie TECH/PLANS n'utilise que ce signal, cf.
+    `content_indices: []` dans taxonomy.yaml) : évite l'OCR sur les plans, dont le contenu
+    graphique n'apporte rien à l'analyse et dont le volume de pages peut être important."""
+    plans_category = load_taxonomy().by_path(_PLANS_TAXONOMY_PATH)
+    if plans_category is None:
+        return False
+    return any(p.search(filename) for p in plans_category.filename_patterns)
 
 
 def hash_file(path: Path) -> str:
@@ -89,6 +105,9 @@ def build_inventory(session: Session, dossier: Dossier, source_dir: Path) -> lis
 
         ext = p.suffix.lower()
         category, is_analyzable, reason = classify_extension(ext)
+        if is_analyzable and category in _OCR_SKIPPABLE_CATEGORIES and _looks_like_plan(p.name):
+            is_analyzable = False
+            reason = _PLAN_FILENAME_REASON
         doc = create_document(
             session,
             dossier_id=dossier.id,

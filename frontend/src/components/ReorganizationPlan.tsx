@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   applyReorganization,
   correctClassification,
@@ -7,6 +7,7 @@ import {
   getTaxonomy,
 } from '../api'
 import type { ClassificationEntry, DossierStatus, ReorgReport, TaxonomyCategory } from '../types'
+import { OrganizedTree, classificationEntriesToTree, reorgReportEntriesToTree } from './OrganizedTree'
 
 interface Props {
   dossierId: string
@@ -83,6 +84,9 @@ export function ReorganizationPlan({ dossierId, status, onApplied }: Props) {
     }
   }, [dossierId, onApplied])
 
+  const classificationTree = useMemo(() => (entries ? classificationEntriesToTree(entries) : null), [entries])
+  const reportTree = useMemo(() => (report ? reorgReportEntriesToTree(report.entries) : null), [report])
+
   if (status === 'reorganized') {
     return (
       <div className="flex flex-col gap-4">
@@ -93,6 +97,12 @@ export function ReorganizationPlan({ dossierId, status, onApplied }: Props) {
           La source d’origine n’a pas été modifiée. Les fichiers ont été copiés dans le dossier{' '}
           <code className="rounded bg-slate-100 px-1 py-0.5 text-xs">organized/</code>.
         </p>
+        {reportTree && (
+          <div>
+            <h4 className="mb-1 text-xs font-medium text-slate-500">Arborescence obtenue</h4>
+            <OrganizedTree root={reportTree} />
+          </div>
+        )}
         {report && (
           <div className="max-h-96 overflow-y-auto rounded-lg border border-slate-200">
             <table className="w-full text-left text-xs">
@@ -149,6 +159,13 @@ export function ReorganizationPlan({ dossierId, status, onApplied }: Props) {
         d’origine ne sera jamais modifiée — seule une copie est créée.
       </p>
       {error && <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p>}
+
+      {classificationTree && (
+        <div>
+          <h4 className="mb-1 text-xs font-medium text-slate-500">Arborescence proposée</h4>
+          <OrganizedTree root={classificationTree} />
+        </div>
+      )}
 
       <div className="max-h-[32rem] overflow-y-auto rounded-lg border border-slate-200">
         <table className="w-full text-left text-xs">

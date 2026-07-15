@@ -111,13 +111,33 @@ def test_dwg_and_system_noise_marked_non_analyzable(tmp_path, isolated_workspace
         {
             "PLANS/AR 010 - Plan masse.dwg": "binaire cao",
             "PLANS/Thumbs.db": "noise",
-            "PLANS/AR 010 - Plan masse.pdf": "contenu plan",
+            "ADMIN/RC.pdf": "contenu texte, pas un plan",
         },
     )
     by_path = {d["relative_path"]: d for d in docs}
     assert by_path["PLANS/AR 010 - Plan masse.dwg"]["is_analyzable"] is False
     assert by_path["PLANS/Thumbs.db"]["is_analyzable"] is False
-    assert by_path["PLANS/AR 010 - Plan masse.pdf"]["is_analyzable"] is True
+    assert by_path["ADMIN/RC.pdf"]["is_analyzable"] is True
+
+
+def test_plan_pdf_and_image_marked_non_analyzable_by_filename(tmp_path, isolated_workspace, make_zip):
+    """Un plan au format PDF/image (pas seulement DWG/DXF) doit être exclu de l'OCR par
+    signal nom de fichier seul (taxonomie TECH/PLANS) : son contenu graphique n'apporte
+    rien à l'analyse et son volume de pages peut être important."""
+    docs = _build(
+        tmp_path,
+        make_zip,
+        {
+            "PLANS/AR 010 - Plan masse.pdf": "contenu plan",
+            "PLANS/Facade nord.jpg": "contenu image plan",
+            "ADMIN/RC.pdf": "contenu texte, pas un plan",
+        },
+    )
+    by_path = {d["relative_path"]: d for d in docs}
+    assert by_path["PLANS/AR 010 - Plan masse.pdf"]["is_analyzable"] is False
+    assert "OCR non nécessaire" in by_path["PLANS/AR 010 - Plan masse.pdf"]["non_analyzable_reason"]
+    assert by_path["PLANS/Facade nord.jpg"]["is_analyzable"] is False
+    assert by_path["ADMIN/RC.pdf"]["is_analyzable"] is True
 
 
 def test_hash_file_matches_sha256(tmp_path):

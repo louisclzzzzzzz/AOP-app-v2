@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { dossierWebSocketUrl, getDossier, getDossierDocuments } from '../api'
-import type { Dossier, DocumentItem, ProgressEvent } from '../types'
+import type { Counters, Dossier, DossierStatus, DocumentItem, ProgressEvent } from '../types'
 import { ReorganizationPlan } from './ReorganizationPlan'
 import { StatusBadge } from './StatusBadge'
 
@@ -20,6 +20,25 @@ const STAGE_LABELS: Record<string, string> = {
 }
 
 const STEP1_STATUSES: Dossier['status'][] = ['classified', 'reorganizing', 'reorganized']
+
+function computeProgress(status: DossierStatus, counters: Counters): { processed: number; label: string } {
+  switch (status) {
+    case 'extracting_text':
+      return {
+        processed: counters.text_extracted + counters.non_analyzable + counters.error,
+        label: 'Extraction de texte / OCR',
+      }
+    case 'ready_step1':
+    case 'classifying':
+      return { processed: counters.classified, label: 'Classification' }
+    case 'classified':
+    case 'reorganizing':
+    case 'reorganized':
+      return { processed: counters.total_files, label: 'Terminé' }
+    default:
+      return { processed: 0, label: STAGE_LABELS[status] ?? status }
+  }
+}
 
 export function DossierProgress({ dossierId, onBack }: Props) {
   const [dossier, setDossier] = useState<Dossier | null>(null)
@@ -68,7 +87,7 @@ export function DossierProgress({ dossierId, onBack }: Props) {
   }
 
   const { counters } = dossier
-  const processed = counters.text_extracted + counters.non_analyzable + counters.error
+  const { processed, label: progressLabel } = computeProgress(dossier.status, counters)
   const progressPct = counters.total_files > 0 ? Math.round((processed / counters.total_files) * 100) : 0
 
   return (
@@ -91,7 +110,7 @@ export function DossierProgress({ dossierId, onBack }: Props) {
 
       <div>
         <div className="mb-1 flex justify-between text-xs text-slate-500">
-          <span>{processed} / {counters.total_files} fichiers traités</span>
+          <span>{progressLabel} — {processed} / {counters.total_files} fichiers</span>
           <span>{progressPct}%</span>
         </div>
         <div className="h-2 w-full overflow-hidden rounded-full bg-slate-200">
