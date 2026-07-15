@@ -1,0 +1,41 @@
+[project]
+name = "aop-v2-backend"
+version = "0.1.0"
+description = "AOP v2 - backend d'analyse de DCE pour underwriting assurance construction"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.32.0",
+    "sqlalchemy>=2.0.35",
+    "pydantic>=2.9.0",
+    "pydantic-settings>=2.5.0",
+    "python-multipart>=0.0.12",
+    "mistralai>=1.2.0",
+    "pypdf>=5.0.0",
+    "pdfplumber>=0.11.4",
+    "python-docx>=1.1.2",
+    "PyYAML>=6.0.2",
+    "websockets>=13.1",
+    "openpyxl>=3.1.5",
+    "xlrd>=2.0.1",
+    "reportlab>=4.2.5",
+    "python-dotenv>=1.0.1",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3.3",
+    "pytest-asyncio>=0.24.0",
+    "httpx>=0.27.2",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["app"]
