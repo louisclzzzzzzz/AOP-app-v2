@@ -1,9 +1,15 @@
 import type {
   ClassificationCorrection,
   ClassificationEntry,
+  CompletenessApplyResult,
+  CompletenessCorrection,
+  CompletenessEntry,
+  CompletenessReport,
+  CompletenessSelectionItem,
   Dossier,
   DocumentItem,
   DocumentText,
+  PieceChecklistItem,
   ReorgApplyResult,
   ReorgReport,
   TaxonomyCategory,
@@ -75,6 +81,56 @@ export async function applyReorganization(dossierId: string): Promise<ReorgApply
 export async function getReorganizationReport(dossierId: string): Promise<ReorgReport> {
   const res = await fetch(`/api/dossiers/${dossierId}/reorganize/report`)
   return handle<ReorgReport>(res)
+}
+
+export async function getPiecesChecklist(): Promise<PieceChecklistItem[]> {
+  const res = await fetch('/api/pieces-checklist')
+  return handle<PieceChecklistItem[]>(res)
+}
+
+export async function getCompleteness(dossierId: string): Promise<CompletenessEntry[]> {
+  const res = await fetch(`/api/dossiers/${dossierId}/completeness`)
+  return handle<CompletenessEntry[]>(res)
+}
+
+export async function updateCompletenessSelection(
+  dossierId: string,
+  selection: CompletenessSelectionItem[],
+): Promise<CompletenessEntry[]> {
+  const res = await fetch(`/api/dossiers/${dossierId}/completeness/selection`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ selection }),
+  })
+  return handle<CompletenessEntry[]>(res)
+}
+
+export async function runCompletenessAnalysis(dossierId: string): Promise<Dossier> {
+  const res = await fetch(`/api/dossiers/${dossierId}/completeness/run`, { method: 'POST' })
+  return handle<Dossier>(res)
+}
+
+export async function correctCompleteness(
+  dossierId: string,
+  pieceId: string,
+  correction: CompletenessCorrection,
+): Promise<CompletenessEntry> {
+  const res = await fetch(`/api/dossiers/${dossierId}/completeness/${pieceId}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(correction),
+  })
+  return handle<CompletenessEntry>(res)
+}
+
+export async function validateCompleteness(dossierId: string): Promise<CompletenessApplyResult> {
+  const res = await fetch(`/api/dossiers/${dossierId}/completeness/validate`, { method: 'POST' })
+  return handle<CompletenessApplyResult>(res)
+}
+
+export async function getCompletenessReport(dossierId: string): Promise<CompletenessReport> {
+  const res = await fetch(`/api/dossiers/${dossierId}/completeness/report`)
+  return handle<CompletenessReport>(res)
 }
 
 export function dossierWebSocketUrl(id: string): string {

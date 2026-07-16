@@ -10,6 +10,9 @@ const LABELS: Record<DossierStatus, string> = {
   classified: 'Plan à valider (étape 1)',
   reorganizing: 'Copie triée en cours…',
   reorganized: 'Étape 1 terminée',
+  analyzing_completeness: 'Analyse de complétude…',
+  completeness_review: 'Complétude à valider (étape 2)',
+  completeness_validated: 'Étape 2 terminée',
   error: 'Erreur',
 }
 
@@ -23,10 +26,20 @@ const STYLES: Record<DossierStatus, string> = {
   classified: 'bg-amber-100 text-amber-700',
   reorganizing: 'bg-blue-100 text-blue-700',
   reorganized: 'bg-green-100 text-green-700',
+  analyzing_completeness: 'bg-blue-100 text-blue-700',
+  completeness_review: 'bg-amber-100 text-amber-700',
+  completeness_validated: 'bg-green-100 text-green-700',
   error: 'bg-red-100 text-red-700',
 }
 
-const ACTIVE_STATUSES: DossierStatus[] = ['unzipping', 'inventorying', 'extracting_text', 'classifying', 'reorganizing']
+const ACTIVE_STATUSES: DossierStatus[] = [
+  'unzipping',
+  'inventorying',
+  'extracting_text',
+  'classifying',
+  'reorganizing',
+  'analyzing_completeness',
+]
 
 export function StatusBadge({ status }: { status: DossierStatus }) {
   const isActive = ACTIVE_STATUSES.includes(status)

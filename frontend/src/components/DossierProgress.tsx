@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { dossierWebSocketUrl, getDossier, getDossierDocuments } from '../api'
 import type { Counters, Dossier, DossierStatus, DocumentItem, ProgressEvent } from '../types'
+import { CompletenessChecklist } from './CompletenessChecklist'
 import { ReorganizationPlan } from './ReorganizationPlan'
 import { StatusBadge } from './StatusBadge'
 
@@ -15,28 +16,52 @@ const STAGE_LABELS: Record<string, string> = {
   text_extraction: 'Extraction de texte / OCR',
   classify: 'Classification (étape 1)',
   reorganize: 'Copie triée',
+  completeness: 'Analyse de complétude (étape 2)',
   done: 'Terminé',
   error: 'Erreur',
 }
 
 const STEP1_STATUSES: Dossier['status'][] = ['classified', 'reorganizing', 'reorganized']
+const STEP2_STATUSES: Dossier['status'][] = [
+  'reorganized',
+  'analyzing_completeness',
+  'completeness_review',
+  'completeness_validated',
+]
 
-function computeProgress(status: DossierStatus, counters: Counters): { processed: number; label: string } {
+function computeProgress(
+  status: DossierStatus,
+  counters: Counters,
+): { processed: number; total: number; label: string } {
   switch (status) {
     case 'extracting_text':
       return {
         processed: counters.text_extracted + counters.non_analyzable + counters.error,
+        total: counters.total_files,
         label: 'Extraction de texte / OCR',
       }
     case 'ready_step1':
     case 'classifying':
-      return { processed: counters.classified, label: 'Classification' }
+      return { processed: counters.classified, total: counters.total_files, label: 'Classification' }
     case 'classified':
     case 'reorganizing':
     case 'reorganized':
-      return { processed: counters.total_files, label: 'Terminé' }
+      return { processed: counters.total_files, total: counters.total_files, label: 'Terminé' }
+    case 'analyzing_completeness':
+      return {
+        processed: counters.pieces_checked,
+        total: counters.pieces_selected,
+        label: 'Analyse de complétude',
+      }
+    case 'completeness_review':
+    case 'completeness_validated':
+      return {
+        processed: counters.pieces_selected,
+        total: counters.pieces_selected,
+        label: 'Terminé',
+      }
     default:
-      return { processed: 0, label: STAGE_LABELS[status] ?? status }
+      return { processed: 0, total: counters.total_files, label: STAGE_LABELS[status] ?? status }
   }
 }
 
@@ -87,8 +112,9 @@ export function DossierProgress({ dossierId, onBack }: Props) {
   }
 
   const { counters } = dossier
-  const { processed, label: progressLabel } = computeProgress(dossier.status, counters)
-  const progressPct = counters.total_files > 0 ? Math.round((processed / counters.total_files) * 100) : 0
+  const { processed, total, label: progressLabel } = computeProgress(dossier.status, counters)
+  const progressPct = total > 0 ? Math.round((processed / total) * 100) : 0
+  const progressUnit = STEP2_STATUSES.includes(dossier.status) ? 'pièces' : 'fichiers'
 
   return (
     <div className="flex flex-col gap-6">
@@ -110,7 +136,7 @@ export function DossierProgress({ dossierId, onBack }: Props) {
 
       <div>
         <div className="mb-1 flex justify-between text-xs text-slate-500">
-          <span>{progressLabel} — {processed} / {counters.total_files} fichiers</span>
+          <span>{progressLabel} — {processed} / {total} {progressUnit}</span>
           <span>{progressPct}%</span>
         </div>
         <div className="h-2 w-full overflow-hidden rounded-full bg-slate-200">
@@ -152,6 +178,15 @@ export function DossierProgress({ dossierId, onBack }: Props) {
 
       {STEP1_STATUSES.includes(dossier.status) && (
         <ReorganizationPlan dossierId={dossierId} status={dossier.status} onApplied={handleApplied} />
+      )}
+
+      {STEP2_STATUSES.includes(dossier.status) && (
+        <CompletenessChecklist
+          dossierId={dossierId}
+          status={dossier.status}
+          documents={documents}
+          onApplied={handleApplied}
+        />
       )}
 
       {documents && (

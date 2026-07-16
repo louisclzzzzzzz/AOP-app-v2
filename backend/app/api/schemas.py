@@ -12,6 +12,11 @@ class CountersOut(BaseModel):
     non_analyzable: int
     error: int
     classified: int = 0
+    pieces_selected: int = 0
+    pieces_checked: int = 0
+    pieces_present: int = 0
+    pieces_absent: int = 0
+    pieces_error: int = 0
 
 
 class DossierOut(BaseModel):
@@ -22,6 +27,7 @@ class DossierOut(BaseModel):
     error_message: str | None
     counters: CountersOut
     reorg_applied_at: dt.datetime | None = None
+    completeness_validated_at: dt.datetime | None = None
     created_at: dt.datetime
     updated_at: dt.datetime
 
@@ -99,5 +105,60 @@ class TaxonomyCategoryOut(BaseModel):
 
 
 class ReorgApplyOut(BaseModel):
+    dossier: DossierOut
+    report: dict
+
+
+class PieceOut(BaseModel):
+    id: str
+    libelle: str
+    phase: str
+    alias: list[str]
+    categorie_attendue: str | None
+    obligatoire: bool
+    par_lot: bool
+
+
+class CompletenessEntryOut(BaseModel):
+    piece_id: str
+    libelle: str
+    phase: str
+    alias: list[str]
+    obligatoire: bool
+    is_selected: bool
+
+    status: str
+    completeness_error: str | None
+    match_layer: str | None
+
+    proposed_presence: str | None
+    proposed_certainty: str | None
+    confidence: float | None
+    justification: str | None
+    matched_document_ids: list[str]
+    matched_lots: dict | None
+    model_name: str | None
+    model_version: str | None
+
+    final_presence: str | None
+    final_certainty: str | None
+    is_manually_corrected: bool
+
+
+class CompletenessSelectionItem(BaseModel):
+    piece_id: str
+    is_selected: bool
+
+
+class CompletenessSelectionIn(BaseModel):
+    selection: list[CompletenessSelectionItem]
+
+
+class CompletenessCorrectionIn(BaseModel):
+    presence: str
+    certainty: str | None = None
+
+
+class CompletenessApplyOut(BaseModel):
     dossier: DossierOut
     report: dict

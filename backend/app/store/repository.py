@@ -11,6 +11,8 @@ from sqlalchemy.orm import Session
 from app.store.models import (
     CacheStatus,
     ClassificationStatus,
+    CompletenessCheck,
+    CompletenessStatus,
     Dossier,
     DossierStatus,
     Document,
@@ -73,6 +75,35 @@ def mark_reorg_applied(
     dossier.reorg_report_json_path = json_path
     dossier.reorg_report_md_path = md_path
     dossier.reorg_applied_at = dt.datetime.now(dt.timezone.utc)
+    session.add(dossier)
+    session.flush()
+
+
+def recompute_completeness_counters(session: Session, dossier: Dossier) -> None:
+    all_checks = session.scalars(
+        select(CompletenessCheck).where(CompletenessCheck.dossier_id == dossier.id)
+    ).all()
+    dossier.pieces_selected = sum(1 for c in all_checks if c.is_selected)
+    checks = [c for c in all_checks if c.is_selected]
+    dossier.pieces_checked = sum(
+        1
+        for c in checks
+        if c.status
+        in (CompletenessStatus.PROPOSED.value, CompletenessStatus.CORRECTED.value, CompletenessStatus.ERROR.value)
+    )
+    dossier.pieces_present = sum(1 for c in checks if c.final_presence == "present")
+    dossier.pieces_absent = sum(1 for c in checks if c.final_presence == "absent")
+    dossier.pieces_error = sum(1 for c in checks if c.status == CompletenessStatus.ERROR.value)
+    session.add(dossier)
+    session.flush()
+
+
+def mark_completeness_validated(
+    session: Session, dossier: Dossier, *, json_path: str, md_path: str
+) -> None:
+    dossier.completeness_report_json_path = json_path
+    dossier.completeness_report_md_path = md_path
+    dossier.completeness_validated_at = dt.datetime.now(dt.timezone.utc)
     session.add(dossier)
     session.flush()
 
@@ -241,3 +272,85 @@ def update_text_cache_result(
     session.add(entry)
     session.flush()
     return entry
+
+
+# --- CompletenessCheck ---------------------------------------------------------
+
+def create_completeness_check(session: Session, **kwargs) -> CompletenessCheck:
+    check = CompletenessCheck(**kwargs)
+    session.add(check)
+    session.flush()
+    return check
+
+
+def list_completeness_checks(session: Session, dossier_id: str) -> list[CompletenessCheck]:
+    stmt = (
+        select(CompletenessCheck)
+        .where(CompletenessCheck.dossier_id == dossier_id)
+        .order_by(CompletenessCheck.piece_id)
+    )
+    return list(session.scalars(stmt))
+
+
+def get_completeness_check_by_piece(
+    session: Session, dossier_id: str, piece_id: str
+) -> CompletenessCheck | None:
+    stmt = select(CompletenessCheck).where(
+        CompletenessCheck.dossier_id == dossier_id, CompletenessCheck.piece_id == piece_id
+    )
+    return session.scalars(stmt).first()
+
+
+def set_completeness_selection(session: Session, check: CompletenessCheck, *, is_selected: bool) -> None:
+    check.is_selected = is_selected
+    session.add(check)
+    session.flush()
+
+
+def set_completeness_result(
+    session: Session,
+    check: CompletenessCheck,
+    *,
+    match_layer: str,
+    presence: str,
+    certainty: str | None,
+    confidence: float | None,
+    justification: str,
+    matched_document_ids: list[str],
+    matched_lots: dict[str, Any] | None,
+    model_name: str | None,
+    model_version: str | None,
+    error: str | None,
+) -> None:
+    check.match_layer = match_layer
+    check.proposed_presence = presence
+    check.proposed_certainty = certainty
+    check.proposed_confidence = confidence
+    check.proposed_justification = justification
+    check.proposed_matched_document_ids_json = json.dumps(matched_document_ids, ensure_ascii=False)
+    check.proposed_matched_lots_json = (
+        json.dumps(matched_lots, ensure_ascii=False) if matched_lots is not None else None
+    )
+    check.completeness_model = model_name
+    check.completeness_model_version = model_version
+    check.analyzed_at = dt.datetime.now(dt.timezone.utc)
+    check.completeness_error = error
+    check.status = CompletenessStatus.ERROR.value if error else CompletenessStatus.PROPOSED.value
+    # Les valeurs finales démarrent égales à la proposition — écrasées seulement par une
+    # correction humaine explicite (checkpoint), jamais silencieusement.
+    check.final_presence = presence
+    check.final_certainty = certainty
+    session.add(check)
+    session.flush()
+
+
+def set_completeness_correction(
+    session: Session, check: CompletenessCheck, *, presence: str, certainty: str | None
+) -> None:
+    check.final_presence = presence
+    check.final_certainty = certainty
+    check.is_manually_corrected = True
+    check.corrected_at = dt.datetime.now(dt.timezone.utc)
+    check.status = CompletenessStatus.CORRECTED.value
+    session.add(check)
+    session.flush()

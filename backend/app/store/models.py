@@ -34,7 +34,10 @@ class DossierStatus(str, enum.Enum):
     CLASSIFYING = "classifying"
     CLASSIFIED = "classified"  # [CHECKPOINT étape 1] plan de réorg proposé, en attente de validation humaine
     REORGANIZING = "reorganizing"
-    REORGANIZED = "reorganized"  # copie triée appliquée — prêt pour l'étape 2
+    REORGANIZED = "reorganized"  # copie triée appliquée — prêt pour l'étape 2 (écran de sélection des pièces)
+    ANALYZING_COMPLETENESS = "analyzing_completeness"
+    COMPLETENESS_REVIEW = "completeness_review"  # [CHECKPOINT étape 2] résultats proposés, en attente de validation
+    COMPLETENESS_VALIDATED = "completeness_validated"  # étape 2 validée — prêt pour l'étape 3
     ERROR = "error"
 
 
@@ -79,6 +82,32 @@ class ClassificationStatus(str, enum.Enum):
     ERROR = "error"
 
 
+class CompletenessStatus(str, enum.Enum):
+    PENDING = "pending"  # pas encore analysée (ou décochée par l'utilisateur)
+    PROPOSED = "proposed"  # proposition du moteur (3 couches), pas encore revue
+    CORRECTED = "corrected"  # corrigée manuellement par l'utilisateur (checkpoint)
+    ERROR = "error"
+
+
+class MatchLayer(str, enum.Enum):
+    FILE = "file"  # couche 1 : correspondance directe par fichier classifié
+    CONTENT = "content"  # couche 2 : correspondance intra-document par mots-clés
+    LLM = "llm"  # couche 3 : confirmée par vérification LLM sur un passage candidat
+    NONE = "none"  # aucune correspondance trouvée
+
+
+class Presence(str, enum.Enum):
+    PRESENT = "present"
+    PARTIAL = "partial"
+    ABSENT = "absent"
+
+
+class Certainty(str, enum.Enum):
+    CERTAIN = "certain"
+    PROBABLE = "probable"
+    A_VERIFIER = "a_verifier"
+
+
 class Dossier(Base):
     __tablename__ = "dossiers"
 
@@ -100,12 +129,25 @@ class Dossier(Base):
     reorg_report_md_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
     reorg_applied_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
+    # Compteurs étape 2 (§5) — parmi les pièces sélectionnées par l'utilisateur
+    pieces_selected: Mapped[int] = mapped_column(Integer, default=0)
+    pieces_checked: Mapped[int] = mapped_column(Integer, default=0)
+    pieces_present: Mapped[int] = mapped_column(Integer, default=0)
+    pieces_absent: Mapped[int] = mapped_column(Integer, default=0)
+    pieces_error: Mapped[int] = mapped_column(Integer, default=0)
+
+    # Rapport de complétude (§5.5), écrit à la validation du checkpoint étape 2
+    completeness_report_json_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    completeness_report_md_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    completeness_validated_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_now)
     updated_at: Mapped[dt.datetime] = mapped_column(
         DateTime(timezone=True), default=_now, onupdate=_now
     )
 
     documents: Mapped[list["Document"]] = relationship(back_populates="dossier")
+    completeness_checks: Mapped[list["CompletenessCheck"]] = relationship(back_populates="dossier")
 
 
 class Document(Base):
@@ -216,3 +258,50 @@ class TextCache(Base):
     updated_at: Mapped[dt.datetime] = mapped_column(
         DateTime(timezone=True), default=_now, onupdate=_now
     )
+
+
+class CompletenessCheck(Base):
+    """Résultat d'analyse de complétude (§5) pour une pièce (`config/pieces_checklist.yaml`)
+    d'un dossier donné. Une pièce peut correspondre à 0, 1 ou plusieurs documents (§5.3, pièce
+    noyée dans un autre document) — d'où une table dédiée plutôt que des colonnes sur
+    `Document`. Miroir du pattern proposed_*/final_* déjà utilisé pour la classification.
+    """
+
+    __tablename__ = "completeness_checks"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    dossier_id: Mapped[str] = mapped_column(ForeignKey("dossiers.id"), index=True)
+    piece_id: Mapped[str] = mapped_column(String(64))
+
+    # Sélectionnée par l'utilisateur pour ce dossier (écran de sélection, §5.2) avant lancement
+    is_selected: Mapped[bool] = mapped_column(default=True)
+
+    status: Mapped[str] = mapped_column(String(16), default=CompletenessStatus.PENDING.value)
+    completeness_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    match_layer: Mapped[str | None] = mapped_column(String(16), nullable=True)
+
+    # Proposition du moteur (3 couches), jamais écrasée après coup — trace de la décision d'origine
+    proposed_presence: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    proposed_certainty: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    proposed_confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+    proposed_justification: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # JSON: liste d'ids Document ayant permis la correspondance (0, 1 ou plusieurs)
+    proposed_matched_document_ids_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # JSON: pour les pièces `par_lot`, lots couverts / manquants
+    proposed_matched_lots_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    completeness_model: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    completeness_model_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    analyzed_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    # Valeurs finales (= proposition par défaut, écrasées par une correction humaine au checkpoint)
+    final_presence: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    final_certainty: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    is_manually_corrected: Mapped[bool] = mapped_column(default=False)
+    corrected_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    updated_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True), default=_now, onupdate=_now
+    )
+
+    dossier: Mapped["Dossier"] = relationship(back_populates="completeness_checks")

@@ -36,10 +36,13 @@ class Taxonomy:
         return None
 
 
-def _fix_word_boundary(pattern: str) -> str:
+def fix_word_boundary(pattern: str) -> str:
     """`\\b` traite `_` comme un caractère de mot : `\\brit\\b` ne matche pas `_RIT_`, très
     fréquent dans les noms de fichiers du DCE (séparateurs `_`). On remplace les `\\b` en
-    tête/fin de motif par des frontières qui excluent aussi `_` des deux côtés."""
+    tête/fin de motif par des frontières qui excluent aussi `_` des deux côtés.
+
+    Public : réutilisé tel quel par `app/completeness/pieces_checklist.py` (mêmes motifs
+    filename/contenu, même piège avec les séparateurs `_`)."""
     if pattern.startswith(r"\b"):
         pattern = r"(?<![A-Za-z0-9])" + pattern[2:]
     if pattern.endswith(r"\b"):
@@ -48,7 +51,7 @@ def _fix_word_boundary(pattern: str) -> str:
 
 
 def _compile(patterns: list[str]) -> list[re.Pattern[str]]:
-    return [re.compile(_fix_word_boundary(p), re.IGNORECASE) for p in patterns]
+    return [re.compile(fix_word_boundary(p), re.IGNORECASE) for p in patterns]
 
 
 @lru_cache

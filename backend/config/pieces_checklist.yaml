@@ -1,0 +1,179 @@
+# Checklist de pièces — Étape 2 (§5.2, §7.2 du PLAN).
+#
+# Dérivée de liste_piece.md (Direction Régionale Île-de-France, Alexandra LESUR), organisée
+# en 3 phases A/B/C (§5.2). Chaque pièce peut être noyée dans un autre document (§5.3) : quand
+# `categorie_attendue` est vide ou que la pièce n'est pas trouvée en couche 1 (fichier direct),
+# le moteur bascule sur `indices` (recherche dans le texte OCR/natif de tous les documents,
+# uniquement si `peut_etre_inclus_dans_autre: true`) puis vérification LLM.
+#
+# Champs par pièce :
+#   id                        : identifiant stable (utilisé en base, jamais affiché)
+#   libelle                   : libellé humain (UI, rapport)
+#   phase                     : A (constitution du dossier) / B (établissement du contrat) /
+#                                C (réception du chantier) — §5.2
+#   alias                     : autres noms usuels de la pièce (UI, recherche)
+#   categorie_attendue        : chemin taxonomie (taxonomy.yaml) où la pièce est normalement
+#                                classée en Étape 1 — null si la pièce n'a pas de catégorie
+#                                dédiée et n'est trouvable que par recherche de contenu
+#   obligatoire               : pièce requise (pré-cochée par défaut dans l'écran de sélection)
+#   peut_etre_inclus_dans_autre: active la couche 2 (recherche intra-document) quand la couche 1
+#                                (fichier direct dans categorie_attendue) ne trouve rien
+#   indices                   : mots-clés / expressions recherchées dans le texte des documents
+#                                pour la couche 2, et fournies au LLM pour la couche 3
+#   par_lot                   : si vrai, la couverture est vérifiée pour chaque lot détecté
+#                                (Document.final_lot) plutôt que pour le dossier dans son ensemble
+#   controle_date             : contrainte de validité temporelle à vérifier (ex. DOC)
+#   fallback                  : pièce de substitution acceptée à défaut de la pièce principale
+
+pieces:
+  # Phase A — Pièces utiles dès la constitution du dossier (étude technique)
+  - id: demande_assurance
+    libelle: "Demande d'assurance SMABTP complétée et signée (avec extrait K-BIS < 3 mois et pièces d'identité des bénéficiaires effectifs)"
+    phase: A
+    alias: ["demande d'assurance", "demande d'assurance SMABTP"]
+    categorie_attendue: null
+    obligatoire: true
+    peut_etre_inclus_dans_autre: true
+    indices: ["demande d'assurance", "extrait k-bis", "k-bis", "kbis", "bénéficiaire effectif",
+      "pièce d'identité"]
+
+  - id: cctp_entreprises
+    libelle: "CCTP des entreprises et/ou devis descriptif des entreprises"
+    phase: A
+    alias: ["CCTP entreprises", "devis descriptif"]
+    categorie_attendue: "TECH/CCTP TRAVAUX"
+    obligatoire: true
+    peut_etre_inclus_dans_autre: false
+    indices: ["cahier des clauses techniques particulières", "devis descriptif"]
+
+  - id: jeu_plans_complet
+    libelle: "Jeu de plans complet (Masse / Façade / Coupe)"
+    phase: A
+    alias: ["plans complets", "plan de masse", "plan de façade", "plan de coupe"]
+    categorie_attendue: "TECH/PLANS"
+    obligatoire: true
+    peut_etre_inclus_dans_autre: false
+    indices: ["plan de masse", "plan de façade", "plan de coupe"]
+
+  - id: planning_travaux
+    libelle: "Planning des travaux"
+    phase: A
+    alias: ["planning"]
+    categorie_attendue: "TECH/PLANNING"
+    obligatoire: true
+    peut_etre_inclus_dans_autre: false
+    indices: ["planning des travaux", "planning d'exécution"]
+
+  - id: etude_sol_g2pro
+    libelle: "Rapport d'étude de sol minimum G2 PRO (DTU 13.1)"
+    phase: A
+    alias: ["G2 PRO", "G2PRO", "étude géotechnique", "DTU 13.1"]
+    categorie_attendue: "TECH/ETUDE DE SOL"
+    obligatoire: true
+    peut_etre_inclus_dans_autre: false
+    indices: ["mission g2 pro", "g2 pro", "étude géotechnique", "fondations superficielles",
+      "dtu 13.1"]
+
+  - id: rict_initial
+    libelle: "Rapport Initial du Contrôleur Technique (RICT)"
+    phase: A
+    alias: ["RICT"]
+    categorie_attendue: "TECH/RICT"
+    obligatoire: true
+    peut_etre_inclus_dans_autre: false
+    indices: ["rapport initial de contrôle technique"]
+
+  - id: materiaux_reemploi
+    libelle: "Liste des matériaux de réemploi"
+    phase: A
+    alias: ["matériaux de réemploi"]
+    categorie_attendue: null
+    obligatoire: true
+    peut_etre_inclus_dans_autre: true
+    indices: ["matériaux de réemploi", "réemploi"]
+
+  # Phase B — Pièces nécessaires à l'établissement du contrat
+  - id: doc_signee
+    libelle: "Copie de la DOC signée (Déclaration d'Ouverture de Chantier), à défaut 1er OS signé"
+    phase: B
+    alias: ["DOC", "déclaration d'ouverture de chantier", "OS", "ordre de service"]
+    categorie_attendue: "TECH/AUTRES"
+    obligatoire: true
+    peut_etre_inclus_dans_autre: true
+    fallback: "premier OS signé"
+    indices: ["déclaration d'ouverture de chantier", "ordre de service"]
+
+  - id: arrete_pc
+    libelle: "Copie de l'arrêté du permis de construire (ou déclaration de travaux)"
+    phase: B
+    alias: ["arrêté PC", "permis de construire", "déclaration de travaux"]
+    categorie_attendue: "TECH/ARRETE PC"
+    obligatoire: true
+    peut_etre_inclus_dans_autre: false
+    indices: ["arrêté", "permis de construire", "déclaration préalable de travaux"]
+
+  - id: contrat_moe
+    libelle: "Contrat(s) de Maîtrise d'Œuvre"
+    phase: B
+    alias: ["contrat MOE", "contrat de maîtrise d'œuvre"]
+    categorie_attendue: "TECH/CONTRAT MOE"
+    obligatoire: true
+    peut_etre_inclus_dans_autre: false
+    indices: ["contrat de maîtrise d'œuvre"]
+
+  - id: liste_intervenants
+    libelle: "Liste de tous les intervenants au chantier (Maîtrise d'œuvre comprise)"
+    phase: B
+    alias: ["liste des intervenants", "CRC"]
+    categorie_attendue: "ASS/LISTE INTERVENANTS"
+    obligatoire: true
+    peut_etre_inclus_dans_autre: false
+    indices: ["liste des intervenants"]
+
+  - id: attestation_decennale_par_lot
+    libelle: "Attestations d'assurance décennale valables à la date de la DOC de tous les intervenants par lot (Maîtrise d'œuvre comprise)"
+    phase: B
+    alias: ["RCD", "assurance décennale", "garantie décennale"]
+    categorie_attendue: "ASS/ATT ASS/ENT"
+    obligatoire: true
+    peut_etre_inclus_dans_autre: true
+    par_lot: true
+    controle_date: "DOC"
+    indices: ["responsabilité civile décennale", "garantie décennale", "attestation d'assurance"]
+
+  - id: refere_preventif
+    libelle: "Référé Préventif en cas d'avoisinant"
+    phase: B
+    alias: ["référé préventif", "constat d'huissier"]
+    categorie_attendue: "TECH/SOCABAT"
+    obligatoire: false
+    peut_etre_inclus_dans_autre: true
+    indices: ["référé préventif", "constat d'huissier", "avoisinant"]
+
+  # Phase C — Pièces à fournir à la réception du chantier
+  - id: pv_reception
+    libelle: "PV de réception de chantier pour chaque entreprise avec levée des réserves"
+    phase: C
+    alias: ["procès-verbal de réception", "levée des réserves"]
+    categorie_attendue: null
+    obligatoire: true
+    peut_etre_inclus_dans_autre: true
+    indices: ["procès-verbal de réception", "levée des réserves", "réception des travaux"]
+
+  - id: declaration_cout_definitif
+    libelle: "Déclaration du coût définitif de l'opération"
+    phase: C
+    alias: ["coût définitif"]
+    categorie_attendue: null
+    obligatoire: true
+    peut_etre_inclus_dans_autre: true
+    indices: ["coût définitif", "déclaration du coût définitif de l'opération"]
+
+  - id: rfct_final
+    libelle: "Rapport Final du Contrôleur Technique (RFCT)"
+    phase: C
+    alias: ["RFCT"]
+    categorie_attendue: null
+    obligatoire: true
+    peut_etre_inclus_dans_autre: true
+    indices: ["rapport final de contrôle technique"]
