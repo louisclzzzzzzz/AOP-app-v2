@@ -46,25 +46,34 @@ def _build_test_zip() -> bytes:
 
 
 def _fake_classification_call(monkeypatch):
+    import re
+
     import app.classify.engine as engine
 
-    def _fake(*, system_prompt, user_prompt, response_model, what):
-        if "RC.pdf" in user_prompt:
-            decision = response_model(
+    def _decision_kwargs_for(block_text: str) -> dict:
+        if "RC.pdf" in block_text:
+            return dict(
                 category_path="ASS/RC", lot=None, document_type="RC", normalized_label="RC assurance",
                 confidence=0.9, justification="Règlement de consultation assurance.",
             )
-        elif "CCAP.pdf" in user_prompt:
-            decision = response_model(
+        if "CCAP.pdf" in block_text:
+            return dict(
                 category_path="ASS/CCAP", lot=None, document_type="CCAP", normalized_label="CCAP assurance",
                 confidence=0.88, justification="CCAP assurance identifié.",
             )
-        else:
-            decision = response_model(
-                category_path="AUTRES", lot=None, document_type="AUTRES", normalized_label="Document",
-                confidence=0.3, justification="Aucun signal clair.",
-            )
-        return decision, "mistral-large-test-fake"
+        return dict(
+            category_path="AUTRES", lot=None, document_type="AUTRES", normalized_label="Document",
+            confidence=0.3, justification="Aucun signal clair.",
+        )
+
+    def _fake(*, system_prompt, user_prompt, response_model, what, model=None):
+        item_model = response_model.model_fields["items"].annotation.__args__[0]
+        blocks = re.split(r"--- Document index=(\d+) ---", user_prompt)[1:]
+        items = [
+            item_model(index=int(blocks[i]), **_decision_kwargs_for(blocks[i + 1]))
+            for i in range(0, len(blocks), 2)
+        ]
+        return response_model(items=items), "mistral-small-test-fake"
 
     monkeypatch.setattr(engine, "call_structured_chat", _fake)
 
@@ -83,26 +92,37 @@ def _fake_completeness_call(monkeypatch):
 
 
 def _fake_extraction_call(monkeypatch):
+    """Simule le LLM d'extraction groupé par document (§3 OPTIMISATION.md) : un seul appel par
+    document, une décision par field_id demandé dans le prompt."""
+    import re
+
     import app.extraction.engine as engine
 
-    def _fake(*, system_prompt, user_prompt, response_model, what):
-        if "Montants totaux HT" in what:
-            if "RC.pdf" in what:
-                return response_model(
-                    found=True, value="1 000 000 EUR", confidence=0.9,
-                    justification="Montant HT indiqué dans le RC.", citation="Montant total HT : 1 000 000 EUR",
-                ), "mistral-large-test-fake"
-            if "CCAP.pdf" in what:
-                return response_model(
-                    found=True, value="950 000 EUR", confidence=0.8,
-                    justification="Montant HT indiqué dans le CCAP.", citation="Montant total HT : 950 000 EUR",
-                ), "mistral-large-test-fake"
-        if "Nom du MOA" in what and "RC.pdf" in what:
-            return response_model(
+    def _decision_kwargs_for(field_id: str, filename: str) -> dict:
+        if field_id == "montants_totaux_ht" and "RC.pdf" in filename:
+            return dict(
+                found=True, value="1 000 000 EUR", confidence=0.9,
+                justification="Montant HT indiqué dans le RC.", citation="Montant total HT : 1 000 000 EUR",
+            )
+        if field_id == "montants_totaux_ht" and "CCAP.pdf" in filename:
+            return dict(
+                found=True, value="950 000 EUR", confidence=0.8,
+                justification="Montant HT indiqué dans le CCAP.", citation="Montant total HT : 950 000 EUR",
+            )
+        if field_id == "nom_moa" and "RC.pdf" in filename:
+            return dict(
                 found=True, value="Commune de Marly", confidence=0.9,
                 justification="Maître d'ouvrage identifié dans le RC.", citation="Maitre d'ouvrage : Commune de Marly",
-            ), "mistral-large-test-fake"
-        return response_model(found=False, value="", confidence=0.1, justification="Absent.", citation=""), "mistral-large-test-fake"
+            )
+        return dict(found=False, value="", confidence=0.1, justification="Absent.", citation="")
+
+    def _fake(*, system_prompt, user_prompt, response_model, what):
+        filename_match = re.search(r"Document analysé : (.+)", user_prompt)
+        filename = filename_match.group(1).strip() if filename_match else ""
+        field_ids = re.findall(r'field_id="([^"]+)"', user_prompt)
+        item_model = response_model.model_fields["items"].annotation.__args__[0]
+        items = [item_model(field_id=fid, **_decision_kwargs_for(fid, filename)) for fid in field_ids]
+        return response_model(items=items), "mistral-large-test-fake"
 
     monkeypatch.setattr(engine, "call_structured_chat", _fake)
 

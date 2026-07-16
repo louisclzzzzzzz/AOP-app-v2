@@ -17,7 +17,7 @@ from app.ingestion.text_extraction import extract_text_for_file
 from app.ingestion.unzip import extract_zip_recursive
 from app.ocr.cache import read_text_cache, write_text_cache_files
 from app.progress import progress_manager
-from app.settings import get_settings
+from app.settings import get_models_config, get_settings
 from app.store.db import session_scope
 from app.store.models import CacheStatus, Dossier, DossierStatus
 from app.store.repository import (
@@ -109,18 +109,26 @@ async def run_ingestion_pipeline(dossier_id: str, uploaded_zip_path: Path) -> No
         message="Extraction de texte / OCR…",
     )
 
-    for document_id in document_ids:
-        doc_event = await asyncio.to_thread(_process_document_text, dossier_id, document_id, source_dir)
-        if doc_event is None:
-            continue  # non analysable, rien à diffuser
-        counters = await asyncio.to_thread(_read_counters)
-        await progress_manager.broadcast(
-            dossier_id,
-            stage="text_extraction",
-            status=DossierStatus.EXTRACTING_TEXT.value,
-            counters=counters,
-            document=doc_event,
+    # Concurrence bornée (§1/§4 OPTIMISATION.md) : chaque document est indépendant (hash,
+    # extraction native ou OCR), le sémaphore côté client Mistral protège déjà l'API OCR d'un
+    # dépassement — la taille de lot ici sert surtout à diffuser les évènements par groupes.
+    batch_size = max(1, int(get_models_config()["ocr"].get("max_concurrency", 3)))
+    for i in range(0, len(document_ids), batch_size):
+        batch = document_ids[i : i + batch_size]
+        doc_events = await asyncio.gather(
+            *(asyncio.to_thread(_process_document_text, dossier_id, doc_id, source_dir) for doc_id in batch)
         )
+        for doc_event in doc_events:
+            if doc_event is None:
+                continue  # non analysable, rien à diffuser
+            counters = await asyncio.to_thread(_read_counters)
+            await progress_manager.broadcast(
+                dossier_id,
+                stage="text_extraction",
+                status=DossierStatus.EXTRACTING_TEXT.value,
+                counters=counters,
+                document=doc_event,
+            )
 
     # --- 4) Terminé : prêt pour l'étape 1 ---------------------------------------------
     def _finalize() -> dict[str, int]:

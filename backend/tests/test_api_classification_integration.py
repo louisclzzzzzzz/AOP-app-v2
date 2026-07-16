@@ -42,38 +42,39 @@ def _build_test_zip() -> bytes:
 
 
 def _fake_classification_call(monkeypatch):
-    """Simule le LLM : classe par mots-clés présents dans le prompt, sans appel réseau."""
+    """Simule le LLM batché (§2 OPTIMISATION.md) : un seul appel structuré peut couvrir
+    plusieurs documents ambigus à la fois ; on classe chacun par mots-clés présents dans son
+    bloc du prompt, sans appel réseau."""
+    import re
+
     import app.classify.engine as engine
 
-    def _fake(*, system_prompt, user_prompt, response_model, what):
-        if "RC 2024.pdf" in user_prompt:
-            decision = response_model(
-                category_path="ADMIN/RC",
-                lot=None,
-                document_type="RC-DCE",
-                normalized_label="RC 2024",
-                confidence=0.9,
+    def _decision_kwargs_for(block_text: str) -> dict:
+        if "RC 2024.pdf" in block_text:
+            return dict(
+                category_path="ADMIN/RC", lot=None, document_type="RC-DCE",
+                normalized_label="RC 2024", confidence=0.9,
                 justification="Le contenu mentionne le règlement de consultation.",
             )
-        elif "CCAP.pdf" in user_prompt:
-            decision = response_model(
-                category_path="ASS/CCAP",
-                lot=None,
-                document_type="CCAP",
-                normalized_label="CCAP assurance",
-                confidence=0.88,
+        if "CCAP.pdf" in block_text:
+            return dict(
+                category_path="ASS/CCAP", lot=None, document_type="CCAP",
+                normalized_label="CCAP assurance", confidence=0.88,
                 justification="Le contenu mentionne le CCAP assurance.",
             )
-        else:
-            decision = response_model(
-                category_path="AUTRES",
-                lot=None,
-                document_type="AUTRES",
-                normalized_label="Document",
-                confidence=0.3,
-                justification="Aucun signal clair.",
-            )
-        return decision, "mistral-large-test-fake"
+        return dict(
+            category_path="AUTRES", lot=None, document_type="AUTRES",
+            normalized_label="Document", confidence=0.3, justification="Aucun signal clair.",
+        )
+
+    def _fake(*, system_prompt, user_prompt, response_model, what, model=None):
+        item_model = response_model.model_fields["items"].annotation.__args__[0]
+        blocks = re.split(r"--- Document index=(\d+) ---", user_prompt)[1:]
+        items = [
+            item_model(index=int(blocks[i]), **_decision_kwargs_for(blocks[i + 1]))
+            for i in range(0, len(blocks), 2)
+        ]
+        return response_model(items=items), "mistral-small-test-fake"
 
     monkeypatch.setattr(engine, "call_structured_chat", _fake)
 

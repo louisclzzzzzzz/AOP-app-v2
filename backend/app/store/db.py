@@ -19,7 +19,12 @@ def get_engine() -> Engine:
     global _engine
     if _engine is None:
         settings = get_settings()
-        connect_args = {"check_same_thread": False} if settings.database_url.startswith("sqlite") else {}
+        # `timeout` (secondes) = busy_timeout sqlite3 : nécessaire depuis que l'ingestion
+        # traite plusieurs documents en concurrence bornée (§4 OPTIMISATION.md) — sans ça,
+        # deux threads qui écrivent en même temps peuvent se heurter à "database is locked".
+        connect_args = (
+            {"check_same_thread": False, "timeout": 30} if settings.database_url.startswith("sqlite") else {}
+        )
         _engine = create_engine(settings.database_url, connect_args=connect_args)
     return _engine
 

@@ -1,13 +1,18 @@
-"""Moteur de classification à 3 signaux combinés (§4.3 du PLAN) :
+"""Moteur de classification à 3 signaux combinés (§4.3 du PLAN), optimisé pour dépenser le
+budget LLM avec parcimonie (§2 OPTIMISATION.md) :
 
 1. Nom de fichier d'origine (regex/mots-clés de la taxonomie).
 2. Contenu OCR/texte extrait (mêmes regex, décisif quand le nom ment).
-3. LLM classifieur (`mistral-large`, sortie structurée contrainte à la taxonomie) qui reçoit
-   nom + extrait de contenu + les deux signaux ci-dessus et tranche.
+3. LLM classifieur (`mistral-small`, sortie structurée contrainte à la taxonomie), appelé une
+   seule fois pour tout un LOT de documents ambigus (jamais un par un) — seulement quand les
+   signaux 1+2 ne désignent pas une catégorie nette et unique.
 
 Certains fichiers sont routés par convention sans appel LLM (dépôt dématérialisé, archive déjà
-décompressée, bruit système) : il n'y a alors aucun jugement à faire, un appel LLM n'ajouterait
-rien à la précision et gaspillerait un appel API.
+décompressée, bruit système) : il n'y a alors aucun jugement à faire. D'autres sont classables
+par les seuls signaux 1+2 quand un candidat ressort nettement au-dessus des autres : là non
+plus, un appel LLM n'ajouterait rien à la précision et gaspillerait un appel API. Seuls les
+fichiers réellement ambigus (aucun candidat, candidats à score proche, ou nom générique type
+`scan001.pdf`) sont soumis au LLM, regroupés par lot (`classification.batch_size`).
 """
 from __future__ import annotations
 
@@ -28,12 +33,27 @@ from app.store.models import FileCategory
 logger = logging.getLogger(__name__)
 
 CONTENT_EXCERPT_MAX_CHARS = 4000
+# Extrait plus court en mode batché : la classification n'a besoin que d'un aperçu (nom + tête
+# de document), pas du document entier — garde le prompt groupé raisonnable en tokens.
+BATCH_CONTENT_EXCERPT_MAX_CHARS = 1500
 
 _LOT_SIGNAL_PATTERN = re.compile(
     r"lot[^a-z0-9]{0,3}(\d+(?:\s*(?:,|/|&|-|et)\s*\d+)*)", re.IGNORECASE
 )
 
 _SYSTEM_NOISE_REASONS = {"Fichier système (non analysable)", "Extension inconnue"}
+
+# Noms de fichiers génériques (scan, capture d'écran, export par défaut...) : jamais un signal
+# fiable, toujours ambigu même si un score de règle ressortait par coïncidence.
+_GENERIC_FILENAME_PATTERN = re.compile(
+    r"^(scan\s*\d*|img[_-]?\d*|image\s*\d*|document\s*\(\d+\)|sans[ _]?titre|untitled|dsc\d*)$",
+    re.IGNORECASE,
+)
+
+# Un candidat est retenu comme non-ambigu si son score dépasse ce seuil...
+_UNAMBIGUOUS_SCORE_THRESHOLD = 2
+# ...et qu'aucun autre candidat n'est à moins de cet écart (sinon : signal partagé, ambigu).
+_UNAMBIGUOUS_SCORE_GAP = 1
 
 
 @dataclass(frozen=True)
@@ -55,6 +75,19 @@ class ClassificationOutcome:
     model_name: str | None
     model_version: str | None
     error: str | None
+
+
+@dataclass(frozen=True)
+class AmbiguousDocument:
+    """Document dont les signaux 1+2 ne suffisent pas — candidat à la classification LLM
+    batchée. Porte les signaux déjà calculés pour ne jamais les recalculer côté prompt."""
+
+    relative_path: str
+    filename: str
+    content_excerpt: str
+    filename_matches: list[SignalMatch]
+    content_matches: list[SignalMatch]
+    lot_signal: str | None
 
 
 def extract_lot_signal(text: str) -> str | None:
@@ -87,19 +120,37 @@ def score_content(text: str, taxonomy: Taxonomy | None = None) -> list[SignalMat
     return _score_text(text, taxonomy or load_taxonomy(), use_content=True)
 
 
-@lru_cache
-def _response_model_for_categories(category_paths: tuple[str, ...]) -> type[BaseModel]:
-    from typing import Literal
+def _is_generic_filename(filename: str) -> bool:
+    stem = filename.rsplit(".", 1)[0].strip()
+    return bool(_GENERIC_FILENAME_PATTERN.fullmatch(stem))
 
-    return create_model(
-        "ClassificationDecision",
-        category_path=(Literal[category_paths], ...),
-        lot=(str | None, None),
-        document_type=(str, ...),
-        normalized_label=(str, ...),
-        confidence=(float, ...),
-        justification=(str, ...),
-    )
+
+def _unambiguous_match(
+    filename_matches: list[SignalMatch], content_matches: list[SignalMatch], filename: str
+) -> SignalMatch | None:
+    """Un fichier est classable par règles seules si un unique candidat ressort nettement des
+    signaux nom+contenu combinés. Retourne None si ambigu (LLM nécessaire) : aucun candidat,
+    plusieurs candidats à score proche, ou nom générique (scan, capture d'écran, export...)."""
+    if _is_generic_filename(filename):
+        return None
+
+    combined_scores: dict[str, int] = {}
+    keywords_by_path: dict[str, list[str]] = {}
+    for m in (*filename_matches, *content_matches):
+        combined_scores[m.category_path] = combined_scores.get(m.category_path, 0) + m.score
+        keywords_by_path.setdefault(m.category_path, []).extend(m.matched_keywords)
+
+    if not combined_scores:
+        return None
+
+    ranked = sorted(combined_scores.items(), key=lambda kv: kv[1], reverse=True)
+    top_path, top_score = ranked[0]
+    if top_score < _UNAMBIGUOUS_SCORE_THRESHOLD:
+        return None
+    if len(ranked) > 1 and (top_score - ranked[1][1]) < _UNAMBIGUOUS_SCORE_GAP:
+        return None
+
+    return SignalMatch(category_path=top_path, score=top_score, matched_keywords=keywords_by_path[top_path])
 
 
 def _format_matches(matches: list[SignalMatch]) -> str:
@@ -114,51 +165,6 @@ def _category_catalog(taxonomy: Taxonomy) -> str:
         alt = f" (alias : {', '.join(c.alt_names)})" if c.alt_names else ""
         lines.append(f"- {c.path} — {c.label}{alt}")
     return "\n".join(lines)
-
-
-_SYSTEM_PROMPT = """Tu es un assistant expert en classement de dossiers de consultation des \
-entreprises (DCE) pour l'underwriting assurance construction (SMABTP). Ta tâche : classer un \
-document dans l'une des catégories de la taxonomie fournie, détecter un éventuel numéro de lot, \
-et proposer un libellé court normalisé.
-
-Règles impératives :
-- Choisis TOUJOURS une catégorie parmi la liste fournie (jamais une catégorie inventée).
-- Si aucune catégorie ne correspond avec certitude, choisis "AUTRES" et indique une confiance basse.
-- N'invente jamais d'information absente du nom de fichier ou de l'extrait de contenu.
-- La confiance doit refléter honnêtement ta certitude (1.0 = certain, 0.0 = aucune idée).
-- Justifie brièvement ta décision en citant les signaux qui t'ont convaincu (nom, contenu, ou les deux).
-"""
-
-
-def _build_user_prompt(
-    *,
-    relative_path: str,
-    filename: str,
-    content_excerpt: str,
-    filename_matches: list[SignalMatch],
-    content_matches: list[SignalMatch],
-    lot_signal: str | None,
-    taxonomy: Taxonomy,
-) -> str:
-    excerpt = content_excerpt[:CONTENT_EXCERPT_MAX_CHARS] if content_excerpt else "(aucun contenu extrait)"
-    return f"""Taxonomie disponible (chemin — libellé) :
-{_category_catalog(taxonomy)}
-
-Document à classer :
-- Chemin d'origine dans le DCE : {relative_path}
-- Nom de fichier : {filename}
-- Signal nom de fichier (candidats par score) : {_format_matches(filename_matches)}
-- Signal contenu (candidats par score) : {_format_matches(content_matches)}
-- Numéro de lot détecté par regex (indicatif, à confirmer) : {lot_signal or "aucun"}
-
-Extrait de contenu (texte natif ou OCR, tronqué) :
----
-{excerpt}
----
-
-Réponds avec la catégorie la plus probable, le lot si pertinent (ou null), un type de document \
-court (ex: CCAP, RICT, ATT-ENT), un libellé court normalisé (2-5 mots, sans accents ni ponctuation \
-superflue), une confiance entre 0 et 1, et une justification concise."""
 
 
 def _auto_route(
@@ -181,14 +187,48 @@ def _auto_route(
     )
 
 
-def classify_document(
+def _rule_match_outcome(
+    *, filename: str, match: SignalMatch, lot_signal: str | None, taxonomy: Taxonomy,
+    filename_matches: list[SignalMatch], content_matches: list[SignalMatch],
+) -> ClassificationOutcome:
+    category = taxonomy.by_path(match.category_path)
+    doc_type = category.doc_type_hint if category else "AUTRES"
+    normalized_filename = build_normalized_filename(
+        category_path=match.category_path, lot=lot_signal, doc_type=doc_type, original_filename=filename
+    )
+    return ClassificationOutcome(
+        category=match.category_path,
+        lot=lot_signal,
+        doc_type=doc_type,
+        normalized_filename=normalized_filename,
+        confidence=0.9,
+        justification=(
+            f"Classement par règle : signal nom/contenu net et unique sur {match.category_path} "
+            f"(score {match.score}, mots-clés : {', '.join(dict.fromkeys(match.matched_keywords)) or '—'})."
+        ),
+        signals={
+            "rule": "unambiguous_signal",
+            "filename_matches": [m.category_path for m in filename_matches[:5]],
+            "content_matches": [m.category_path for m in content_matches[:5]],
+            "lot_signal": lot_signal,
+        },
+        model_name=None,
+        model_version=None,
+        error=None,
+    )
+
+
+def classify_document_by_rules(
     *,
     relative_path: str,
     filename: str,
     file_category: str,
     non_analyzable_reason: str | None,
     content_excerpt: str,
-) -> ClassificationOutcome:
+) -> ClassificationOutcome | None:
+    """Classe un document sans appel LLM quand c'est possible (auto-route par convention, ou
+    signal nom/contenu net et unique). Retourne None si le document est ambigu : il doit alors
+    être soumis à `classify_documents_batch` (regroupé avec d'autres documents ambigus)."""
     taxonomy = load_taxonomy()
 
     if file_category == FileCategory.DEMATERIALISE.value:
@@ -226,63 +266,164 @@ def classify_document(
     content_matches = score_content(content_excerpt, taxonomy) if content_excerpt else []
     lot_signal = extract_lot_signal(filename) or extract_lot_signal(content_excerpt or "")
 
-    signals: dict[str, Any] = {
-        "filename_matches": [m.category_path for m in filename_matches[:5]],
-        "content_matches": [m.category_path for m in content_matches[:5]],
-        "lot_signal": lot_signal,
-    }
+    match = _unambiguous_match(filename_matches, content_matches, filename)
+    if match is None:
+        return None
 
-    user_prompt = _build_user_prompt(
-        relative_path=relative_path,
+    return _rule_match_outcome(
         filename=filename,
-        content_excerpt=content_excerpt,
-        filename_matches=filename_matches,
-        content_matches=content_matches,
+        match=match,
         lot_signal=lot_signal,
         taxonomy=taxonomy,
+        filename_matches=filename_matches,
+        content_matches=content_matches,
     )
-    response_model = _response_model_for_categories(taxonomy.paths())
+
+
+@lru_cache
+def _batch_item_model_for_categories(category_paths: tuple[str, ...]) -> type[BaseModel]:
+    from typing import Literal
+
+    return create_model(
+        "ClassificationBatchItem",
+        index=(int, ...),
+        category_path=(Literal[category_paths], ...),
+        lot=(str | None, None),
+        document_type=(str, ...),
+        normalized_label=(str, ...),
+        confidence=(float, ...),
+        justification=(str, ...),
+    )
+
+
+@lru_cache
+def _batch_response_model_for_categories(category_paths: tuple[str, ...]) -> type[BaseModel]:
+    item_model = _batch_item_model_for_categories(category_paths)
+    return create_model("ClassificationBatchDecision", items=(list[item_model], ...))
+
+
+_BATCH_SYSTEM_PROMPT = """Tu es un assistant expert en classement de dossiers de consultation des \
+entreprises (DCE) pour l'underwriting assurance construction (SMABTP). Ta tâche : classer PLUSIEURS \
+documents en une seule réponse, chacun dans l'une des catégories de la taxonomie fournie, détecter \
+un éventuel numéro de lot par document, et proposer un libellé court normalisé par document.
+
+Règles impératives :
+- Réponds avec EXACTEMENT une décision par document reçu, en reprenant son `index` tel quel.
+- Choisis TOUJOURS une catégorie parmi la liste fournie (jamais une catégorie inventée).
+- Si aucune catégorie ne correspond avec certitude pour un document, choisis "AUTRES" et indique \
+une confiance basse pour ce document.
+- N'invente jamais d'information absente du nom de fichier ou de l'extrait de contenu.
+- La confiance doit refléter honnêtement ta certitude (1.0 = certain, 0.0 = aucune idée), \
+indépendamment pour chaque document.
+- Justifie brièvement chaque décision en citant les signaux qui t'ont convaincu (nom, contenu, ou les deux).
+"""
+
+
+def _build_batch_user_prompt(*, items: list[AmbiguousDocument], taxonomy: Taxonomy) -> str:
+    blocks = []
+    for i, item in enumerate(items):
+        excerpt = (
+            item.content_excerpt[:BATCH_CONTENT_EXCERPT_MAX_CHARS]
+            if item.content_excerpt
+            else "(aucun contenu extrait)"
+        )
+        blocks.append(f"""--- Document index={i} ---
+Chemin d'origine dans le DCE : {item.relative_path}
+Nom de fichier : {item.filename}
+Signal nom de fichier (candidats par score) : {_format_matches(item.filename_matches)}
+Signal contenu (candidats par score) : {_format_matches(item.content_matches)}
+Numéro de lot détecté par regex (indicatif, à confirmer) : {item.lot_signal or "aucun"}
+Extrait de contenu (texte natif ou OCR, tronqué) :
+---
+{excerpt}
+---""")
+
+    return f"""Taxonomie disponible (chemin — libellé) :
+{_category_catalog(taxonomy)}
+
+Documents à classer ({len(items)}) :
+
+{chr(10).join(blocks)}
+
+Réponds avec une liste de {len(items)} décisions (une par index ci-dessus), chacune avec la \
+catégorie la plus probable, le lot si pertinent (ou null), un type de document court (ex: CCAP, \
+RICT, ATT-ENT), un libellé court normalisé (2-5 mots, sans accents ni ponctuation superflue), \
+une confiance entre 0 et 1, et une justification concise."""
+
+
+def _fallback_outcome_for(item: AmbiguousDocument, taxonomy: Taxonomy, *, error: str) -> ClassificationOutcome:
+    return ClassificationOutcome(
+        category=taxonomy.fallback_category,
+        lot=item.lot_signal,
+        doc_type="AUTRES",
+        normalized_filename=item.filename,
+        confidence=0.0,
+        justification="",
+        signals={
+            "filename_matches": [m.category_path for m in item.filename_matches[:5]],
+            "content_matches": [m.category_path for m in item.content_matches[:5]],
+            "lot_signal": item.lot_signal,
+        },
+        model_name=None,
+        model_version=None,
+        error=error,
+    )
+
+
+def classify_documents_batch(items: list[AmbiguousDocument]) -> list[ClassificationOutcome]:
+    """Un seul appel LLM structuré pour tout un lot de documents ambigus (§2 OPTIMISATION.md) —
+    remplace un appel par document par un appel par lot de `classification.batch_size`."""
+    if not items:
+        return []
+
+    taxonomy = load_taxonomy()
+    response_model = _batch_response_model_for_categories(taxonomy.paths())
+    classification_cfg = get_models_config().get("classification", {})
+    model = classification_cfg.get("model")
 
     try:
         decision, api_model_name = call_structured_chat(
-            system_prompt=_SYSTEM_PROMPT,
-            user_prompt=user_prompt,
+            system_prompt=_BATCH_SYSTEM_PROMPT,
+            user_prompt=_build_batch_user_prompt(items=items, taxonomy=taxonomy),
             response_model=response_model,
-            what=f"classification de {relative_path}",
+            what=f"classification batchée de {len(items)} document(s)",
+            model=model,
         )
     except Exception as exc:
-        logger.exception("Échec de la classification LLM pour %s", relative_path)
-        return ClassificationOutcome(
-            category=taxonomy.fallback_category,
-            lot=lot_signal,
-            doc_type="AUTRES",
-            normalized_filename=filename,
-            confidence=0.0,
-            justification="",
-            signals=signals,
-            model_name=None,
-            model_version=None,
-            error=str(exc),
+        logger.exception("Échec de la classification LLM batchée (%d documents)", len(items))
+        return [_fallback_outcome_for(item, taxonomy, error=str(exc)) for item in items]
+
+    by_index = {d.index: d for d in decision.items}
+    outcomes: list[ClassificationOutcome] = []
+    for i, item in enumerate(items):
+        d = by_index.get(i)
+        if d is None:
+            outcomes.append(
+                _fallback_outcome_for(
+                    item, taxonomy, error=f"Aucune décision reçue pour l'index {i} dans la réponse batchée."
+                )
+            )
+            continue
+        normalized_filename = build_normalized_filename(
+            category_path=d.category_path, lot=d.lot, doc_type=d.document_type, original_filename=item.filename
         )
-
-    signals["llm_raw"] = decision.model_dump(mode="json")
-
-    normalized_filename = build_normalized_filename(
-        category_path=decision.category_path,
-        lot=decision.lot,
-        doc_type=decision.document_type,
-        original_filename=filename,
-    )
-
-    return ClassificationOutcome(
-        category=decision.category_path,
-        lot=decision.lot,
-        doc_type=decision.document_type,
-        normalized_filename=normalized_filename,
-        confidence=float(decision.confidence),
-        justification=decision.justification,
-        signals=signals,
-        model_name=api_model_name,
-        model_version=get_models_config()["llm"]["model"],
-        error=None,
-    )
+        outcomes.append(
+            ClassificationOutcome(
+                category=d.category_path,
+                lot=d.lot,
+                doc_type=d.document_type,
+                normalized_filename=normalized_filename,
+                confidence=float(d.confidence),
+                justification=d.justification,
+                signals={
+                    "filename_matches": [m.category_path for m in item.filename_matches[:5]],
+                    "content_matches": [m.category_path for m in item.content_matches[:5]],
+                    "lot_signal": item.lot_signal,
+                    "llm_raw": d.model_dump(mode="json"),
+                },
+                model_name=api_model_name,
+                model_version=model or get_models_config()["llm"]["model"],
+                error=None,
+            )
+        )
+    return outcomes

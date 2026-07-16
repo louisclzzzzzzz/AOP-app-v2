@@ -16,18 +16,23 @@ from reportlab.pdfgen import canvas
 
 
 def _stub_classification_llm(monkeypatch):
+    """Stub du LLM batché (§2 OPTIMISATION.md) : classe tout en AUTRES, quel que soit le nombre
+    de documents ambigus regroupés dans l'appel."""
+    import re
+
     import app.classify.engine as engine
 
-    def _fake(*, system_prompt, user_prompt, response_model, what):
-        decision = response_model(
-            category_path="AUTRES",
-            lot=None,
-            document_type="AUTRES",
-            normalized_label="Document",
-            confidence=0.5,
-            justification="stub de test",
-        )
-        return decision, "mistral-large-test-stub"
+    def _fake(*, system_prompt, user_prompt, response_model, what, model=None):
+        item_model = response_model.model_fields["items"].annotation.__args__[0]
+        indices = [int(m) for m in re.findall(r"--- Document index=(\d+) ---", user_prompt)]
+        items = [
+            item_model(
+                index=i, category_path="AUTRES", lot=None, document_type="AUTRES",
+                normalized_label="Document", confidence=0.5, justification="stub de test",
+            )
+            for i in indices
+        ]
+        return response_model(items=items), "mistral-small-test-stub"
 
     monkeypatch.setattr(engine, "call_structured_chat", _fake)
 

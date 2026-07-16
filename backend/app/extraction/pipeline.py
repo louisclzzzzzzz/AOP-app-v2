@@ -5,6 +5,11 @@ de cases à cocher, le schéma d'extraction est fixe — tous les champs sont to
 Le lancement reste néanmoins déclenché explicitement par l'utilisateur (`POST .../extraction/run`)
 depuis `completeness_validated`, jamais enchaîné automatiquement — même principe que les 2
 étapes précédentes.
+
+Un appel LLM par DOCUMENT de référence (pas par champ, §3 OPTIMISATION.md) : la couche 1 appelle
+chaque document de référence distinct une fois, couvrant tous les champs qu'il concerne ; les
+champs encore sans valeur passent en couche 2 (recherche élargie, un appel par document
+candidat) ; ce qui reste est déclaré absent sans appel LLM.
 """
 from __future__ import annotations
 
@@ -13,13 +18,23 @@ import logging
 
 from sqlalchemy.orm import Session
 
-from app.extraction.engine import ExtractionOutcome, analyze_field
-from app.extraction.extraction_schema import ExtractionField, ExtractionSchema, load_extraction_schema
+from app.extraction.engine import (
+    DocumentExtractionResult,
+    ExtractionOutcome,
+    absent_outcome,
+    analyze_document,
+    layer2_candidates,
+    plan_layer2_calls,
+    plan_reference_document_calls,
+    reference_candidates,
+    resolve_field,
+)
+from app.extraction.extraction_schema import ExtractionField, load_extraction_schema
 from app.ingestion.document_signal import DocumentSignal, build_document_signal
 from app.progress import progress_manager
 from app.settings import get_models_config
 from app.store.db import session_scope
-from app.store.models import Dossier, DossierStatus, ExtractionResult
+from app.store.models import Dossier, DossierStatus, ExtractionResult, MatchLayer
 from app.store.repository import (
     create_extraction_result,
     get_dossier,
@@ -78,16 +93,15 @@ async def run_extraction_pipeline(dossier_id: str) -> None:
         dossier_id,
         stage="extraction",
         status=DossierStatus.EXTRACTING.value,
-        message="Extraction des données (fichiers de référence + recherche élargie + recoupement)…",
+        message="Extraction des données (un appel par document de référence, recoupement, recherche élargie)…",
     )
 
-    def _prepare() -> tuple[list[str], list[DocumentSignal]]:
+    def _prepare() -> list[DocumentSignal]:
         with session_scope() as s:
             ensure_results_initialized(s, dossier_id)
             dossier = get_dossier(s, dossier_id)
             assert dossier is not None
             recompute_extraction_counters(s, dossier)
-            field_ids = [f.id for f in load_extraction_schema().fields]
             documents = list_documents(s, dossier_id)
             doc_snapshots = [
                 {
@@ -100,14 +114,13 @@ async def run_extraction_pipeline(dossier_id: str) -> None:
                 }
                 for d in documents
             ]
-        signals = [build_document_signal(snap) for snap in doc_snapshots]
-        return field_ids, signals
+        return [build_document_signal(snap) for snap in doc_snapshots]
 
-    field_ids, signals = await asyncio.to_thread(_prepare)
+    signals = await asyncio.to_thread(_prepare)
     schema = load_extraction_schema()
-    cross_check_required_fields = set(
-        get_models_config()["extraction"].get("cross_check_required_fields", [])
-    )
+    extraction_cfg = get_models_config()["extraction"]
+    cross_check_required_fields = set(extraction_cfg.get("cross_check_required_fields", []))
+    max_cross_check_sources = int(extraction_cfg.get("cross_check_passes", 2))
 
     def _read_counters() -> dict[str, int]:
         with session_scope() as s:
@@ -115,18 +128,99 @@ async def run_extraction_pipeline(dossier_id: str) -> None:
             assert dossier is not None
             return _counters(dossier)
 
-    for field_id in field_ids:
-        doc_event = await asyncio.to_thread(
-            _analyze_one, dossier_id, field_id, schema, signals, field_id in cross_check_required_fields
+    def _persist(outcomes: dict[str, ExtractionOutcome]) -> None:
+        with session_scope() as s:
+            for field_id, outcome in outcomes.items():
+                result = get_extraction_result_by_field(s, dossier_id, field_id)
+                assert result is not None
+                set_extraction_result(
+                    s,
+                    result,
+                    match_layer=outcome.match_layer,
+                    value=outcome.value,
+                    confidence=outcome.confidence,
+                    justification=outcome.justification,
+                    citation=outcome.citation,
+                    sources=outcome.sources,
+                    cross_check_status=outcome.cross_check_status,
+                    model_name=outcome.model_name,
+                    model_version=outcome.model_version,
+                    error=outcome.error,
+                )
+            dossier = get_dossier(s, dossier_id)
+            assert dossier is not None
+            recompute_extraction_counters(s, dossier)
+
+    async def _run_calls(
+        calls: list[tuple[DocumentSignal, list[ExtractionField]]]
+    ) -> dict[str, DocumentExtractionResult]:
+        results: dict[str, DocumentExtractionResult] = {}
+        for doc, fields_for_doc in calls:
+            result = await asyncio.to_thread(analyze_document, doc, fields_for_doc)
+            results[doc.document_id] = result
+            counters = await asyncio.to_thread(_read_counters)
+            await progress_manager.broadcast(
+                dossier_id,
+                stage="extraction",
+                status=DossierStatus.EXTRACTING.value,
+                counters=counters,
+                document={
+                    "id": doc.document_id,
+                    "filename": doc.filename,
+                    "relative_path": doc.filename,
+                    "fields_covered": len(fields_for_doc),
+                    "error": result.error,
+                },
+            )
+        return results
+
+    # --- Couche 1 : un appel par document de référence --------------------------------------
+    layer1_calls = plan_reference_document_calls(schema.fields, signals)
+    layer1_results = await _run_calls(layer1_calls)
+
+    layer1_outcomes: dict[str, ExtractionOutcome] = {}
+    for f in schema.fields:
+        outcome = resolve_field(
+            f,
+            candidates=reference_candidates(f, signals),
+            results_by_document=layer1_results,
+            match_layer=MatchLayer.FILE.value,
+            cross_check_required=f.id in cross_check_required_fields,
+            max_cross_check_sources=max_cross_check_sources,
         )
-        counters = await asyncio.to_thread(_read_counters)
-        await progress_manager.broadcast(
-            dossier_id,
-            stage="extraction",
-            status=DossierStatus.EXTRACTING.value,
-            counters=counters,
-            document=doc_event,
-        )
+        if outcome is not None:
+            layer1_outcomes[f.id] = outcome
+    await asyncio.to_thread(_persist, layer1_outcomes)
+
+    # --- Couche 2 : recherche élargie sur les champs encore manquants -----------------------
+    missing_fields = [f for f in schema.fields if f.id not in layer1_outcomes]
+    layer2_outcomes: dict[str, ExtractionOutcome] = {}
+    if missing_fields:
+        layer2_calls = plan_layer2_calls(missing_fields, signals)
+        layer2_results = await _run_calls(layer2_calls)
+        for f in missing_fields:
+            outcome = resolve_field(
+                f,
+                candidates=layer2_candidates(f, signals),
+                results_by_document=layer2_results,
+                match_layer=MatchLayer.CONTENT.value,
+                cross_check_required=False,
+            )
+            if outcome is not None:
+                layer2_outcomes[f.id] = outcome
+        await asyncio.to_thread(_persist, layer2_outcomes)
+
+    # --- Couche 3 : absent, aucun appel LLM --------------------------------------------------
+    resolved_ids = set(layer1_outcomes) | set(layer2_outcomes)
+    absent_fields = [f for f in schema.fields if f.id not in resolved_ids]
+    if absent_fields:
+        absent_outcomes = {
+            f.id: absent_outcome(
+                "Aucune valeur trouvée : ni dans les documents de référence, ni par recherche de mots-clés."
+            )
+            for f in absent_fields
+        }
+        await asyncio.to_thread(_persist, absent_outcomes)
 
     def _finalize() -> dict[str, int]:
         with session_scope() as s:
@@ -144,48 +238,3 @@ async def run_extraction_pipeline(dossier_id: str) -> None:
         counters=final_counters,
         message="Extraction terminée — résultats prêts à valider",
     )
-
-
-def _analyze_one(
-    dossier_id: str,
-    field_id: str,
-    schema: ExtractionSchema,
-    signals: list[DocumentSignal],
-    cross_check_required: bool,
-) -> dict:
-    field: ExtractionField | None = schema.by_id(field_id)
-    assert field is not None
-
-    outcome: ExtractionOutcome = analyze_field(
-        field=field, documents=signals, cross_check_required=cross_check_required
-    )
-
-    with session_scope() as s:
-        result = get_extraction_result_by_field(s, dossier_id, field_id)
-        assert result is not None
-        set_extraction_result(
-            s,
-            result,
-            match_layer=outcome.match_layer,
-            value=outcome.value,
-            confidence=outcome.confidence,
-            justification=outcome.justification,
-            citation=outcome.citation,
-            sources=outcome.sources,
-            cross_check_status=outcome.cross_check_status,
-            model_name=outcome.model_name,
-            model_version=outcome.model_version,
-            error=outcome.error,
-        )
-        dossier = get_dossier(s, dossier_id)
-        assert dossier is not None
-        recompute_extraction_counters(s, dossier)
-
-    return {
-        "id": field_id,
-        "filename": field.libelle,
-        "relative_path": field.libelle,
-        "value": outcome.value,
-        "cross_check_status": outcome.cross_check_status,
-        "error": outcome.error,
-    }

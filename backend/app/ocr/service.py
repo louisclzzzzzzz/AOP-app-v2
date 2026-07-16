@@ -6,11 +6,14 @@ en sidecar pour permettre plus tard une citation précise (page + position) dans
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 
 from app.mistral.client import call_ocr, upload_file_for_ocr
 from app.settings import get_models_config
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -36,6 +39,11 @@ def run_ocr(path: Path, *, pages: list[int] | None = None) -> OcrCallOutcome:
     un sous-ensemble de pages — utilisé pour l'OCR de contrôle sur PDF partiellement natif."""
     file_id = upload_file_for_ocr(path)
     response = call_ocr(file_id=file_id, pages=pages)
+    if response.usage_info:
+        logger.info(
+            "USAGE ocr file=%s pages_processed=%s doc_size_bytes=%s",
+            path.name, response.usage_info.pages_processed, response.usage_info.doc_size_bytes,
+        )
 
     page_outcomes: list[OcrPageOutcome] = []
     for p in response.pages:

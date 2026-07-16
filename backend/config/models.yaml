@@ -8,6 +8,9 @@ ocr:
   fallback_latest: "mistral-ocr-latest"
   # Seuil de confiance moyenne par bloc en-dessous duquel un document est marqué "à vérifier"
   min_confidence: 0.70
+  # Concurrence max sur la file OCR (upload + /v1/ocr) — indépendante de la file LLM chat,
+  # cadencée séparément (§1/§4 OPTIMISATION.md). Valeur prudente par défaut, ajustable.
+  max_concurrency: 3
 
 llm:
   # Classification (étape 1), complétude (étape 2), extraction (étape 3)
@@ -20,6 +23,9 @@ llm:
   temperature: 0.0
   max_retries: 3
   timeout_seconds: 120
+  # Espacement minimum entre deux appels chat structurés (file LLM mono-worker, §4
+  # OPTIMISATION.md) — valeur prudente par défaut, à ajuster selon le palier de rate limit réel.
+  min_interval_seconds: 1.0
 
 extraction:
   # Nombre de passes de recoupement pour les champs critiques (montants, dates, garanties)
@@ -40,6 +46,12 @@ completeness:
 
 classification:
   min_confidence_for_auto_apply: 0.60
+  # Modèle dédié à la classification batchée (§2 OPTIMISATION.md) : tâche facile, un modèle
+  # moins cher suffit et n'entame pas le quota du modèle d'extraction (mistral-large).
+  model: "mistral-small-2603"
+  fallback_latest: "mistral-small-latest"
+  # Nombre de documents ambigus regroupés dans un même appel LLM structuré.
+  batch_size: 10
 
 text_extraction:
   # Densité de texte natif (caractères / page) en-dessous de laquelle on déclenche l'OCR de contrôle
