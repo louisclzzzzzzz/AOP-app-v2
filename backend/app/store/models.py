@@ -70,6 +70,9 @@ class TextExtractionMethod(str, enum.Enum):
     DOC_CONVERTED = "doc_converted"
     SPREADSHEET_NATIVE = "spreadsheet_native"
     NONE = "none"
+    # Aucun OCR tenté (texte natif absent ou insuffisant) : à ré-extraire à la demande si le
+    # document s'avère concerné par une étape ultérieure (§ ensure_document_ocr, extraction).
+    DEFERRED = "deferred"
 
 
 class CacheStatus(str, enum.Enum):

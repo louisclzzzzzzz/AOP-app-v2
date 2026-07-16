@@ -100,6 +100,63 @@ def test_mixed_pdf_ocr_only_low_density_pages(tmp_path, isolated_workspace, monk
     assert outcome.avg_confidence == pytest.approx((1.0 + 0.88) / 2)
 
 
+# --- OCR différé (allow_ocr=False, §5 OPTIMISATION.md phase 4) ------------------------------
+
+def test_dense_native_pdf_unaffected_by_allow_ocr_false(tmp_path, isolated_workspace, monkeypatch):
+    pdf_path = tmp_path / "dense.pdf"
+    _make_pdf(pdf_path, ["Ceci est un paragraphe de règlement de consultation bien fourni."] * 2)
+
+    def _fail_if_called(*args, **kwargs):
+        raise AssertionError("run_ocr ne doit jamais être appelé quand allow_ocr=False")
+
+    monkeypatch.setattr(te, "run_ocr", _fail_if_called)
+
+    outcome = te.extract_pdf(pdf_path, allow_ocr=False)
+    assert outcome.method == TextExtractionMethod.NATIVE_PDF.value
+    assert outcome.char_count > 0
+
+
+def test_scanned_pdf_deferred_when_ocr_disallowed(tmp_path, isolated_workspace, monkeypatch):
+    pdf_path = tmp_path / "blank.pdf"
+    _make_pdf(pdf_path, [None, None])
+
+    def _fail_if_called(*args, **kwargs):
+        raise AssertionError("run_ocr ne doit jamais être appelé quand allow_ocr=False")
+
+    monkeypatch.setattr(te, "run_ocr", _fail_if_called)
+
+    outcome = te.extract_pdf(pdf_path, allow_ocr=False)
+    assert outcome.method == TextExtractionMethod.DEFERRED.value
+    assert outcome.char_count == 0
+    assert outcome.error is None
+
+
+def test_mixed_pdf_low_density_pages_kept_native_when_ocr_disallowed(tmp_path, isolated_workspace, monkeypatch):
+    pdf_path = tmp_path / "mixed.pdf"
+    dense_text = "Cahier des clauses administratives particulières applicables au marché."
+    _make_pdf(pdf_path, [dense_text, None])  # page 1 aurait normalement déclenché l'OCR de contrôle
+
+    def _fail_if_called(*args, **kwargs):
+        raise AssertionError("run_ocr ne doit jamais être appelé quand allow_ocr=False")
+
+    monkeypatch.setattr(te, "run_ocr", _fail_if_called)
+
+    outcome = te.extract_pdf(pdf_path, allow_ocr=False)
+    assert outcome.method == TextExtractionMethod.NATIVE_PDF.value
+    assert dense_text in outcome.combined_text
+
+
+def test_image_deferred_when_ocr_disallowed(tmp_path, isolated_workspace, monkeypatch):
+    def _fail_if_called(*args, **kwargs):
+        raise AssertionError("run_ocr ne doit jamais être appelé quand allow_ocr=False")
+
+    monkeypatch.setattr(te, "run_ocr", _fail_if_called)
+
+    outcome = te.extract_image(tmp_path / "scan.png", allow_ocr=False)
+    assert outcome.method == TextExtractionMethod.DEFERRED.value
+    assert outcome.char_count == 0
+
+
 def test_doc_without_libreoffice_fails_explicitly(tmp_path, isolated_workspace, monkeypatch):
     """Sans LibreOffice, on ne doit jamais inventer de texte : échec explicite et tracé."""
     monkeypatch.setattr(te, "_find_soffice", lambda: None)
@@ -115,7 +172,7 @@ def test_doc_without_libreoffice_fails_explicitly(tmp_path, isolated_workspace, 
 
 def test_extract_text_for_file_dispatches_by_category(tmp_path, isolated_workspace, monkeypatch):
     called = {}
-    monkeypatch.setattr(te, "extract_pdf", lambda p: called.setdefault("pdf", p) or _dummy_outcome())
+    monkeypatch.setattr(te, "extract_pdf", lambda p, **kwargs: called.setdefault("pdf", p) or _dummy_outcome())
     outcome = te.extract_text_for_file(tmp_path / "x.pdf", "pdf")
     assert "pdf" in called
 

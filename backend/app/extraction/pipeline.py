@@ -30,7 +30,7 @@ from app.extraction.engine import (
     resolve_field,
 )
 from app.extraction.extraction_schema import ExtractionField, load_extraction_schema
-from app.ingestion.document_signal import DocumentSignal, build_document_signal
+from app.ingestion.document_signal import DocumentSignal, build_document_signal, ensure_document_ocr
 from app.progress import progress_manager
 from app.settings import get_models_config
 from app.store.db import session_scope
@@ -117,6 +117,7 @@ async def run_extraction_pipeline(dossier_id: str) -> None:
         return [build_document_signal(snap) for snap in doc_snapshots]
 
     signals = await asyncio.to_thread(_prepare)
+    signals_by_id: dict[str, DocumentSignal] = {s.document_id: s for s in signals}
     schema = load_extraction_schema()
     extraction_cfg = get_models_config()["extraction"]
     cross_check_required_fields = set(extraction_cfg.get("cross_check_required_fields", []))
@@ -156,6 +157,11 @@ async def run_extraction_pipeline(dossier_id: str) -> None:
     ) -> dict[str, DocumentExtractionResult]:
         results: dict[str, DocumentExtractionResult] = {}
         for doc, fields_for_doc in calls:
+            # OCR à la demande (§5 OPTIMISATION.md, phase 4) : no-op si le texte est déjà
+            # définitif (option désactivée, ou document déjà OCRisé/natif) ; sinon ré-extrait ce
+            # document précis maintenant, avant de l'analyser.
+            doc = await asyncio.to_thread(ensure_document_ocr, dossier_id, doc)
+            signals_by_id[doc.document_id] = doc
             result = await asyncio.to_thread(analyze_document, doc, fields_for_doc)
             results[doc.document_id] = result
             counters = await asyncio.to_thread(_read_counters)
@@ -177,6 +183,9 @@ async def run_extraction_pipeline(dossier_id: str) -> None:
     # --- Couche 1 : un appel par document de référence --------------------------------------
     layer1_calls = plan_reference_document_calls(schema.fields, signals)
     layer1_results = await _run_calls(layer1_calls)
+    # Les documents OCRisés à la demande pendant la couche 1 doivent être vus à jour par le
+    # recoupement ci-dessous et par la sélection de candidats de la couche 2.
+    signals = list(signals_by_id.values())
 
     layer1_outcomes: dict[str, ExtractionOutcome] = {}
     for f in schema.fields:

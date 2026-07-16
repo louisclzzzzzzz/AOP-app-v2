@@ -195,8 +195,9 @@ def _process_document_text(dossier_id: str, document_id: str, source_dir: Path) 
         }
 
     path = source_dir / rel_path
+    defer_ocr = bool(get_models_config()["text_extraction"].get("defer_ocr_to_extraction", False))
     try:
-        outcome = extract_text_for_file(path, category)
+        outcome = extract_text_for_file(path, category, allow_ocr=not defer_ocr)
     except Exception as exc:
         logger.exception("Échec extraction texte pour %s (%s)", rel_path, document_id)
         with session_scope() as s:

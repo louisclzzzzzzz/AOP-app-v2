@@ -111,6 +111,23 @@ def test_analyze_document_no_fields_skips_llm_call(monkeypatch):
     assert result.error is None
 
 
+def test_analyze_document_empty_content_excerpt_skips_llm_call(monkeypatch):
+    """OCR différé (§5 OPTIMISATION.md phase 4) : si le texte est toujours vide après
+    `ensure_document_ocr` (échec d'OCR, page réellement blanche), inutile d'appeler le LLM."""
+
+    def _boom(**kwargs):
+        raise AssertionError("le LLM ne doit jamais être appelé avec un contenu vide")
+
+    monkeypatch.setattr(engine, "call_structured_chat", _boom)
+
+    result = analyze_document(
+        _doc(final_category="ASS/RC", content_excerpt=""),
+        [_field(reference_categories=["ASS/RC"])],
+    )
+    assert result.decisions == {}
+    assert result.error is None
+
+
 def test_analyze_document_llm_failure_surfaces_error(monkeypatch):
     def _fake_call(**kwargs):
         raise RuntimeError("API indisponible")
@@ -142,6 +159,21 @@ def test_plan_reference_document_calls_groups_fields_by_document():
     doc, fields_for_doc = calls[0]
     assert doc.document_id == "rc-1"
     assert {f.id for f in fields_for_doc} == {"f1", "f2"}
+
+
+def test_plan_reference_document_calls_includes_document_with_pending_ocr():
+    """OCR différé (§5 OPTIMISATION.md phase 4) : un document de référence sans texte pour
+    l'instant (content_excerpt vide) doit quand même être proposé à l'appel — c'est
+    `ensure_document_ocr`, exécuté juste avant, qui a la charge de combler ce vide."""
+    doc_rc = _doc(document_id="rc-1", final_category="ASS/RC", content_excerpt="")
+    fields = [_field(id="f1", reference_categories=["ASS/RC"])]
+
+    calls = plan_reference_document_calls(fields, [doc_rc])
+
+    assert len(calls) == 1
+    doc, fields_for_doc = calls[0]
+    assert doc.document_id == "rc-1"
+    assert {f.id for f in fields_for_doc} == {"f1"}
 
 
 def test_plan_layer2_calls_groups_missing_fields_by_scored_candidate():

@@ -59,6 +59,11 @@ text_extraction:
   # Si la densité moyenne sur tout le document est en-dessous de ce seuil, on considère
   # le PDF comme scanné/plan et on OCRise systématiquement toutes les pages.
   scanned_pdf_density_threshold: 50
+  # Expérimental (phase 4 OPTIMISATION.md) : aucun OCR pendant l'ingestion (étapes 1/2), texte
+  # natif seul. L'OCR n'a lieu qu'à la demande en étape 3, pour les seuls documents concernés par
+  # l'extraction (`ensure_document_ocr`). Repasser à false pour retrouver le comportement validé
+  # (OCR upfront sur tout document analysable, resultats_tests_1/).
+  defer_ocr_to_extraction: true
 
 feature_flags:
   # Pré-calcul du niveau RCMO/TRC via le tableau Feuil1 de donnees_de_ref.md (§6.3, §12)

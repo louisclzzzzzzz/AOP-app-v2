@@ -77,12 +77,44 @@ def _full_ocr(path: Path, *, method_label: str) -> ExtractionOutcome:
     )
 
 
-def extract_pdf(path: Path) -> ExtractionOutcome:
+def _native_only_pdf(page_texts: list[str]) -> ExtractionOutcome:
+    """Mode expérimental « OCR différé » (§5 OPTIMISATION.md, phase 4) : aucun appel OCR, on
+    garde le texte natif tel quel, quelle que soit sa densité. Un document sans aucun texte
+    natif (scan complet, PDF chiffré) reste marqué `deferred` — à ré-extraire à la demande si un
+    document s'avère concerné par l'extraction (`ensure_document_ocr`)."""
+    total_chars = sum(len(t.strip()) for t in page_texts)
+    if total_chars == 0:
+        return ExtractionOutcome(
+            method=TextExtractionMethod.DEFERRED.value,
+            combined_text="",
+            avg_confidence=None,
+            page_count=len(page_texts) or None,
+            char_count=0,
+        )
+    combined = "\n\n".join(f"<!-- page {i} -->\n{t}" for i, t in enumerate(page_texts))
+    pages_meta = [
+        {"index": i, "method": "native_pdf", "confidence": 1.0, "char_count": len(t)}
+        for i, t in enumerate(page_texts)
+    ]
+    return ExtractionOutcome(
+        method=TextExtractionMethod.NATIVE_PDF.value,
+        combined_text=combined,
+        avg_confidence=1.0,
+        page_count=len(page_texts),
+        char_count=len(combined),
+        pages_meta=pages_meta,
+    )
+
+
+def extract_pdf(path: Path, *, allow_ocr: bool = True) -> ExtractionOutcome:
     cfg = get_models_config()["text_extraction"]
     try:
         page_texts = _extract_native_pdf_pages(path)
     except Exception:
         page_texts = []
+
+    if not allow_ocr:
+        return _native_only_pdf(page_texts)
 
     page_count = len(page_texts)
     if page_count == 0:
@@ -152,7 +184,17 @@ def extract_pdf(path: Path) -> ExtractionOutcome:
 
 # --- Image (OCR systématique) -----------------------------------------------------
 
-def extract_image(path: Path) -> ExtractionOutcome:
+def extract_image(path: Path, *, allow_ocr: bool = True) -> ExtractionOutcome:
+    if not allow_ocr:
+        # Une image n'a par définition aucun texte natif : sans OCR, rien à en tirer pour
+        # l'instant — différé, à ré-extraire à la demande si le document devient concerné.
+        return ExtractionOutcome(
+            method=TextExtractionMethod.DEFERRED.value,
+            combined_text="",
+            avg_confidence=None,
+            page_count=None,
+            char_count=0,
+        )
     return _full_ocr(path, method_label=TextExtractionMethod.OCR.value)
 
 
@@ -192,7 +234,7 @@ def _find_soffice() -> str | None:
     return None
 
 
-def extract_doc(path: Path) -> ExtractionOutcome:
+def extract_doc(path: Path, *, allow_ocr: bool = True) -> ExtractionOutcome:
     soffice = _find_soffice()
     if soffice is None:
         return ExtractionOutcome(
@@ -235,8 +277,9 @@ def extract_doc(path: Path) -> ExtractionOutcome:
                 char_count=0,
                 error="Conversion LibreOffice : fichier PDF de sortie introuvable",
             )
-        outcome = extract_pdf(converted_pdf)
-        outcome.method = TextExtractionMethod.DOC_CONVERTED.value
+        outcome = extract_pdf(converted_pdf, allow_ocr=allow_ocr)
+        if outcome.method != TextExtractionMethod.DEFERRED.value:
+            outcome.method = TextExtractionMethod.DOC_CONVERTED.value
         return outcome
 
 
@@ -309,15 +352,15 @@ def extract_spreadsheet(path: Path) -> ExtractionOutcome:
 
 # --- Dispatcher ----------------------------------------------------------------------
 
-def extract_text_for_file(path: Path, category: str) -> ExtractionOutcome:
+def extract_text_for_file(path: Path, category: str, *, allow_ocr: bool = True) -> ExtractionOutcome:
     if category == FileCategory.PDF.value:
-        return extract_pdf(path)
+        return extract_pdf(path, allow_ocr=allow_ocr)
     if category == FileCategory.IMAGE.value:
-        return extract_image(path)
+        return extract_image(path, allow_ocr=allow_ocr)
     if category == FileCategory.DOCX.value:
         return extract_docx(path)
     if category == FileCategory.DOC.value:
-        return extract_doc(path)
+        return extract_doc(path, allow_ocr=allow_ocr)
     if category == FileCategory.SPREADSHEET.value:
         return extract_spreadsheet(path)
     raise ValueError(f"Catégorie non prise en charge pour extraction de texte : {category}")

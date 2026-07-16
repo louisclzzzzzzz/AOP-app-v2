@@ -93,8 +93,11 @@ def plan_reference_document_calls(
     ce document couvre la catégorie."""
     calls: list[tuple[DocumentSignal, list[ExtractionField]]] = []
     for doc in documents:
-        if not doc.content_excerpt or not doc.final_category:
+        if not doc.final_category:
             continue
+        # Un document de référence par catégorie est proposé même si son texte n'a pas encore
+        # été extrait (OCR différé, §5 OPTIMISATION.md) : `ensure_document_ocr` le comble juste
+        # avant l'appel ; `analyze_document` gère proprement le cas où il reste vide malgré tout.
         fields_for_doc = [f for f in schema_fields if doc.final_category in f.reference_categories]
         if fields_for_doc:
             calls.append((doc, fields_for_doc))
@@ -239,6 +242,10 @@ passage probant (chaînes vides si absente)."""
 def analyze_document(doc: DocumentSignal, fields: list[ExtractionField]) -> DocumentExtractionResult:
     """Un seul appel LLM structuré demandant TOUTES les valeurs de `fields` pour ce document."""
     if not fields:
+        return DocumentExtractionResult(document_id=doc.document_id)
+    if not doc.content_excerpt:
+        # OCR différé (§5 OPTIMISATION.md) : ni texte natif ni OCR à la demande n'ont rien donné
+        # (page réellement vide, échec d'OCR) — rien à soumettre au LLM.
         return DocumentExtractionResult(document_id=doc.document_id)
 
     field_ids = tuple(f.id for f in fields)
