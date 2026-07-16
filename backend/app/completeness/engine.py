@@ -21,6 +21,7 @@ from typing import Any, Literal
 from pydantic import BaseModel
 
 from app.completeness.pieces_checklist import Piece
+from app.ingestion.document_signal import DocumentSignal
 from app.mistral.client import call_structured_chat
 from app.settings import get_models_config
 from app.store.models import Certainty, MatchLayer, Presence
@@ -29,17 +30,6 @@ logger = logging.getLogger(__name__)
 
 CONTENT_EXCERPT_MAX_CHARS = 4000
 MAX_LLM_CANDIDATES = 3
-
-
-@dataclass(frozen=True)
-class DocumentSignal:
-    document_id: str
-    filename: str
-    final_category: str | None
-    final_lot: str | None
-    classification_confidence: float | None
-    content_excerpt: str
-    ocr_confidence: float | None
 
 
 @dataclass

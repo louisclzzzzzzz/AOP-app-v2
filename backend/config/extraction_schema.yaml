@@ -1,0 +1,220 @@
+# Schéma des données à extraire — étape 3 (§6.2 du PLAN, source : donnees_de_ref.md, Feuil2).
+#
+# Chaque champ :
+#   id                   : identifiant stable (les 5 utilisés dans models.yaml/extraction/
+#                           cross_check_required_fields doivent exister ici tels quels)
+#   libelle               : nom métier du champ
+#   section               : "principal" (tableau "Données à extraire") ou "complementaire"
+#                           (tableau "Informations complémentaires à vérifier")
+#   resultat_attendu      : indication du format/valeurs attendues (optionnel, aide le LLM)
+#   reference_categories  : chemins de app/classify/taxonomy.yaml, par ordre de priorité —
+#                           le moteur cherche d'abord dans ces catégories
+#   indices               : mots-clés (regex) pour la recherche intra-document élargie,
+#                           utilisée seulement si aucun document de référence ne matche
+
+fields:
+  # --- Section principale (Feuil2, "Données à extraire") --------------------------------
+  - id: nom_moa
+    libelle: "Nom du MOA"
+    section: principal
+    reference_categories: ["ASS/RC", "ASS/CCTP", "ASS/CCAP", "TECH/ARRETE PC"]
+    indices: ["maître d'ouvrage", "MOA"]
+
+  - id: adresse_moa
+    libelle: "Adresse du MOA"
+    section: principal
+    reference_categories: ["ASS/RC", "ASS/CCTP", "ASS/CCAP", "TECH/ARRETE PC"]
+    indices: ["maître d'ouvrage", "siège social", "adresse"]
+
+  - id: garanties_demandees
+    libelle: "Garanties demandées"
+    section: principal
+    resultat_attendu: "TRC = tous risques chantier, DO = dommage ouvrage, CNR = constructeur non réalisateur, CCRD = contrat commun de responsabilité décennale, RCMOA/RCMO = responsabilité civile du maître d'ouvrage, TRM = tous risques montage"
+    reference_categories: ["ASS/RC", "ASS/CCTP", "ASS/CCAP"]
+    indices:
+      - "tous risques chantier"
+      - "\\bTRC\\b"
+      - "dommage[s]? ouvrage"
+      - "\\bDO\\b"
+      - "constructeur non réalisateur"
+      - "\\bCNR\\b"
+      - "responsabilité civile du maître d'ouvrage"
+      - "\\bRCMOA?\\b"
+      - "tous risques montage"
+      - "\\bTRM\\b"
+
+  - id: travaux_neufs_ou_existant
+    libelle: "Travaux neufs, travaux sur existant"
+    section: principal
+    reference_categories: ["ASS/RC", "ASS/CCTP", "ASS/CCAP"]
+    indices: ["travaux neufs", "travaux sur existant", "rénovation", "réhabilitation"]
+
+  - id: nom_chantier
+    libelle: "Nom du chantier"
+    section: principal
+    reference_categories: ["ASS/RC", "ASS/CCTP", "ASS/CCAP"]
+    indices: ["opération", "chantier"]
+
+  - id: adresse_chantier
+    libelle: "Adresse du chantier"
+    section: principal
+    reference_categories: ["ASS/RC", "ASS/CCTP", "ASS/CCAP"]
+    indices: ["adresse du chantier", "lieu des travaux", "situation de l'opération"]
+
+  - id: destination_batiment
+    libelle: "Destination du bâtiment"
+    section: principal
+    resultat_attendu: "Maison individuelle, bâtiment d'habitation collectif, Tertiaire, bâtiment agricole, bâtiment de soins hospitaliers/hôpital, …"
+    reference_categories: ["ASS/RC", "ASS/CCTP", "ASS/CCAP"]
+    indices: ["destination", "usage du bâtiment"]
+
+  - id: existence_controle_technique
+    libelle: "Existence mission de contrôle technique"
+    section: principal
+    resultat_attendu: "Oui/non"
+    reference_categories: ["ASS/RC", "ASS/CCTP", "ASS/CCAP"]
+    indices: ["contrôle technique", "bureau de contrôle"]
+
+  - id: existence_rict
+    libelle: "Existence RICT"
+    section: principal
+    resultat_attendu: "Oui/non"
+    reference_categories: ["ASS/RC", "ASS/CCTP", "ASS/CCAP"]
+    indices: ["RICT", "rapport initial de contrôle technique"]
+
+  - id: existence_bureau_etude_sol
+    libelle: "Existence bureau d'étude de sol"
+    section: principal
+    resultat_attendu: "Oui/non"
+    reference_categories: ["ASS/RC", "ASS/CCTP", "ASS/CCAP"]
+    indices: ["bureau d'étude de sol", "étude géotechnique", "géotechnicien"]
+
+  - id: existence_mission_g2pro
+    libelle: "Existence mission G2PRO"
+    section: principal
+    resultat_attendu: "Oui/non"
+    reference_categories: ["ASS/RC", "ASS/CCTP", "ASS/CCAP"]
+    indices: ["G2 PRO", "G2PRO", "mission G2"]
+
+  - id: montants_totaux_ht
+    libelle: "Montants totaux HT"
+    section: principal
+    reference_categories: ["ASS/RC", "ASS/CCTP", "ASS/CCAP"]
+    indices: ["montant.{0,20}HT", "hors taxes"]
+
+  - id: montants_totaux_ttc
+    libelle: "Montants totaux TTC"
+    section: principal
+    reference_categories: ["ASS/RC", "ASS/CCTP", "ASS/CCAP"]
+    indices: ["montant.{0,20}TTC", "toutes taxes comprises"]
+
+  - id: montants_honoraires
+    libelle: "Montants des honoraires"
+    section: principal
+    reference_categories: ["ASS/RC", "ASS/CCTP", "ASS/CCAP"]
+    indices: ["honoraires"]
+
+  - id: montants_existants
+    libelle: "Montants des existants"
+    section: principal
+    resultat_attendu: "Si travaux sur existants"
+    reference_categories: ["ASS/RC", "ASS/CCTP", "ASS/CCAP"]
+    indices: ["valeur des existants", "montant des existants"]
+
+  - id: equipe_moe
+    libelle: "Équipe de MOE"
+    section: principal
+    resultat_attendu: "Nom et adresse : architecte, bureau d'étude structure, sol, bureau de contrôle, fluides/CVC, toutes spécialités, …"
+    reference_categories: ["ASS/RC", "ASS/CCTP", "ASS/CCAP"]
+    indices: ["maîtrise d'œuvre", "architecte", "bureau d'étude", "BET"]
+
+  - id: nombre_batiments_neufs
+    libelle: "Nombre de bâtiments neufs"
+    section: principal
+    reference_categories: ["ASS/RC", "ASS/CCTP", "ASS/CCAP"]
+    indices: ["bâtiment[s]? neuf[s]?"]
+
+  - id: nombre_batiments_existants
+    libelle: "Nombre de bâtiments existants"
+    section: principal
+    reference_categories: ["ASS/RC", "ASS/CCTP", "ASS/CCAP"]
+    indices: ["bâtiment[s]? existant[s]?"]
+
+  - id: nombre_niveaux_par_batiment
+    libelle: "Nombre de niveaux par bâtiment"
+    section: principal
+    reference_categories: ["ASS/RC", "ASS/CCTP", "ASS/CCAP"]
+    indices: ["niveau[x]?", "R\\+\\d", "sous-sol"]
+
+  - id: date_debut_travaux
+    libelle: "Date de début des travaux"
+    section: principal
+    reference_categories: ["ASS/RC", "ASS/CCTP", "ASS/CCAP"]
+    indices: ["début des travaux", "démarrage des travaux"]
+
+  - id: date_fin_previsionnelle
+    libelle: "Date prévisionnelle de fin"
+    section: principal
+    reference_categories: ["ASS/RC", "ASS/CCTP", "ASS/CCAP"]
+    indices: ["fin prévisionnelle", "durée des travaux", "délai d'exécution"]
+
+  - id: reception_echelonnee
+    libelle: "Réception échelonnée"
+    section: principal
+    reference_categories: ["ASS/RC", "ASS/CCTP", "ASS/CCAP"]
+    indices: ["réception échelonnée", "réceptions partielles"]
+
+  - id: missions_bureau_controle
+    libelle: "Missions du bureau de contrôle"
+    section: principal
+    resultat_attendu: "Liste des missions (L, LE, PS, …)"
+    reference_categories: ["ASS/RC", "ASS/CCTP", "ASS/CCAP"]
+    indices: ["mission[s]? L", "mission[s]? PS", "mission[s]? du bureau de contrôle"]
+
+  - id: etude_de_sol
+    libelle: "Étude de sol"
+    section: principal
+    resultat_attendu: "Rechercher G2 AVP, G2 PRO, G5"
+    reference_categories: ["TECH/ETUDE DE SOL"]
+    indices: ["G2 AVP", "G2 PRO", "\\bG5\\b", "étude géotechnique"]
+
+  # --- Section complémentaire (Feuil2, "Informations complémentaires à vérifier") -------
+  - id: distance_avoisinants
+    libelle: "Distance des avoisinants"
+    section: complementaire
+    reference_categories: ["ASS/RC", "ASS/CCTP", "ASS/CCAP"]
+    indices: ["avoisinant", "mitoyen", "distance"]
+
+  - id: refere_preventif
+    libelle: "Existence d'un référé préventif / constat d'huissier"
+    section: complementaire
+    resultat_attendu: "Si avoisinants"
+    reference_categories: ["ASS/RC", "ASS/CCTP", "ASS/CCAP"]
+    indices: ["référé préventif", "constat d'huissier"]
+
+  - id: mission_av
+    libelle: "Mission AV"
+    section: complementaire
+    resultat_attendu: "Si avoisinants"
+    reference_categories: ["ASS/RC", "ASS/CCTP", "ASS/CCAP"]
+    indices: ["mission AV", "avoisinants"]
+
+  - id: parties_enterrees
+    libelle: "Parties enterrées"
+    section: complementaire
+    reference_categories: ["TECH/NOTICE", "ASS/CCTP", "TECH/PLANS"]
+    indices: ["sous-sol", "partie enterrée", "infrastructure enterrée", "niveau[x]? enterré[s]?"]
+
+  - id: niveau_hautes_eaux
+    libelle: "Niveau des plus hautes eaux"
+    section: complementaire
+    resultat_attendu: "Rechercher EE, EB, EH"
+    reference_categories: ["TECH/ETUDE DE SOL"]
+    indices: ["plus hautes eaux", "\\bEE\\b", "\\bEB\\b", "\\bEH\\b", "niveau piézométrique"]
+
+  - id: stratigraphie
+    libelle: "Stratigraphie"
+    section: complementaire
+    resultat_attendu: "Couches du sous-sol, lithologie"
+    reference_categories: ["TECH/ETUDE DE SOL"]
+    indices: ["stratigraphie", "lithologie", "couches du sous-sol"]

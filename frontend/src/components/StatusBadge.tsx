@@ -13,6 +13,9 @@ const LABELS: Record<DossierStatus, string> = {
   analyzing_completeness: 'Analyse de complétude…',
   completeness_review: 'Complétude à valider (étape 2)',
   completeness_validated: 'Étape 2 terminée',
+  extracting: 'Extraction des données…',
+  extraction_review: 'Extraction à valider (étape 3)',
+  extraction_validated: 'Étape 3 terminée',
   error: 'Erreur',
 }
 
@@ -29,6 +32,9 @@ const STYLES: Record<DossierStatus, string> = {
   analyzing_completeness: 'bg-blue-100 text-blue-700',
   completeness_review: 'bg-amber-100 text-amber-700',
   completeness_validated: 'bg-green-100 text-green-700',
+  extracting: 'bg-blue-100 text-blue-700',
+  extraction_review: 'bg-amber-100 text-amber-700',
+  extraction_validated: 'bg-green-100 text-green-700',
   error: 'bg-red-100 text-red-700',
 }
 
@@ -39,6 +45,7 @@ const ACTIVE_STATUSES: DossierStatus[] = [
   'classifying',
   'reorganizing',
   'analyzing_completeness',
+  'extracting',
 ]
 
 export function StatusBadge({ status }: { status: DossierStatus }) {

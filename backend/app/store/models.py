@@ -38,6 +38,9 @@ class DossierStatus(str, enum.Enum):
     ANALYZING_COMPLETENESS = "analyzing_completeness"
     COMPLETENESS_REVIEW = "completeness_review"  # [CHECKPOINT étape 2] résultats proposés, en attente de validation
     COMPLETENESS_VALIDATED = "completeness_validated"  # étape 2 validée — prêt pour l'étape 3
+    EXTRACTING = "extracting"
+    EXTRACTION_REVIEW = "extraction_review"  # [CHECKPOINT étape 3] valeurs proposées, en attente de validation
+    EXTRACTION_VALIDATED = "extraction_validated"  # étape 3 validée — analyse du DCE terminée
     ERROR = "error"
 
 
@@ -108,6 +111,20 @@ class Certainty(str, enum.Enum):
     A_VERIFIER = "a_verifier"
 
 
+class ExtractionStatus(str, enum.Enum):
+    PENDING = "pending"  # pas encore analysé
+    PROPOSED = "proposed"  # proposition du moteur, pas encore revue
+    CORRECTED = "corrected"  # corrigée manuellement par l'utilisateur (checkpoint)
+    ERROR = "error"
+
+
+class CrossCheckStatus(str, enum.Enum):
+    COHERENT = "coherent"  # ≥2 documents de référence concordants
+    INCOHERENT = "incoherent"  # ≥2 documents de référence divergents — à trancher humainement
+    SINGLE_SOURCE = "single_source"  # un seul document de référence disponible, pas de recoupement possible
+    NOT_APPLICABLE = "not_applicable"  # champ non soumis au recoupement (§ models.yaml)
+
+
 class Dossier(Base):
     __tablename__ = "dossiers"
 
@@ -141,6 +158,19 @@ class Dossier(Base):
     completeness_report_md_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
     completeness_validated_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
+    # Compteurs étape 3 (§6) — sur l'intégralité du schéma d'extraction (pas de sélection)
+    fields_total: Mapped[int] = mapped_column(Integer, default=0)
+    fields_extracted: Mapped[int] = mapped_column(Integer, default=0)
+    fields_present: Mapped[int] = mapped_column(Integer, default=0)
+    fields_absent: Mapped[int] = mapped_column(Integer, default=0)
+    fields_incoherent: Mapped[int] = mapped_column(Integer, default=0)
+    fields_error: Mapped[int] = mapped_column(Integer, default=0)
+
+    # Rapport d'extraction (§6.4), écrit à la validation du checkpoint étape 3
+    extraction_report_json_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    extraction_report_md_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    extraction_validated_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_now)
     updated_at: Mapped[dt.datetime] = mapped_column(
         DateTime(timezone=True), default=_now, onupdate=_now
@@ -148,6 +178,7 @@ class Dossier(Base):
 
     documents: Mapped[list["Document"]] = relationship(back_populates="dossier")
     completeness_checks: Mapped[list["CompletenessCheck"]] = relationship(back_populates="dossier")
+    extraction_results: Mapped[list["ExtractionResult"]] = relationship(back_populates="dossier")
 
 
 class Document(Base):
@@ -305,3 +336,48 @@ class CompletenessCheck(Base):
     )
 
     dossier: Mapped["Dossier"] = relationship(back_populates="completeness_checks")
+
+
+class ExtractionResult(Base):
+    """Résultat d'extraction (§6) pour un champ (`config/extraction_schema.yaml`) d'un dossier
+    donné. Contrairement à `CompletenessCheck`, pas de notion de sélection : le schéma
+    d'extraction est fixe, tous les champs sont toujours analysés. Miroir du pattern
+    proposed_*/final_* déjà utilisé pour la classification et la complétude.
+    """
+
+    __tablename__ = "extraction_results"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    dossier_id: Mapped[str] = mapped_column(ForeignKey("dossiers.id"), index=True)
+    field_id: Mapped[str] = mapped_column(String(64))
+
+    status: Mapped[str] = mapped_column(String(16), default=ExtractionStatus.PENDING.value)
+    extraction_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    match_layer: Mapped[str | None] = mapped_column(String(16), nullable=True)
+
+    # Proposition du moteur, jamais écrasée après coup — trace de la décision d'origine
+    proposed_value: Mapped[str | None] = mapped_column(Text, nullable=True)
+    proposed_confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+    proposed_justification: Mapped[str | None] = mapped_column(Text, nullable=True)
+    proposed_citation: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # JSON: liste de {document_id, filename, value, confidence} — un par document interrogé,
+    # utile surtout pour afficher le détail d'un conflit de recoupement
+    proposed_sources_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Statut de recoupement pour les champs critiques (montants, dates, garanties) — null si
+    # le champ n'est pas soumis au recoupement (models.yaml/extraction/cross_check_required_fields)
+    cross_check_status: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    extraction_model: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    extraction_model_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    analyzed_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    # Valeur finale (= proposition par défaut, écrasée par une correction humaine au checkpoint)
+    final_value: Mapped[str | None] = mapped_column(Text, nullable=True)
+    is_manually_corrected: Mapped[bool] = mapped_column(default=False)
+    corrected_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    updated_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True), default=_now, onupdate=_now
+    )
+
+    dossier: Mapped["Dossier"] = relationship(back_populates="extraction_results")

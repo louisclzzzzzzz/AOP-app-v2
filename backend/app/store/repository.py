@@ -17,6 +17,8 @@ from app.store.models import (
     DossierStatus,
     Document,
     DocumentStage,
+    ExtractionResult,
+    ExtractionStatus,
     TextCache,
 )
 
@@ -104,6 +106,34 @@ def mark_completeness_validated(
     dossier.completeness_report_json_path = json_path
     dossier.completeness_report_md_path = md_path
     dossier.completeness_validated_at = dt.datetime.now(dt.timezone.utc)
+    session.add(dossier)
+    session.flush()
+
+
+def recompute_extraction_counters(session: Session, dossier: Dossier) -> None:
+    results = session.scalars(
+        select(ExtractionResult).where(ExtractionResult.dossier_id == dossier.id)
+    ).all()
+    dossier.fields_total = len(results)
+    dossier.fields_extracted = sum(
+        1
+        for r in results
+        if r.status in (ExtractionStatus.PROPOSED.value, ExtractionStatus.CORRECTED.value, ExtractionStatus.ERROR.value)
+    )
+    dossier.fields_present = sum(1 for r in results if r.final_value)
+    dossier.fields_absent = sum(1 for r in results if r.status != ExtractionStatus.PENDING.value and not r.final_value)
+    dossier.fields_incoherent = sum(1 for r in results if r.cross_check_status == "incoherent")
+    dossier.fields_error = sum(1 for r in results if r.status == ExtractionStatus.ERROR.value)
+    session.add(dossier)
+    session.flush()
+
+
+def mark_extraction_validated(
+    session: Session, dossier: Dossier, *, json_path: str, md_path: str
+) -> None:
+    dossier.extraction_report_json_path = json_path
+    dossier.extraction_report_md_path = md_path
+    dossier.extraction_validated_at = dt.datetime.now(dt.timezone.utc)
     session.add(dossier)
     session.flush()
 
@@ -353,4 +383,74 @@ def set_completeness_correction(
     check.corrected_at = dt.datetime.now(dt.timezone.utc)
     check.status = CompletenessStatus.CORRECTED.value
     session.add(check)
+    session.flush()
+
+
+# --- ExtractionResult ----------------------------------------------------------
+
+def create_extraction_result(session: Session, **kwargs) -> ExtractionResult:
+    result = ExtractionResult(**kwargs)
+    session.add(result)
+    session.flush()
+    return result
+
+
+def list_extraction_results(session: Session, dossier_id: str) -> list[ExtractionResult]:
+    stmt = (
+        select(ExtractionResult)
+        .where(ExtractionResult.dossier_id == dossier_id)
+        .order_by(ExtractionResult.field_id)
+    )
+    return list(session.scalars(stmt))
+
+
+def get_extraction_result_by_field(
+    session: Session, dossier_id: str, field_id: str
+) -> ExtractionResult | None:
+    stmt = select(ExtractionResult).where(
+        ExtractionResult.dossier_id == dossier_id, ExtractionResult.field_id == field_id
+    )
+    return session.scalars(stmt).first()
+
+
+def set_extraction_result(
+    session: Session,
+    result: ExtractionResult,
+    *,
+    match_layer: str,
+    value: str | None,
+    confidence: float | None,
+    justification: str | None,
+    citation: str | None,
+    sources: list[dict[str, Any]],
+    cross_check_status: str | None,
+    model_name: str | None,
+    model_version: str | None,
+    error: str | None,
+) -> None:
+    result.match_layer = match_layer
+    result.proposed_value = value
+    result.proposed_confidence = confidence
+    result.proposed_justification = justification
+    result.proposed_citation = citation
+    result.proposed_sources_json = json.dumps(sources, ensure_ascii=False)
+    result.cross_check_status = cross_check_status
+    result.extraction_model = model_name
+    result.extraction_model_version = model_version
+    result.analyzed_at = dt.datetime.now(dt.timezone.utc)
+    result.extraction_error = error
+    result.status = ExtractionStatus.ERROR.value if error else ExtractionStatus.PROPOSED.value
+    # La valeur finale démarre égale à la proposition — écrasée seulement par une correction
+    # humaine explicite (checkpoint), jamais silencieusement.
+    result.final_value = value
+    session.add(result)
+    session.flush()
+
+
+def set_extraction_correction(session: Session, result: ExtractionResult, *, final_value: str) -> None:
+    result.final_value = final_value
+    result.is_manually_corrected = True
+    result.corrected_at = dt.datetime.now(dt.timezone.utc)
+    result.status = ExtractionStatus.CORRECTED.value
+    session.add(result)
     session.flush()

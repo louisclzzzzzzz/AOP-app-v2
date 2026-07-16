@@ -9,6 +9,12 @@ export interface Counters {
   pieces_present: number
   pieces_absent: number
   pieces_error: number
+  fields_total: number
+  fields_extracted: number
+  fields_present: number
+  fields_absent: number
+  fields_incoherent: number
+  fields_error: number
 }
 
 export type DossierStatus =
@@ -24,6 +30,9 @@ export type DossierStatus =
   | 'analyzing_completeness'
   | 'completeness_review'
   | 'completeness_validated'
+  | 'extracting'
+  | 'extraction_review'
+  | 'extraction_validated'
   | 'error'
 
 export interface Dossier {
@@ -35,6 +44,7 @@ export interface Dossier {
   counters: Counters
   reorg_applied_at: string | null
   completeness_validated_at: string | null
+  extraction_validated_at: string | null
   created_at: string
   updated_at: string
 }
@@ -211,6 +221,75 @@ export interface CompletenessReport {
 export interface CompletenessApplyResult {
   dossier: Dossier
   report: CompletenessReport
+}
+
+export interface ExtractionFieldItem {
+  id: string
+  libelle: string
+  section: 'principal' | 'complementaire'
+  resultat_attendu: string | null
+  reference_categories: string[]
+}
+
+export interface ExtractionSource {
+  document_id: string
+  filename: string
+  value: string
+  confidence: number | null
+}
+
+export interface ExtractionEntry {
+  field_id: string
+  libelle: string
+  section: 'principal' | 'complementaire'
+  resultat_attendu: string | null
+
+  status: 'pending' | 'proposed' | 'corrected' | 'error'
+  extraction_error: string | null
+  match_layer: 'file' | 'content' | 'llm' | 'none' | null
+
+  proposed_value: string | null
+  confidence: number | null
+  justification: string | null
+  citation: string | null
+  sources: ExtractionSource[]
+  cross_check_status: 'coherent' | 'incoherent' | 'single_source' | 'not_applicable' | null
+  model_name: string | null
+  model_version: string | null
+
+  final_value: string | null
+  is_manually_corrected: boolean
+}
+
+export interface ExtractionCorrection {
+  final_value: string
+}
+
+export interface ExtractionReportEntry {
+  field_id: string
+  libelle: string
+  section: string
+  value: string | null
+  justification: string | null
+  citation: string | null
+  sources: (ExtractionSource & { relative_path: string | null })[]
+  cross_check_status: string | null
+  manually_corrected: boolean
+  model: string | null
+  model_version: string | null
+}
+
+export interface ExtractionReport {
+  dossier_id: string
+  original_filename: string
+  generated_at: string
+  total_fields: number
+  entries: ExtractionReportEntry[]
+}
+
+export interface ExtractionApplyResult {
+  dossier: Dossier
+  report: ExtractionReport
 }
 
 export interface ProgressEvent {

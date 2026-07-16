@@ -9,6 +9,11 @@ import type {
   Dossier,
   DocumentItem,
   DocumentText,
+  ExtractionApplyResult,
+  ExtractionCorrection,
+  ExtractionEntry,
+  ExtractionFieldItem,
+  ExtractionReport,
   PieceChecklistItem,
   ReorgApplyResult,
   ReorgReport,
@@ -131,6 +136,44 @@ export async function validateCompleteness(dossierId: string): Promise<Completen
 export async function getCompletenessReport(dossierId: string): Promise<CompletenessReport> {
   const res = await fetch(`/api/dossiers/${dossierId}/completeness/report`)
   return handle<CompletenessReport>(res)
+}
+
+export async function getExtractionSchema(): Promise<ExtractionFieldItem[]> {
+  const res = await fetch('/api/extraction-schema')
+  return handle<ExtractionFieldItem[]>(res)
+}
+
+export async function getExtraction(dossierId: string): Promise<ExtractionEntry[]> {
+  const res = await fetch(`/api/dossiers/${dossierId}/extraction`)
+  return handle<ExtractionEntry[]>(res)
+}
+
+export async function runExtractionAnalysis(dossierId: string): Promise<Dossier> {
+  const res = await fetch(`/api/dossiers/${dossierId}/extraction/run`, { method: 'POST' })
+  return handle<Dossier>(res)
+}
+
+export async function correctExtraction(
+  dossierId: string,
+  fieldId: string,
+  correction: ExtractionCorrection,
+): Promise<ExtractionEntry> {
+  const res = await fetch(`/api/dossiers/${dossierId}/extraction/${fieldId}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(correction),
+  })
+  return handle<ExtractionEntry>(res)
+}
+
+export async function validateExtraction(dossierId: string): Promise<ExtractionApplyResult> {
+  const res = await fetch(`/api/dossiers/${dossierId}/extraction/validate`, { method: 'POST' })
+  return handle<ExtractionApplyResult>(res)
+}
+
+export async function getExtractionReport(dossierId: string): Promise<ExtractionReport> {
+  const res = await fetch(`/api/dossiers/${dossierId}/extraction/report`)
+  return handle<ExtractionReport>(res)
 }
 
 export function dossierWebSocketUrl(id: string): string {

@@ -14,6 +14,8 @@ from app.api.classification import taxonomy_router
 from app.api.completeness import pieces_checklist_router
 from app.api.completeness import router as completeness_router
 from app.api.dossiers import router as dossiers_router
+from app.api.extraction import extraction_schema_router
+from app.api.extraction import router as extraction_router
 from app.api.websocket import router as websocket_router
 from app.store.db import init_db
 
@@ -43,6 +45,8 @@ app.include_router(classification_router)
 app.include_router(taxonomy_router)
 app.include_router(completeness_router)
 app.include_router(pieces_checklist_router)
+app.include_router(extraction_router)
+app.include_router(extraction_schema_router)
 app.include_router(websocket_router)
 
 

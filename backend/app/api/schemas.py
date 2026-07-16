@@ -17,6 +17,12 @@ class CountersOut(BaseModel):
     pieces_present: int = 0
     pieces_absent: int = 0
     pieces_error: int = 0
+    fields_total: int = 0
+    fields_extracted: int = 0
+    fields_present: int = 0
+    fields_absent: int = 0
+    fields_incoherent: int = 0
+    fields_error: int = 0
 
 
 class DossierOut(BaseModel):
@@ -28,6 +34,7 @@ class DossierOut(BaseModel):
     counters: CountersOut
     reorg_applied_at: dt.datetime | None = None
     completeness_validated_at: dt.datetime | None = None
+    extraction_validated_at: dt.datetime | None = None
     created_at: dt.datetime
     updated_at: dt.datetime
 
@@ -160,5 +167,52 @@ class CompletenessCorrectionIn(BaseModel):
 
 
 class CompletenessApplyOut(BaseModel):
+    dossier: DossierOut
+    report: dict
+
+
+class ExtractionFieldOut(BaseModel):
+    id: str
+    libelle: str
+    section: str
+    resultat_attendu: str | None
+    reference_categories: list[str]
+
+
+class ExtractionSourceOut(BaseModel):
+    document_id: str
+    filename: str
+    value: str
+    confidence: float | None
+
+
+class ExtractionEntryOut(BaseModel):
+    field_id: str
+    libelle: str
+    section: str
+    resultat_attendu: str | None
+
+    status: str
+    extraction_error: str | None
+    match_layer: str | None
+
+    proposed_value: str | None
+    confidence: float | None
+    justification: str | None
+    citation: str | None
+    sources: list[ExtractionSourceOut]
+    cross_check_status: str | None
+    model_name: str | None
+    model_version: str | None
+
+    final_value: str | None
+    is_manually_corrected: bool
+
+
+class ExtractionCorrectionIn(BaseModel):
+    final_value: str
+
+
+class ExtractionApplyOut(BaseModel):
     dossier: DossierOut
     report: dict

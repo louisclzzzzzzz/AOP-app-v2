@@ -13,12 +13,12 @@ import logging
 
 from sqlalchemy.orm import Session
 
-from app.completeness.engine import DocumentSignal, analyze_piece
+from app.completeness.engine import analyze_piece
 from app.completeness.pieces_checklist import Piece, PiecesChecklist, load_pieces_checklist
-from app.ocr.cache import read_text_cache
+from app.ingestion.document_signal import DocumentSignal, build_document_signal
 from app.progress import progress_manager
 from app.store.db import session_scope
-from app.store.models import CompletenessCheck, Dossier, DossierStatus, TextCache
+from app.store.models import CompletenessCheck, Dossier, DossierStatus
 from app.store.repository import (
     create_completeness_check,
     get_completeness_check_by_piece,
@@ -64,31 +64,6 @@ def _counters(dossier: Dossier) -> dict[str, int]:
     }
 
 
-def _document_signal(doc_snapshot: dict) -> DocumentSignal:
-    """Reçoit un instantané déjà détaché de sa session (dict de scalaires), pour ne jamais
-    garder deux sessions ouvertes simultanément (une par document en plus de celle qui liste
-    les documents) — même prudence que `classify/pipeline.py::_classify_one`."""
-    content_excerpt = ""
-    ocr_confidence: float | None = None
-    text_cache_id = doc_snapshot["text_cache_id"]
-    if text_cache_id:
-        with session_scope() as s:
-            cache = s.get(TextCache, text_cache_id)
-            text_path = cache.text_path if cache else None
-            ocr_confidence = cache.avg_confidence if cache else None
-        if text_path:
-            content_excerpt = read_text_cache(text_path)
-    return DocumentSignal(
-        document_id=doc_snapshot["id"],
-        filename=doc_snapshot["filename"],
-        final_category=doc_snapshot["final_category"],
-        final_lot=doc_snapshot["final_lot"],
-        classification_confidence=doc_snapshot["classification_confidence"],
-        content_excerpt=content_excerpt,
-        ocr_confidence=ocr_confidence,
-    )
-
-
 async def run_completeness_pipeline(dossier_id: str) -> None:
     def _set_status(status: DossierStatus) -> None:
         with session_scope() as s:
@@ -121,7 +96,7 @@ async def run_completeness_pipeline(dossier_id: str) -> None:
                 for d in documents
             ]
             all_lots = sorted({d.final_lot for d in documents if d.final_lot})
-        signals = [_document_signal(snap) for snap in doc_snapshots]
+        signals = [build_document_signal(snap) for snap in doc_snapshots]
         return piece_ids, signals, all_lots
 
     piece_ids, signals, all_lots = await asyncio.to_thread(_prepare)

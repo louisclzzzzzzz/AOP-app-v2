@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { dossierWebSocketUrl, getDossier, getDossierDocuments } from '../api'
 import type { Counters, Dossier, DossierStatus, DocumentItem, ProgressEvent } from '../types'
 import { CompletenessChecklist } from './CompletenessChecklist'
+import { ExtractionSheet } from './ExtractionSheet'
 import { ReorganizationPlan } from './ReorganizationPlan'
 import { StatusBadge } from './StatusBadge'
 
@@ -17,6 +18,7 @@ const STAGE_LABELS: Record<string, string> = {
   classify: 'Classification (étape 1)',
   reorganize: 'Copie triée',
   completeness: 'Analyse de complétude (étape 2)',
+  extraction: 'Extraction de données (étape 3)',
   done: 'Terminé',
   error: 'Erreur',
 }
@@ -27,6 +29,12 @@ const STEP2_STATUSES: Dossier['status'][] = [
   'analyzing_completeness',
   'completeness_review',
   'completeness_validated',
+]
+const STEP3_STATUSES: Dossier['status'][] = [
+  'completeness_validated',
+  'extracting',
+  'extraction_review',
+  'extraction_validated',
 ]
 
 function computeProgress(
@@ -54,10 +62,28 @@ function computeProgress(
         label: 'Analyse de complétude',
       }
     case 'completeness_review':
-    case 'completeness_validated':
       return {
         processed: counters.pieces_selected,
         total: counters.pieces_selected,
+        label: 'Terminé',
+      }
+    case 'completeness_validated':
+      return {
+        processed: counters.total_files,
+        total: counters.total_files,
+        label: 'Terminé',
+      }
+    case 'extracting':
+      return {
+        processed: counters.fields_extracted,
+        total: counters.fields_total,
+        label: 'Extraction de données',
+      }
+    case 'extraction_review':
+    case 'extraction_validated':
+      return {
+        processed: counters.fields_total,
+        total: counters.fields_total,
         label: 'Terminé',
       }
     default:
@@ -114,7 +140,11 @@ export function DossierProgress({ dossierId, onBack }: Props) {
   const { counters } = dossier
   const { processed, total, label: progressLabel } = computeProgress(dossier.status, counters)
   const progressPct = total > 0 ? Math.round((processed / total) * 100) : 0
-  const progressUnit = STEP2_STATUSES.includes(dossier.status) ? 'pièces' : 'fichiers'
+  const progressUnit = ['analyzing_completeness', 'completeness_review'].includes(dossier.status)
+    ? 'pièces'
+    : ['extracting', 'extraction_review', 'extraction_validated'].includes(dossier.status)
+      ? 'champs'
+      : 'fichiers'
 
   return (
     <div className="flex flex-col gap-6">
@@ -182,6 +212,15 @@ export function DossierProgress({ dossierId, onBack }: Props) {
 
       {STEP2_STATUSES.includes(dossier.status) && (
         <CompletenessChecklist
+          dossierId={dossierId}
+          status={dossier.status}
+          documents={documents}
+          onApplied={handleApplied}
+        />
+      )}
+
+      {STEP3_STATUSES.includes(dossier.status) && (
+        <ExtractionSheet
           dossierId={dossierId}
           status={dossier.status}
           documents={documents}
