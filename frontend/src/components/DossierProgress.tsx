@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { dossierWebSocketUrl, getDossier, getDossierDocuments } from '../api'
 import type { Counters, Dossier, DossierStatus, DocumentItem, ProgressEvent } from '../types'
+import { isAtOrAfter } from '../statusFlow'
 import { CompletenessChecklist } from './CompletenessChecklist'
 import { ExtractionSheet } from './ExtractionSheet'
 import { ReorganizationPlan } from './ReorganizationPlan'
@@ -22,20 +23,6 @@ const STAGE_LABELS: Record<string, string> = {
   done: 'Terminé',
   error: 'Erreur',
 }
-
-const STEP1_STATUSES: Dossier['status'][] = ['classified', 'reorganizing', 'reorganized']
-const STEP2_STATUSES: Dossier['status'][] = [
-  'reorganized',
-  'analyzing_completeness',
-  'completeness_review',
-  'completeness_validated',
-]
-const STEP3_STATUSES: Dossier['status'][] = [
-  'completeness_validated',
-  'extracting',
-  'extraction_review',
-  'extraction_validated',
-]
 
 function computeProgress(
   status: DossierStatus,
@@ -206,11 +193,11 @@ export function DossierProgress({ dossierId, onBack }: Props) {
         </div>
       </div>
 
-      {STEP1_STATUSES.includes(dossier.status) && (
+      {isAtOrAfter(dossier.status, 'classified') && (
         <ReorganizationPlan dossierId={dossierId} status={dossier.status} onApplied={handleApplied} />
       )}
 
-      {STEP2_STATUSES.includes(dossier.status) && (
+      {isAtOrAfter(dossier.status, 'reorganized') && (
         <CompletenessChecklist
           dossierId={dossierId}
           status={dossier.status}
@@ -219,7 +206,7 @@ export function DossierProgress({ dossierId, onBack }: Props) {
         />
       )}
 
-      {STEP3_STATUSES.includes(dossier.status) && (
+      {isAtOrAfter(dossier.status, 'completeness_validated') && (
         <ExtractionSheet
           dossierId={dossierId}
           status={dossier.status}

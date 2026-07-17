@@ -7,6 +7,7 @@ import {
   getTaxonomy,
 } from '../api'
 import type { ClassificationEntry, DossierStatus, ReorgReport, TaxonomyCategory } from '../types'
+import { isAtOrAfter } from '../statusFlow'
 import { OrganizedTree, classificationEntriesToTree, reorgReportEntriesToTree } from './OrganizedTree'
 
 interface Props {
@@ -39,7 +40,7 @@ export function ReorganizationPlan({ dossierId, status, onApplied }: Props) {
   }, [])
 
   useEffect(() => {
-    if (status === 'reorganized') {
+    if (isAtOrAfter(status, 'reorganized')) {
       getReorganizationReport(dossierId).then(setReport).catch(() => {})
     } else if (status === 'classified') {
       refreshEntries()
@@ -87,7 +88,7 @@ export function ReorganizationPlan({ dossierId, status, onApplied }: Props) {
   const classificationTree = useMemo(() => (entries ? classificationEntriesToTree(entries) : null), [entries])
   const reportTree = useMemo(() => (report ? reorgReportEntriesToTree(report.entries) : null), [report])
 
-  if (status === 'reorganized') {
+  if (isAtOrAfter(status, 'reorganized')) {
     return (
       <div className="flex flex-col gap-4">
         <h3 className="text-sm font-medium text-slate-600">
