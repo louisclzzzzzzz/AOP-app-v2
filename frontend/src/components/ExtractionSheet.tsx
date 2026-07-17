@@ -1,11 +1,20 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { correctExtraction, getExtraction, runExtractionAnalysis, validateExtraction } from '../api'
-import type { DocumentItem, DossierStatus, ExtractionEntry } from '../types'
+import {
+  correctExtraction,
+  getCompleteness,
+  getExtraction,
+  getReorganizationReport,
+  runExtractionAnalysis,
+  validateExtraction,
+} from '../api'
+import type { Dossier, DocumentItem, DossierStatus, ExtractionEntry } from '../types'
 import { isAtOrAfter } from '../statusFlow'
+import { CERTAINTY_LABELS, PRESENCE_LABELS } from './CompletenessChecklist'
+import { reorgReportEntriesToTree, treeToMarkdown } from './OrganizedTree'
 
 interface Props {
   dossierId: string
-  status: DossierStatus
+  dossier: Dossier
   documents: DocumentItem[] | null
   onApplied: () => void
 }
@@ -30,11 +39,47 @@ function crossCheckTone(status: string | null): string {
   return ''
 }
 
-export function ExtractionSheet({ dossierId, status, documents, onApplied }: Props) {
+function confidenceTone(confidence: number | null): string {
+  if (confidence === null) return 'text-slate-400'
+  if (confidence >= 0.8) return 'text-green-700'
+  if (confidence >= 0.5) return 'text-amber-700'
+  return 'text-red-700'
+}
+
+function formatDuration(startIso: string, endIso: string): string {
+  const ms = new Date(endIso).getTime() - new Date(startIso).getTime()
+  if (!Number.isFinite(ms) || ms <= 0) return '—'
+  const totalMinutes = Math.round(ms / 60000)
+  const hours = Math.floor(totalMinutes / 60)
+  const minutes = totalMinutes % 60
+  if (hours > 0) return `${hours} h ${String(minutes).padStart(2, '0')} min`
+  if (minutes > 0) return `${minutes} min`
+  return `${Math.round(ms / 1000)} s`
+}
+
+function escapeMd(value: string): string {
+  return value.replace(/\|/g, '\\|').replace(/\r?\n/g, ' ')
+}
+
+function downloadTextFile(filename: string, content: string) {
+  const blob = new Blob([content], { type: 'text/markdown;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  document.body.appendChild(a)
+  a.click()
+  document.body.removeChild(a)
+  URL.revokeObjectURL(url)
+}
+
+export function ExtractionSheet({ dossierId, dossier, documents, onApplied }: Props) {
+  const status = dossier.status
   const [entries, setEntries] = useState<ExtractionEntry[] | null>(null)
   const [savingId, setSavingId] = useState<string | null>(null)
   const [running, setRunning] = useState(false)
   const [validating, setValidating] = useState(false)
+  const [downloadingReport, setDownloadingReport] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   const refreshEntries = useCallback(() => {
@@ -104,6 +149,87 @@ export function ExtractionSheet({ dossierId, status, documents, onApplied }: Pro
     }
   }, [dossierId, onApplied])
 
+  const handleDownloadReport = useCallback(async () => {
+    setDownloadingReport(true)
+    setError(null)
+    try {
+      const [reorgReport, completenessEntries] = await Promise.all([
+        getReorganizationReport(dossierId).catch(() => null),
+        getCompleteness(dossierId).catch(() => []),
+      ])
+
+      const treeMd = reorgReport
+        ? treeToMarkdown(reorgReportEntriesToTree(reorgReport.entries))
+        : '_Arborescence non disponible._'
+
+      const selectedPieces = completenessEntries.filter((e) => e.is_selected)
+      const piecesMd =
+        selectedPieces.length > 0
+          ? [
+              '| Pièce | Statut | Sûreté |',
+              '|---|---|---|',
+              ...selectedPieces.map(
+                (p) =>
+                  `| ${escapeMd(p.libelle)} | ${PRESENCE_LABELS[p.final_presence ?? ''] ?? '—'} | ${CERTAINTY_LABELS[p.final_certainty ?? ''] ?? '—'} |`,
+              ),
+            ].join('\n')
+          : '_Aucune pièce sélectionnée._'
+
+      const sortedSections = [...bySection.keys()].sort((a, b) =>
+        a === 'principal' ? -1 : b === 'principal' ? 1 : a.localeCompare(b),
+      )
+      const extractionMd =
+        sortedSections.length > 0
+          ? sortedSections
+              .map((section) => {
+                const rows = (bySection.get(section) ?? [])
+                  .slice()
+                  .sort((a, b) => a.libelle.localeCompare(b.libelle))
+                  .map((entry) => {
+                    const sources =
+                      entry.sources.map((s) => documentPathById.get(s.document_id) ?? s.filename).join(', ') || '—'
+                    return `| ${escapeMd(entry.libelle)} | ${escapeMd(entry.final_value ?? 'Non trouvée')} | ${escapeMd(sources)} |`
+                  })
+                return [
+                  `### ${SECTION_LABELS[section] ?? section}`,
+                  '',
+                  '| Donnée | Valeur | Sources |',
+                  '|---|---|---|',
+                  ...rows,
+                ].join('\n')
+              })
+              .join('\n\n')
+          : '_Aucune donnée extraite._'
+
+      const duration = formatDuration(dossier.created_at, dossier.extraction_validated_at ?? dossier.updated_at)
+
+      const md = `# Rapport d'analyse — ${dossier.original_filename}
+
+Généré le ${new Date().toLocaleString('fr-FR')}
+Temps de traitement du dossier : **${duration}**
+
+## Arborescence proposée
+
+${treeMd}
+
+## Pièces — étape 2 (complétude)
+
+${piecesMd}
+
+## Extraction des données — étape 3
+
+${extractionMd}
+`
+
+      const safeName = dossier.original_filename.replace(/\.[^./]+$/, '').replace(/[^a-zA-Z0-9._-]+/g, '_')
+      downloadTextFile(`rapport_${safeName}.md`, md)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Échec de la génération du rapport')
+    } finally {
+      setDownloadingReport(false)
+    }
+  }, [dossierId, dossier, bySection, documentPathById])
+
   if (!isAtOrAfter(status, 'completeness_validated')) {
     return null
   }
@@ -142,22 +268,37 @@ export function ExtractionSheet({ dossierId, status, documents, onApplied }: Pro
   }
 
   const isReview = status === 'extraction_review'
+  const foundCount = entries.filter((e) => e.final_value).length
 
   return (
     <div className="flex flex-col gap-4">
-      <div className="flex items-center justify-between">
-        <h3 className="text-sm font-medium text-slate-600">
-          Extraction de données — étape 3 ({entries.length} champ{entries.length > 1 ? 's' : ''})
-        </h3>
-        {isReview && (
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex items-center gap-2">
+          <h3 className="text-sm font-medium text-slate-600">
+            Extraction de données — étape 3 ({entries.length} champ{entries.length > 1 ? 's' : ''})
+          </h3>
+          <span className="rounded-full bg-green-100 px-2 py-0.5 text-[11px] font-medium text-green-700">
+            {foundCount} trouvée{foundCount > 1 ? 's' : ''}
+          </span>
+        </div>
+        <div className="flex items-center gap-2">
           <button
-            onClick={handleValidate}
-            disabled={validating}
-            className="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+            onClick={handleDownloadReport}
+            disabled={downloadingReport}
+            className="rounded-md border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50 disabled:opacity-50"
           >
-            {validating ? 'Validation…' : "Valider l'extraction"}
+            {downloadingReport ? 'Génération…' : 'Télécharger le rapport (.md)'}
           </button>
-        )}
+          {isReview && (
+            <button
+              onClick={handleValidate}
+              disabled={validating}
+              className="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+            >
+              {validating ? 'Validation…' : "Valider l'extraction"}
+            </button>
+          )}
+        </div>
       </div>
       {error && <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p>}
 
@@ -199,10 +340,13 @@ export function ExtractionSheet({ dossierId, status, documents, onApplied }: Pro
                             }}
                             className="w-full rounded border border-slate-200 bg-white px-1.5 py-1"
                           />
-                        ) : (
-                          <span className={entry.final_value ? 'text-slate-700' : 'text-slate-400'}>
-                            {entry.final_value ?? '(non trouvée)'}
+                        ) : entry.final_value ? (
+                          <span className="inline-flex items-center gap-1.5">
+                            <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-green-500" />
+                            <span className="font-semibold text-slate-800">{entry.final_value}</span>
                           </span>
+                        ) : (
+                          <span className="italic text-slate-400">Non trouvée</span>
                         )}
                         {entry.is_manually_corrected && (
                           <span className="ml-1 rounded bg-slate-100 px-1 text-[10px] text-slate-500">corrigé</span>
@@ -215,7 +359,7 @@ export function ExtractionSheet({ dossierId, status, documents, onApplied }: Pro
                               .join(', ')
                           : '—'}
                       </td>
-                      <td className="px-3 py-1.5 text-slate-500">
+                      <td className={`px-3 py-1.5 font-medium ${confidenceTone(entry.confidence)}`}>
                         {entry.confidence != null ? `${Math.round(entry.confidence * 100)}%` : '—'}
                       </td>
                       <td className="px-3 py-1.5">

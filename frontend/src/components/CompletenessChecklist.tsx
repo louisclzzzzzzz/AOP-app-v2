@@ -22,13 +22,13 @@ const PHASE_LABELS: Record<string, string> = {
   C: 'Phase C — Réception du chantier',
 }
 
-const PRESENCE_LABELS: Record<string, string> = {
+export const PRESENCE_LABELS: Record<string, string> = {
   present: 'Présente',
   partial: 'Partielle',
   absent: 'Absente',
 }
 
-const CERTAINTY_LABELS: Record<string, string> = {
+export const CERTAINTY_LABELS: Record<string, string> = {
   certain: 'Certain',
   probable: 'Probable',
   a_verifier: 'À vérifier',
@@ -36,11 +36,11 @@ const CERTAINTY_LABELS: Record<string, string> = {
 
 const SELECTION_STATUSES: DossierStatus[] = ['reorganized']
 
-function presenceTone(presence: string | null): string {
-  if (presence === 'present') return 'text-green-700'
-  if (presence === 'partial') return 'text-amber-700'
-  if (presence === 'absent') return 'text-red-700'
-  return 'text-slate-400'
+function presenceBadgeClasses(presence: string | null): string {
+  if (presence === 'present') return 'bg-green-100 text-green-700'
+  if (presence === 'partial') return 'bg-amber-100 text-amber-700'
+  if (presence === 'absent') return 'bg-red-100 text-red-700'
+  return 'bg-slate-100 text-slate-400'
 }
 
 function certaintyTone(certainty: string | null): string {
@@ -48,6 +48,35 @@ function certaintyTone(certainty: string | null): string {
   if (certainty === 'probable') return 'text-amber-700'
   if (certainty === 'a_verifier') return 'text-red-700'
   return 'text-slate-400'
+}
+
+function LocalisationCell({ paths }: { paths: string[] }) {
+  const [expanded, setExpanded] = useState(false)
+  if (paths.length === 0) return <span className="text-slate-300">—</span>
+
+  const shown = expanded ? paths : paths.slice(0, 1)
+  return (
+    <div className="flex max-w-[11rem] flex-col items-start gap-0.5">
+      {shown.map((p, i) => (
+        <span
+          key={i}
+          className="max-w-full truncate rounded bg-slate-100 px-1.5 py-0.5 text-[10px] text-slate-600"
+          title={p}
+        >
+          {p}
+        </span>
+      ))}
+      {paths.length > 1 && (
+        <button
+          type="button"
+          onClick={() => setExpanded((v) => !v)}
+          className="text-[10px] font-medium text-blue-600 hover:underline"
+        >
+          {expanded ? 'Réduire' : `+ ${paths.length - 1} autre${paths.length - 1 > 1 ? 's' : ''}`}
+        </button>
+      )}
+    </div>
+  )
 }
 
 export function CompletenessChecklist({ dossierId, status, documents, onApplied }: Props) {
@@ -263,7 +292,9 @@ export function CompletenessChecklist({ dossierId, status, documents, onApplied 
                         <option value="absent">Absente</option>
                       </select>
                     ) : (
-                      <span className={presenceTone(entry.final_presence)}>
+                      <span
+                        className={`inline-block rounded-full px-2 py-0.5 text-[11px] font-medium ${presenceBadgeClasses(entry.final_presence)}`}
+                      >
                         {PRESENCE_LABELS[entry.final_presence ?? ''] ?? '—'}
                       </span>
                     )}
@@ -290,9 +321,9 @@ export function CompletenessChecklist({ dossierId, status, documents, onApplied 
                     )}
                   </td>
                   <td className="px-3 py-1.5 text-slate-500">
-                    {entry.matched_document_ids.length > 0
-                      ? entry.matched_document_ids.map((id) => documentPathById.get(id) ?? id).join(', ')
-                      : '—'}
+                    <LocalisationCell
+                      paths={entry.matched_document_ids.map((id) => documentPathById.get(id) ?? id)}
+                    />
                   </td>
                   <td className="max-w-xs truncate px-3 py-1.5 text-slate-500" title={entry.justification ?? ''}>
                     {entry.completeness_error ? (

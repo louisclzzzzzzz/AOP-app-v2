@@ -8,6 +8,7 @@ import {
 } from '../api'
 import type { ClassificationEntry, DossierStatus, ReorgReport, TaxonomyCategory } from '../types'
 import { isAtOrAfter } from '../statusFlow'
+import { CollapsiblePanel } from './CollapsiblePanel'
 import { OrganizedTree, classificationEntriesToTree, reorgReportEntriesToTree } from './OrganizedTree'
 
 interface Props {
@@ -98,36 +99,33 @@ export function ReorganizationPlan({ dossierId, status, onApplied }: Props) {
           La source d’origine n’a pas été modifiée. Les fichiers ont été copiés dans le dossier{' '}
           <code className="rounded bg-slate-100 px-1 py-0.5 text-xs">organized/</code>.
         </p>
-        {reportTree && (
-          <div>
-            <h4 className="mb-1 text-xs font-medium text-slate-500">Arborescence obtenue</h4>
-            <OrganizedTree root={reportTree} />
-          </div>
-        )}
+        {reportTree && <OrganizedTree root={reportTree} title="Arborescence obtenue" />}
         {report && (
-          <div className="max-h-96 overflow-y-auto rounded-lg border border-slate-200">
-            <table className="w-full text-left text-xs">
-              <thead className="sticky top-0 bg-slate-100 text-slate-500">
-                <tr>
-                  <th className="px-3 py-2">Source</th>
-                  <th className="px-3 py-2">Cible</th>
-                  <th className="px-3 py-2">Confiance</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100">
-                {report.entries.map((e) => (
-                  <tr key={e.document_id}>
-                    <td className="px-3 py-1.5 text-slate-500">{e.source}</td>
-                    <td className="px-3 py-1.5">{e.target}</td>
-                    <td className={`px-3 py-1.5 ${confidenceTone(e.confidence)}`}>
-                      {e.confidence !== null ? e.confidence.toFixed(2) : '—'}
-                      {e.manually_corrected && ' (corrigé)'}
-                    </td>
+          <CollapsiblePanel title="Détail source → cible" subtitle={`${report.entries.length} fichiers`}>
+            <div className="max-h-96 overflow-y-auto">
+              <table className="w-full text-left text-xs">
+                <thead className="sticky top-0 bg-slate-100 text-slate-500">
+                  <tr>
+                    <th className="px-3 py-2">Source</th>
+                    <th className="px-3 py-2">Cible</th>
+                    <th className="px-3 py-2">Confiance</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {report.entries.map((e) => (
+                    <tr key={e.document_id}>
+                      <td className="px-3 py-1.5 text-slate-500">{e.source}</td>
+                      <td className="px-3 py-1.5">{e.target}</td>
+                      <td className={`px-3 py-1.5 ${confidenceTone(e.confidence)}`}>
+                        {e.confidence !== null ? e.confidence.toFixed(2) : '—'}
+                        {e.manually_corrected && ' (corrigé)'}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </CollapsiblePanel>
         )}
       </div>
     )
@@ -161,12 +159,7 @@ export function ReorganizationPlan({ dossierId, status, onApplied }: Props) {
       </p>
       {error && <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p>}
 
-      {classificationTree && (
-        <div>
-          <h4 className="mb-1 text-xs font-medium text-slate-500">Arborescence proposée</h4>
-          <OrganizedTree root={classificationTree} />
-        </div>
-      )}
+      {classificationTree && <OrganizedTree root={classificationTree} title="Arborescence proposée" />}
 
       <div className="max-h-[32rem] overflow-y-auto rounded-lg border border-slate-200">
         <table className="w-full text-left text-xs">
