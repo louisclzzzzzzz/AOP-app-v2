@@ -7,6 +7,7 @@ import {
   validateCompleteness,
 } from '../api'
 import type { CompletenessEntry, DocumentItem, DossierStatus } from '../types'
+import { isAtOrAfter } from '../statusFlow'
 
 interface Props {
   dossierId: string
@@ -34,8 +35,6 @@ const CERTAINTY_LABELS: Record<string, string> = {
 }
 
 const SELECTION_STATUSES: DossierStatus[] = ['reorganized']
-const RESULT_STATUSES: DossierStatus[] = ['completeness_review', 'completeness_validated']
-const VISIBLE_STATUSES: DossierStatus[] = [...SELECTION_STATUSES, 'analyzing_completeness', ...RESULT_STATUSES]
 
 function presenceTone(presence: string | null): string {
   if (presence === 'present') return 'text-green-700'
@@ -63,7 +62,7 @@ export function CompletenessChecklist({ dossierId, status, documents, onApplied 
   }, [dossierId])
 
   useEffect(() => {
-    if (SELECTION_STATUSES.includes(status) || RESULT_STATUSES.includes(status)) {
+    if (SELECTION_STATUSES.includes(status) || isAtOrAfter(status, 'completeness_review')) {
       refreshEntries()
     }
   }, [status, refreshEntries])
@@ -149,7 +148,7 @@ export function CompletenessChecklist({ dossierId, status, documents, onApplied 
     }
   }, [dossierId, onApplied])
 
-  if (!VISIBLE_STATUSES.includes(status)) {
+  if (!isAtOrAfter(status, 'reorganized')) {
     return null
   }
 

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { correctExtraction, getExtraction, runExtractionAnalysis, validateExtraction } from '../api'
 import type { DocumentItem, DossierStatus, ExtractionEntry } from '../types'
+import { isAtOrAfter } from '../statusFlow'
 
 interface Props {
   dossierId: string
@@ -21,8 +22,6 @@ const CROSS_CHECK_LABELS: Record<string, string> = {
 }
 
 const RUNNABLE_STATUSES: DossierStatus[] = ['completeness_validated']
-const RESULT_STATUSES: DossierStatus[] = ['extraction_review', 'extraction_validated']
-const VISIBLE_STATUSES: DossierStatus[] = [...RUNNABLE_STATUSES, 'extracting', ...RESULT_STATUSES]
 
 function crossCheckTone(status: string | null): string {
   if (status === 'coherent') return 'bg-green-100 text-green-700'
@@ -43,7 +42,7 @@ export function ExtractionSheet({ dossierId, status, documents, onApplied }: Pro
   }, [dossierId])
 
   useEffect(() => {
-    if (RESULT_STATUSES.includes(status)) {
+    if (isAtOrAfter(status, 'extraction_review')) {
       refreshEntries()
     }
   }, [status, refreshEntries])
@@ -105,7 +104,7 @@ export function ExtractionSheet({ dossierId, status, documents, onApplied }: Pro
     }
   }, [dossierId, onApplied])
 
-  if (!VISIBLE_STATUSES.includes(status)) {
+  if (!isAtOrAfter(status, 'completeness_validated')) {
     return null
   }
 
