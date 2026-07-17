@@ -24,6 +24,14 @@ const STAGE_LABELS: Record<string, string> = {
   error: 'Erreur',
 }
 
+type StepNumber = 1 | 2 | 3
+
+const STEP_TABS: { step: StepNumber; label: string; threshold: DossierStatus }[] = [
+  { step: 1, label: 'Étape 1 — Classification', threshold: 'classified' },
+  { step: 2, label: 'Étape 2 — Complétude', threshold: 'reorganized' },
+  { step: 3, label: 'Étape 3 — Extraction', threshold: 'completeness_validated' },
+]
+
 function computeProgress(
   status: DossierStatus,
   counters: Counters,
@@ -82,7 +90,9 @@ export function DossierProgress({ dossierId, onBack }: Props) {
   const [dossier, setDossier] = useState<Dossier | null>(null)
   const [events, setEvents] = useState<ProgressEvent[]>([])
   const [documents, setDocuments] = useState<DocumentItem[] | null>(null)
+  const [activeStep, setActiveStep] = useState<StepNumber | null>(null)
   const logEndRef = useRef<HTMLDivElement>(null)
+  const autoFollowRef = useRef(true)
 
   useEffect(() => {
     let cancelled = false
@@ -119,6 +129,23 @@ export function DossierProgress({ dossierId, onBack }: Props) {
   const handleApplied = useCallback(() => {
     getDossier(dossierId).then(setDossier)
   }, [dossierId])
+
+  const dossierStatus = dossier?.status ?? null
+  const availableSteps = dossierStatus
+    ? STEP_TABS.filter((t) => isAtOrAfter(dossierStatus, t.threshold)).map((t) => t.step)
+    : []
+  const highestStep = availableSteps.length > 0 ? availableSteps[availableSteps.length - 1] : null
+
+  useEffect(() => {
+    if (highestStep !== null && autoFollowRef.current) {
+      setActiveStep(highestStep)
+    }
+  }, [highestStep])
+
+  const handleSelectTab = useCallback((step: StepNumber) => {
+    autoFollowRef.current = false
+    setActiveStep(step)
+  }, [])
 
   if (!dossier) {
     return <p className="text-sm text-slate-400">Chargement…</p>
@@ -193,26 +220,46 @@ export function DossierProgress({ dossierId, onBack }: Props) {
         </div>
       </div>
 
-      {isAtOrAfter(dossier.status, 'classified') && (
-        <ReorganizationPlan dossierId={dossierId} status={dossier.status} onApplied={handleApplied} />
-      )}
+      {availableSteps.length > 0 && (
+        <div>
+          <div className="flex gap-1 border-b border-slate-200">
+            {STEP_TABS.filter((t) => availableSteps.includes(t.step)).map((t) => (
+              <button
+                key={t.step}
+                onClick={() => handleSelectTab(t.step)}
+                className={`-mb-px border-b-2 px-4 py-2 text-sm font-medium ${
+                  activeStep === t.step
+                    ? 'border-blue-600 text-blue-600'
+                    : 'border-transparent text-slate-500 hover:text-slate-700'
+                }`}
+              >
+                {t.label}
+              </button>
+            ))}
+          </div>
 
-      {isAtOrAfter(dossier.status, 'reorganized') && (
-        <CompletenessChecklist
-          dossierId={dossierId}
-          status={dossier.status}
-          documents={documents}
-          onApplied={handleApplied}
-        />
-      )}
-
-      {isAtOrAfter(dossier.status, 'completeness_validated') && (
-        <ExtractionSheet
-          dossierId={dossierId}
-          status={dossier.status}
-          documents={documents}
-          onApplied={handleApplied}
-        />
+          <div className="pt-4">
+            {activeStep === 1 && (
+              <ReorganizationPlan dossierId={dossierId} status={dossier.status} onApplied={handleApplied} />
+            )}
+            {activeStep === 2 && (
+              <CompletenessChecklist
+                dossierId={dossierId}
+                status={dossier.status}
+                documents={documents}
+                onApplied={handleApplied}
+              />
+            )}
+            {activeStep === 3 && (
+              <ExtractionSheet
+                dossierId={dossierId}
+                status={dossier.status}
+                documents={documents}
+                onApplied={handleApplied}
+              />
+            )}
+          </div>
+        </div>
       )}
 
       {documents && (
