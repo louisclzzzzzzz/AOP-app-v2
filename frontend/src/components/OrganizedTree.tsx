@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import type { ClassificationEntry, ReorgReportEntry } from '../types'
 
 interface TreeLeaf {
@@ -72,8 +72,44 @@ function countFiles(node: TreeNode): number {
   return count
 }
 
-function FolderRow({ node, depth }: { node: TreeNode; depth: number }) {
-  const [expanded, setExpanded] = useState(true)
+function collectFolderPaths(node: TreeNode, acc: string[]): string[] {
+  for (const child of node.children.values()) {
+    acc.push(child.path)
+    collectFolderPaths(child, acc)
+  }
+  return acc
+}
+
+/** Sérialise l'arbre en liste Markdown indentée (pour le rapport téléchargeable). */
+export function treeToMarkdown(root: TreeNode, depth = 0): string {
+  const lines: string[] = []
+  const childFolders = [...root.children.values()].sort((a, b) => a.name.localeCompare(b.name))
+  const files = [...root.files].sort((a, b) => a.name.localeCompare(b.name))
+  const indent = '  '.repeat(depth)
+
+  for (const folder of childFolders) {
+    const total = countFiles(folder)
+    lines.push(`${indent}- **${folder.name}/** (${total} fichier${total > 1 ? 's' : ''})`)
+    lines.push(treeToMarkdown(folder, depth + 1))
+  }
+  for (const file of files) {
+    lines.push(`${indent}- ${file.name}${file.meta ? ` _(${file.meta})_` : ''}`)
+  }
+  return lines.filter(Boolean).join('\n')
+}
+
+function FolderRow({
+  node,
+  depth,
+  collapsed,
+  onToggle,
+}: {
+  node: TreeNode
+  depth: number
+  collapsed: Set<string>
+  onToggle: (path: string) => void
+}) {
+  const expanded = !collapsed.has(node.path)
   const childFolders = [...node.children.values()].sort((a, b) => a.name.localeCompare(b.name))
   const files = [...node.files].sort((a, b) => a.name.localeCompare(b.name))
   const total = countFiles(node)
@@ -82,32 +118,34 @@ function FolderRow({ node, depth }: { node: TreeNode; depth: number }) {
     <div>
       <button
         type="button"
-        onClick={() => setExpanded((v) => !v)}
-        className="flex w-full items-center gap-1.5 rounded px-1.5 py-1 text-left text-xs hover:bg-slate-100"
-        style={{ paddingLeft: `${depth * 14 + 6}px` }}
+        onClick={() => onToggle(node.path)}
+        className="flex w-full items-center gap-2 rounded px-1.5 py-1.5 text-left text-sm hover:bg-blue-50"
+        style={{ paddingLeft: `${depth * 16 + 6}px` }}
       >
-        <span className="text-slate-400">{expanded ? '▾' : '▸'}</span>
-        <span className="font-medium text-slate-700">{node.name}</span>
-        <span className="ml-auto shrink-0 text-slate-400">
+        <span className={`w-3 shrink-0 text-[10px] ${expanded ? 'text-blue-500' : 'text-slate-300'}`}>
+          {expanded ? '▾' : '▸'}
+        </span>
+        <span className="truncate font-semibold text-slate-700">{node.name}</span>
+        <span className="ml-auto shrink-0 rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-medium text-slate-500">
           {total} fichier{total > 1 ? 's' : ''}
         </span>
       </button>
       {expanded && (
         <div>
           {childFolders.map((child) => (
-            <FolderRow key={child.path} node={child} depth={depth + 1} />
+            <FolderRow key={child.path} node={child} depth={depth + 1} collapsed={collapsed} onToggle={onToggle} />
           ))}
           {files.map((file, i) => (
             <div
               key={i}
-              className="flex items-center gap-1.5 px-1.5 py-0.5 text-xs text-slate-500"
-              style={{ paddingLeft: `${(depth + 1) * 14 + 6}px` }}
+              className="flex items-center gap-1.5 px-1.5 py-1 text-xs text-slate-500"
+              style={{ paddingLeft: `${(depth + 1) * 16 + 21}px` }}
               title={file.name}
             >
               <span className="shrink-0 text-slate-300">·</span>
               <span className="truncate">{file.name}</span>
               {file.meta && (
-                <span className="ml-1 shrink-0 rounded bg-slate-100 px-1 text-[10px] text-slate-500">
+                <span className="ml-1 shrink-0 rounded bg-amber-100 px-1 text-[10px] text-amber-700">
                   {file.meta}
                 </span>
               )}
@@ -119,16 +157,59 @@ function FolderRow({ node, depth }: { node: TreeNode; depth: number }) {
   )
 }
 
-export function OrganizedTree({ root }: { root: TreeNode }) {
+export function OrganizedTree({ root, title }: { root: TreeNode; title?: string }) {
   const topFolders = [...root.children.values()].sort((a, b) => a.name.localeCompare(b.name))
+  const allFolderPaths = useMemo(() => collectFolderPaths(root, []), [root])
+  const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
+
   if (topFolders.length === 0 && root.files.length === 0) {
     return <p className="text-xs text-slate-400">Aucun fichier à afficher.</p>
   }
+
+  const totalFiles = countFiles(root)
+
+  const handleToggle = (path: string) => {
+    setCollapsed((prev) => {
+      const next = new Set(prev)
+      if (next.has(path)) next.delete(path)
+      else next.add(path)
+      return next
+    })
+  }
+
   return (
-    <div className="max-h-96 overflow-y-auto rounded-lg border border-slate-200 bg-white py-1">
-      {topFolders.map((node) => (
-        <FolderRow key={node.path} node={node} depth={0} />
-      ))}
+    <div className="overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm">
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 bg-slate-50 px-3 py-2">
+        <div className="flex items-center gap-2">
+          <span className="text-sm font-semibold text-slate-700">{title ?? 'Arborescence'}</span>
+          <span className="rounded-full bg-blue-100 px-2 py-0.5 text-[11px] font-medium text-blue-700">
+            {totalFiles} fichier{totalFiles > 1 ? 's' : ''}
+          </span>
+        </div>
+        <div className="flex gap-1.5">
+          <button
+            type="button"
+            onClick={() => setCollapsed(new Set())}
+            className="rounded border border-slate-200 bg-white px-2 py-1 text-[11px] font-medium text-slate-600 hover:bg-slate-100"
+          >
+            Tout déplier
+          </button>
+          <button
+            type="button"
+            onClick={() => setCollapsed(new Set(allFolderPaths))}
+            className="rounded border border-slate-200 bg-white px-2 py-1 text-[11px] font-medium text-slate-600 hover:bg-slate-100"
+          >
+            Tout plier
+          </button>
+        </div>
+      </div>
+      <div className="max-h-[28rem] overflow-y-auto py-1">
+        {topFolders.map((node) => (
+          <FolderRow key={node.path} node={node} depth={0} collapsed={collapsed} onToggle={handleToggle} />
+        ))}
+      </div>
     </div>
   )
 }
+
+export type { TreeNode }

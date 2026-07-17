@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { dossierWebSocketUrl, getDossier, getDossierDocuments } from '../api'
 import type { Counters, Dossier, DossierStatus, DocumentItem, ProgressEvent } from '../types'
 import { isAtOrAfter } from '../statusFlow'
+import { CollapsiblePanel } from './CollapsiblePanel'
 import { CompletenessChecklist } from './CompletenessChecklist'
 import { ExtractionSheet } from './ExtractionSheet'
 import { ReorganizationPlan } from './ReorganizationPlan'
@@ -251,21 +252,15 @@ export function DossierProgress({ dossierId, onBack }: Props) {
               />
             )}
             {activeStep === 3 && (
-              <ExtractionSheet
-                dossierId={dossierId}
-                status={dossier.status}
-                documents={documents}
-                onApplied={handleApplied}
-              />
+              <ExtractionSheet dossierId={dossierId} dossier={dossier} documents={documents} onApplied={handleApplied} />
             )}
           </div>
         </div>
       )}
 
       {documents && (
-        <div>
-          <h3 className="mb-2 text-sm font-medium text-slate-600">Inventaire ({documents.length} fichiers)</h3>
-          <div className="max-h-96 overflow-y-auto rounded-lg border border-slate-200">
+        <CollapsiblePanel title="Inventaire" subtitle={`${documents.length} fichiers`}>
+          <div className="max-h-96 overflow-y-auto">
             <table className="w-full text-left text-xs">
               <thead className="sticky top-0 bg-slate-100 text-slate-500">
                 <tr>
@@ -293,7 +288,7 @@ export function DossierProgress({ dossierId, onBack }: Props) {
               </tbody>
             </table>
           </div>
-        </div>
+        </CollapsiblePanel>
       )}
     </div>
   )
