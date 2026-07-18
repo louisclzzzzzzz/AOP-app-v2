@@ -137,9 +137,22 @@ class Dossier(Base):
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     current_step: Mapped[int] = mapped_column(Integer, default=0)
 
+    # Hash du .zip uploadé (pas du contenu individuel des documents, cf. Document.sha256) —
+    # sert uniquement à détecter un ré-upload probable du même dossier (§ upload_dossier).
+    upload_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    # Instantané dénormalisé du dossier existant dont celui-ci semble être une copie, capturé
+    # une fois à l'upload — un avertissement non bloquant, jamais un refus d'upload.
+    duplicate_of_dossier_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    duplicate_of_filename: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    duplicate_of_created_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
     total_files: Mapped[int] = mapped_column(Integer, default=0)
     files_text_extracted: Mapped[int] = mapped_column(Integer, default=0)
     files_non_analyzable: Mapped[int] = mapped_column(Integer, default=0)
+    # Sous-ensemble de files_non_analyzable dont le contenu est potentiellement pertinent
+    # mais inaccessible (archive protégée/corrompue, extension inconnue/non supportée) — par
+    # opposition aux cas anodins (plans, fichiers système) mêlés dans le même compteur global.
+    files_non_analyzable_at_risk: Mapped[int] = mapped_column(Integer, default=0)
     files_error: Mapped[int] = mapped_column(Integer, default=0)
 
     files_classified: Mapped[int] = mapped_column(Integer, default=0)
@@ -206,6 +219,8 @@ class Document(Base):
     category: Mapped[str] = mapped_column(String(32))
     is_analyzable: Mapped[bool] = mapped_column(default=True)
     non_analyzable_reason: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    # Vrai si le contenu est potentiellement pertinent mais inaccessible (cf. Dossier.files_non_analyzable_at_risk)
+    non_analyzable_at_risk: Mapped[bool] = mapped_column(default=False)
 
     # Traçabilité : si ce document provient d'un zip imbriqué décompressé récursivement
     parent_archive_id: Mapped[str | None] = mapped_column(

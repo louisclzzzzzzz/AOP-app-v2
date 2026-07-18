@@ -3,7 +3,7 @@ from __future__ import annotations
 import zipfile
 from pathlib import Path
 
-from app.ingestion.unzip import extract_zip_recursive, extract_zip_flat
+from app.ingestion.unzip import _decode_member_name, extract_zip_flat, extract_zip_recursive
 
 
 def test_recursive_extraction_of_nested_zip(tmp_path, make_zip):
@@ -103,3 +103,25 @@ def test_accented_filename_cp850_decoding(tmp_path):
 
     names = [p.name for p in dest.iterdir()]
     assert any("l" in n and "ve" in n for n in names)  # décodage best-effort, non garanti exact
+
+
+def test_degree_sign_is_not_misdecoded_as_block_element():
+    """Régression : un octet 0xB0 (« ° » en cp1252 Windows ANSI) ressortait en « ░ » (bloc de
+    trame cp850) car cp850 était tenté en premier et 0xB0 y est aussi un caractère valide,
+    masquant silencieusement le mauvais choix de page de code (cas réel rencontré sur un nom
+    de dossier « ... LOT N°1 ET TRC ... » dans un DCE).
+
+    Testé directement sur `_decode_member_name` : l'API haut niveau `zipfile.ZipFile.writestr`
+    force toujours l'UTF-8 dès que le nom contient un caractère non-ASCII
+    (`ZipInfo._encodeFilenameFlags`), donc impossible de fabriquer via elle un zip dont le
+    nom est réellement encodé en page de code historique sans le bit UTF-8 — on construit
+    donc l'objet `ZipInfo` tel que `zipfile` le produirait en le lisant (`info.filename`
+    déjà décodé en cp437 par CPython, `flag_bits` sans le bit UTF-8)."""
+    raw_cp1252 = "LOT N°1.pdf".encode("cp1252")
+    info = zipfile.ZipInfo(raw_cp1252.decode("cp437"))
+    info.flag_bits &= ~0x800
+
+    decoded = _decode_member_name(info)
+
+    assert decoded == "LOT N°1.pdf"
+    assert "░" not in decoded

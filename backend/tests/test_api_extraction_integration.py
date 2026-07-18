@@ -237,3 +237,47 @@ def test_full_extraction_flow_with_cross_check_incoherence(isolated_workspace, m
     assert final_dossier["status"] == "extraction_validated"
     assert final_dossier["extraction_validated_at"] is not None
     assert final_dossier["synthese_ia"] == "Synthèse de test."
+
+    # --- Réouverture des étapes déjà validées (FRICTIONS_EXPERT_METIER.md §3/§5) -------------
+
+    # Étape 3 : rouvrable depuis extraction_validated, aucune donnée en aval à invalider.
+    reopen_extraction = client.post(f"/api/dossiers/{dossier_id}/extraction/reopen")
+    assert reopen_extraction.status_code == 200, reopen_extraction.text
+    assert reopen_extraction.json()["status"] == "extraction_review"
+    assert reopen_extraction.json()["extraction_validated_at"] is None
+    # la correction manuelle déjà faite reste tracée, rien n'est effacé
+    reopened_entries = {e["field_id"]: e for e in client.get(f"/api/dossiers/{dossier_id}/extraction").json()}
+    assert reopened_entries["montants_totaux_ht"]["final_value"] == "950 000 EUR"
+
+    revalidate = client.post(f"/api/dossiers/{dossier_id}/extraction/validate")
+    assert revalidate.status_code == 200, revalidate.text
+    assert revalidate.json()["dossier"]["status"] == "extraction_validated"
+
+    # Étape 2 : rouvrable même après que l'étape 3 a été validée ; l'extraction n'est pas
+    # invalidée puisqu'elle ne dépend pas des valeurs de complétude.
+    reopen_completeness = client.post(f"/api/dossiers/{dossier_id}/completeness/reopen")
+    assert reopen_completeness.status_code == 200, reopen_completeness.text
+    assert reopen_completeness.json()["status"] == "completeness_review"
+    assert reopen_completeness.json()["completeness_validated_at"] is None
+    assert len(client.get(f"/api/dossiers/{dossier_id}/extraction").json()) == len(all_field_ids)
+
+    # Étape 1 : rouvrable depuis n'importe quel statut atteint, mais invalide en cascade les
+    # résultats des étapes 2/3 puisqu'ils référencent un classement sur le point de changer.
+    reopen_reorg = client.post(f"/api/dossiers/{dossier_id}/reorganize/reopen")
+    assert reopen_reorg.status_code == 200, reopen_reorg.text
+    reopened_dossier = reopen_reorg.json()
+    assert reopened_dossier["status"] == "classified"
+    assert reopened_dossier["counters"]["fields_total"] == 0
+    assert reopened_dossier["counters"]["pieces_selected"] == 0
+
+    # les lignes sont re-créées à l'état "pending" au premier accès (ensure_results_initialized),
+    # confirmant que l'ancien résultat (avec sa correction manuelle) a bien été supprimé
+    post_reopen_entries = client.get(f"/api/dossiers/{dossier_id}/extraction").json()
+    assert all(e["status"] == "pending" and e["final_value"] is None for e in post_reopen_entries)
+
+    # Réouverture refusée si le dossier n'a pas encore atteint le statut requis.
+    fresh_zip = client.post("/api/dossiers", files={"file": ("root2.zip", _build_test_zip(), "application/zip")})
+    fresh_id = fresh_zip.json()["id"]
+    _wait_for_status(client, fresh_id, {"classified", "error"})
+    refused = client.post(f"/api/dossiers/{fresh_id}/extraction/reopen")
+    assert refused.status_code == 409

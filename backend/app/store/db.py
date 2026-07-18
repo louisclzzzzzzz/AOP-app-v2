@@ -40,27 +40,37 @@ _NEW_DOSSIER_COLUMNS = {
     "synthese_ia": "TEXT",
     "synthese_ia_model": "VARCHAR(128)",
     "synthese_ia_generated_at": "DATETIME",
+    "files_non_analyzable_at_risk": "INTEGER DEFAULT 0",
+    "upload_sha256": "VARCHAR(64)",
+    "duplicate_of_dossier_id": "VARCHAR(36)",
+    "duplicate_of_filename": "VARCHAR(512)",
+    "duplicate_of_created_at": "DATETIME",
+}
+
+_NEW_DOCUMENT_COLUMNS = {
+    "non_analyzable_at_risk": "BOOLEAN DEFAULT 0",
 }
 
 
-def _ensure_new_dossier_columns(engine: Engine) -> None:
+def _ensure_new_columns(engine: Engine, table: str, columns: dict[str, str]) -> None:
     """`create_all()` n'ajoute que les tables manquantes, jamais de colonnes sur une table déjà
     existante. Garde-fou additif (jamais destructif) pour les colonnes introduites après la
     création initiale d'une base SQLite locale déjà peuplée."""
     if engine.dialect.name != "sqlite":
         return
     with engine.connect() as conn:
-        existing = {row[1] for row in conn.exec_driver_sql("PRAGMA table_info(dossiers)")}
-        for column, ddl_type in _NEW_DOSSIER_COLUMNS.items():
+        existing = {row[1] for row in conn.exec_driver_sql(f"PRAGMA table_info({table})")}
+        for column, ddl_type in columns.items():
             if column not in existing:
-                conn.exec_driver_sql(f"ALTER TABLE dossiers ADD COLUMN {column} {ddl_type}")
+                conn.exec_driver_sql(f"ALTER TABLE {table} ADD COLUMN {column} {ddl_type}")
         conn.commit()
 
 
 def init_db() -> None:
     engine = get_engine()
     Base.metadata.create_all(engine)
-    _ensure_new_dossier_columns(engine)
+    _ensure_new_columns(engine, "dossiers", _NEW_DOSSIER_COLUMNS)
+    _ensure_new_columns(engine, "documents", _NEW_DOCUMENT_COLUMNS)
 
 
 @contextmanager

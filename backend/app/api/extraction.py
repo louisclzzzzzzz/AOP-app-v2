@@ -26,6 +26,7 @@ from app.store.repository import (
     get_dossier,
     get_extraction_result_by_field,
     recompute_extraction_counters,
+    reopen_extraction,
     set_dossier_status,
     set_extraction_correction,
 )
@@ -169,6 +170,30 @@ async def validate_extraction_endpoint(dossier_id: str) -> ExtractionApplyOut:
         message=f"Extraction validée — {report['total_fields']} champ(s)",
     )
     return ExtractionApplyOut(dossier=dossier_out, report=report)
+
+
+@router.post("/{dossier_id}/extraction/reopen", response_model=DossierOut)
+async def reopen_extraction_endpoint(dossier_id: str) -> DossierOut:
+    with session_scope() as s:
+        dossier = get_dossier(s, dossier_id)
+        if dossier is None:
+            raise HTTPException(404, "Dossier introuvable")
+        if dossier.status != DossierStatus.EXTRACTION_VALIDATED.value:
+            raise HTTPException(
+                409,
+                f"Ce dossier ne peut pas être rouvert pour correction de l'extraction "
+                f"(statut actuel : {dossier.status}).",
+            )
+        reopen_extraction(s, dossier)
+        dossier_out = dossier_to_out(dossier)
+
+    await progress_manager.broadcast(
+        dossier_id,
+        stage="extraction",
+        status=DossierStatus.EXTRACTION_REVIEW.value,
+        message="Extraction rouverte pour correction",
+    )
+    return dossier_out
 
 
 @router.get("/{dossier_id}/extraction/report")

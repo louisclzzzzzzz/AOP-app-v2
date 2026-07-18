@@ -5,17 +5,28 @@ import {
   getClassification,
   getReorganizationReport,
   getTaxonomy,
+  reopenReorganization,
 } from '../api'
 import type { ClassificationEntry, DossierStatus, ReorgReport, TaxonomyCategory } from '../types'
 import { isAtOrAfter } from '../statusFlow'
+import { HOVER_HINT_CLASS } from '../ui'
 import { CollapsiblePanel } from './CollapsiblePanel'
 import { OrganizedTree, classificationEntriesToTree, reorgReportEntriesToTree } from './OrganizedTree'
+import { ReopenButton } from './ReopenButton'
 
 interface Props {
   dossierId: string
   status: DossierStatus
   onApplied: () => void
 }
+
+const REOPENABLE_REORG_STATUSES: DossierStatus[] = [
+  'reorganized',
+  'completeness_review',
+  'completeness_validated',
+  'extraction_review',
+  'extraction_validated',
+]
 
 function confidenceTone(confidence: number | null): string {
   if (confidence === null) return 'text-slate-400'
@@ -86,15 +97,35 @@ export function ReorganizationPlan({ dossierId, status, onApplied }: Props) {
     }
   }, [dossierId, onApplied])
 
+  const handleReopen = useCallback(async () => {
+    await reopenReorganization(dossierId)
+    setEntries(null)
+    setReport(null)
+    onApplied()
+  }, [dossierId, onApplied])
+
   const classificationTree = useMemo(() => (entries ? classificationEntriesToTree(entries) : null), [entries])
   const reportTree = useMemo(() => (report ? reorgReportEntriesToTree(report.entries) : null), [report])
 
   if (isAtOrAfter(status, 'reorganized')) {
     return (
       <div className="flex flex-col gap-4">
-        <h3 className="text-sm font-medium text-slate-600">
-          Copie triée appliquée{report ? ` — ${report.total_files} fichiers` : ''}
-        </h3>
+        <div className="flex items-start justify-between gap-3">
+          <h3 className="text-sm font-medium text-slate-600">
+            Copie triée appliquée{report ? ` — ${report.total_files} fichiers` : ''}
+          </h3>
+          {REOPENABLE_REORG_STATUSES.includes(status) && (
+            <ReopenButton
+              label="Modifier le classement"
+              warning={
+                isAtOrAfter(status, 'completeness_validated')
+                  ? "Rouvrir le classement effacera les résultats des étapes 2 (complétude) et/ou 3 (extraction) déjà réalisées — elles devront être relancées après correction."
+                  : undefined
+              }
+              onReopen={handleReopen}
+            />
+          )}
+        </div>
         <p className="text-sm text-slate-500">
           La source d’origine n’a pas été modifiée. Les fichiers ont été copiés dans le dossier{' '}
           <code className="rounded bg-slate-100 px-1 py-0.5 text-xs">organized/</code>.
@@ -220,7 +251,10 @@ export function ReorganizationPlan({ dossierId, status, onApplied }: Props) {
                     <span className="ml-1 rounded bg-slate-100 px-1 text-[10px] text-slate-500">corrigé</span>
                   )}
                 </td>
-                <td className="max-w-xs truncate px-3 py-1.5 text-slate-500" title={entry.justification ?? ''}>
+                <td
+                  className={`max-w-xs truncate px-3 py-1.5 text-slate-500 ${entry.justification ? HOVER_HINT_CLASS : ''}`}
+                  title={entry.justification ?? ''}
+                >
                   {entry.classification_error ? (
                     <span className="text-red-600">{entry.classification_error}</span>
                   ) : (

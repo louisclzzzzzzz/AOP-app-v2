@@ -75,8 +75,10 @@ def build_inventory(session: Session, dossier: Dossier, source_dir: Path) -> lis
                 f"Archive extraite : contenu disponible dans "
                 f"{extrait_dir.relative_to(source_dir).as_posix()}"
             )
+            at_risk = False  # contenu bien analysé, juste référencé sous son dossier __extrait/
         else:
             reason = "Archive non extraite (protégée par mot de passe ou corrompue)"
+            at_risk = True  # contenu potentiellement pertinent, totalement inaccessible au pipeline
         doc = create_document(
             session,
             dossier_id=dossier.id,
@@ -88,6 +90,7 @@ def build_inventory(session: Session, dossier: Dossier, source_dir: Path) -> lis
             category=FileCategory.ARCHIVE.value,
             is_analyzable=False,
             non_analyzable_reason=reason,
+            non_analyzable_at_risk=at_risk,
             stage=DocumentStage.NON_ANALYZABLE.value,
         )
         documents.append(doc)
@@ -104,10 +107,11 @@ def build_inventory(session: Session, dossier: Dossier, source_dir: Path) -> lis
                 break
 
         ext = p.suffix.lower()
-        category, is_analyzable, reason = classify_extension(ext)
+        category, is_analyzable, reason, at_risk = classify_extension(ext)
         if is_analyzable and category in _OCR_SKIPPABLE_CATEGORIES and _looks_like_plan(p.name):
             is_analyzable = False
             reason = _PLAN_FILENAME_REASON
+            at_risk = False
         doc = create_document(
             session,
             dossier_id=dossier.id,
@@ -119,6 +123,7 @@ def build_inventory(session: Session, dossier: Dossier, source_dir: Path) -> lis
             category=category.value,
             is_analyzable=is_analyzable,
             non_analyzable_reason=reason,
+            non_analyzable_at_risk=at_risk if not is_analyzable else False,
             parent_archive_id=parent_archive_id,
             stage=(
                 DocumentStage.DISCOVERED.value
