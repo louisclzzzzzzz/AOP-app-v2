@@ -14,6 +14,7 @@ candidat) ; ce qui reste est déclaré absent sans appel LLM.
 from __future__ import annotations
 
 import asyncio
+import datetime as dt
 import logging
 
 from sqlalchemy.orm import Session
@@ -23,6 +24,7 @@ from app.extraction.engine import (
     ExtractionOutcome,
     absent_outcome,
     analyze_document,
+    generate_synthesis,
     layer2_candidates,
     plan_layer2_calls,
     plan_reference_document_calls,
@@ -230,6 +232,29 @@ async def run_extraction_pipeline(dossier_id: str) -> None:
             for f in absent_fields
         }
         await asyncio.to_thread(_persist, absent_outcomes)
+
+    # --- Synthèse textuelle : un appel unique à partir des valeurs déjà résolues ------------
+    def _read_field_values() -> list[tuple[str, str]]:
+        with session_scope() as s:
+            results_by_id = {r.field_id: r for r in list_extraction_results(s, dossier_id)}
+        return [
+            (f.libelle, results_by_id[f.id].final_value)
+            for f in schema.fields
+            if f.id in results_by_id and results_by_id[f.id].final_value
+        ]
+
+    field_values = await asyncio.to_thread(_read_field_values)
+    synthesis = await asyncio.to_thread(generate_synthesis, field_values)
+
+    def _persist_synthesis() -> None:
+        with session_scope() as s:
+            dossier = get_dossier(s, dossier_id)
+            assert dossier is not None
+            dossier.synthese_ia = synthesis.text if synthesis else None
+            dossier.synthese_ia_model = synthesis.model_name if synthesis else None
+            dossier.synthese_ia_generated_at = dt.datetime.now(dt.timezone.utc) if synthesis else None
+
+    await asyncio.to_thread(_persist_synthesis)
 
     def _finalize() -> dict[str, int]:
         with session_scope() as s:

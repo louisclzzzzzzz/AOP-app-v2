@@ -45,6 +45,7 @@ export interface Dossier {
   reorg_applied_at: string | null
   completeness_validated_at: string | null
   extraction_validated_at: string | null
+  synthese_ia: string | null
   created_at: string
   updated_at: string
 }

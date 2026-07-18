@@ -58,6 +58,7 @@ def dossier_to_out(d: Dossier) -> DossierOut:
         reorg_applied_at=d.reorg_applied_at,
         completeness_validated_at=d.completeness_validated_at,
         extraction_validated_at=d.extraction_validated_at,
+        synthese_ia=d.synthese_ia,
         created_at=d.created_at,
         updated_at=d.updated_at,
     )

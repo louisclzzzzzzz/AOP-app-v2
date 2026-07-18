@@ -36,8 +36,31 @@ def get_session_factory() -> sessionmaker[Session]:
     return _SessionLocal
 
 
+_NEW_DOSSIER_COLUMNS = {
+    "synthese_ia": "TEXT",
+    "synthese_ia_model": "VARCHAR(128)",
+    "synthese_ia_generated_at": "DATETIME",
+}
+
+
+def _ensure_new_dossier_columns(engine: Engine) -> None:
+    """`create_all()` n'ajoute que les tables manquantes, jamais de colonnes sur une table déjà
+    existante. Garde-fou additif (jamais destructif) pour les colonnes introduites après la
+    création initiale d'une base SQLite locale déjà peuplée."""
+    if engine.dialect.name != "sqlite":
+        return
+    with engine.connect() as conn:
+        existing = {row[1] for row in conn.exec_driver_sql("PRAGMA table_info(dossiers)")}
+        for column, ddl_type in _NEW_DOSSIER_COLUMNS.items():
+            if column not in existing:
+                conn.exec_driver_sql(f"ALTER TABLE dossiers ADD COLUMN {column} {ddl_type}")
+        conn.commit()
+
+
 def init_db() -> None:
-    Base.metadata.create_all(get_engine())
+    engine = get_engine()
+    Base.metadata.create_all(engine)
+    _ensure_new_dossier_columns(engine)
 
 
 @contextmanager

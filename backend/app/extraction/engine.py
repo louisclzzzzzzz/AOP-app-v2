@@ -387,3 +387,60 @@ def absent_outcome(reason: str) -> ExtractionOutcome:
         model_version=None,
         error=None,
     )
+
+
+# --- Synthèse textuelle (vision globale du dossier) ---------------------------------------------
+#
+# Un seul appel LLM, en fin de pipeline, à partir des valeurs DÉJÀ résolues (jamais une relecture
+# des documents bruts) : pas de notion de recoupement ici (les valeurs sources sont déjà
+# tranchées), donc aucune des complications du modèle par-document/cross-check ci-dessus.
+
+@dataclass
+class SynthesisOutcome:
+    text: str
+    model_name: str | None
+
+
+class _SynthesisResponse(BaseModel):
+    synthese: str
+
+
+_SYNTHESIS_SYSTEM_PROMPT = """Tu es un assistant expert en assurance construction (SMABTP). \
+À partir de données déjà extraites et validées d'un dossier de consultation des entreprises \
+(DCE), rédige une courte synthèse textuelle donnant une vision globale du projet.
+
+Règles impératives :
+- 2 à 4 phrases, en français, style neutre et factuel.
+- N'utilise QUE les données fournies ci-dessous — n'invente et ne suppose jamais une donnée \
+absente de la liste.
+- S'il n'y a que peu de données, rédige une synthèse plus courte plutôt que de combler les \
+manques.
+"""
+
+
+def _build_synthesis_prompt(field_values: list[tuple[str, str]]) -> str:
+    lines = "\n".join(f"- {libelle} : {value}" for libelle, value in field_values)
+    return f"""Données extraites de ce dossier :
+{lines}
+
+Rédige la synthèse."""
+
+
+def generate_synthesis(field_values: list[tuple[str, str]]) -> SynthesisOutcome | None:
+    """`field_values` : paires (libellé, valeur finale) des champs trouvés — voir
+    `ensure_results_initialized`/`list_extraction_results` côté pipeline. Retourne None si
+    aucune donnée n'est disponible, ou si l'appel LLM échoue (best-effort, ne bloque jamais la
+    validation du checkpoint étape 3)."""
+    if not field_values:
+        return None
+    try:
+        parsed, api_model_name = call_structured_chat(
+            system_prompt=_SYNTHESIS_SYSTEM_PROMPT,
+            user_prompt=_build_synthesis_prompt(field_values),
+            response_model=_SynthesisResponse,
+            what="synthèse textuelle du dossier",
+        )
+    except Exception:
+        logger.exception("Échec de la génération de la synthèse textuelle du dossier")
+        return None
+    return SynthesisOutcome(text=parsed.synthese, model_name=api_model_name)

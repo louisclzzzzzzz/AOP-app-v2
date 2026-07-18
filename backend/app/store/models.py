@@ -174,6 +174,12 @@ class Dossier(Base):
     extraction_report_md_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
     extraction_validated_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
+    # Synthèse textuelle (vision globale du dossier), générée en un seul appel LLM en fin
+    # d'étape 3 à partir des valeurs déjà extraites (jamais une relecture des documents bruts)
+    synthese_ia: Mapped[str | None] = mapped_column(Text, nullable=True)
+    synthese_ia_model: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    synthese_ia_generated_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_now)
     updated_at: Mapped[dt.datetime] = mapped_column(
         DateTime(timezone=True), default=_now, onupdate=_now

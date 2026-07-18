@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { dossierWebSocketUrl, getDossier, getDossierDocuments, getExtraction } from '../api'
-import type { Counters, Dossier, DossierStatus, DocumentItem, ExtractionEntry, ProgressEvent } from '../types'
+import { dossierWebSocketUrl, getDossier, getDossierDocuments } from '../api'
+import type { Counters, Dossier, DossierStatus, DocumentItem, ProgressEvent } from '../types'
 import { isAtOrAfter } from '../statusFlow'
 import { CollapsiblePanel } from './CollapsiblePanel'
 import { CompletenessChecklist } from './CompletenessChecklist'
@@ -92,10 +92,10 @@ export function DossierProgress({ dossierId, onBack }: Props) {
   const [dossier, setDossier] = useState<Dossier | null>(null)
   const [events, setEvents] = useState<ProgressEvent[]>([])
   const [documents, setDocuments] = useState<DocumentItem[] | null>(null)
-  const [extraction, setExtraction] = useState<ExtractionEntry[] | null>(null)
   const [activeStep, setActiveStep] = useState<StepNumber | null>(null)
   const logEndRef = useRef<HTMLDivElement>(null)
   const autoFollowRef = useRef(true)
+  const synthesisFetchedForRef = useRef<string | null>(null)
 
   useEffect(() => {
     let cancelled = false
@@ -130,16 +130,18 @@ export function DossierProgress({ dossierId, onBack }: Props) {
   }, [dossier, dossierId, documents])
 
   useEffect(() => {
-    if (dossier && isAtOrAfter(dossier.status, 'extraction_review') && extraction === null) {
-      getExtraction(dossierId).then(setExtraction)
+    if (
+      dossier &&
+      isAtOrAfter(dossier.status, 'extraction_review') &&
+      synthesisFetchedForRef.current !== dossier.id
+    ) {
+      synthesisFetchedForRef.current = dossier.id
+      getDossier(dossierId).then(setDossier)
     }
-  }, [dossier, dossierId, extraction])
+  }, [dossier, dossierId])
 
   const handleApplied = useCallback(() => {
     getDossier(dossierId).then(setDossier)
-    getExtraction(dossierId)
-      .then(setExtraction)
-      .catch(() => undefined)
   }, [dossierId])
 
   const dossierStatus = dossier?.status ?? null
@@ -190,7 +192,7 @@ export function DossierProgress({ dossierId, onBack }: Props) {
         )}
       </div>
 
-      <DossierSummary entries={extraction} />
+      <DossierSummary synthese={dossier.synthese_ia} />
 
       <div>
         <div className="mb-1 flex justify-between text-xs text-slate-500">
