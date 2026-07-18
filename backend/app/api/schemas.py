@@ -10,6 +10,7 @@ class CountersOut(BaseModel):
     total_files: int
     text_extracted: int
     non_analyzable: int
+    non_analyzable_at_risk: int = 0
     error: int
     classified: int = 0
     pieces_selected: int = 0
@@ -36,6 +37,9 @@ class DossierOut(BaseModel):
     completeness_validated_at: dt.datetime | None = None
     extraction_validated_at: dt.datetime | None = None
     synthese_ia: str | None = None
+    duplicate_of_dossier_id: str | None = None
+    duplicate_of_filename: str | None = None
+    duplicate_of_created_at: dt.datetime | None = None
     created_at: dt.datetime
     updated_at: dt.datetime
 
@@ -50,6 +54,7 @@ class DocumentOut(BaseModel):
     category: str
     is_analyzable: bool
     non_analyzable_reason: str | None
+    non_analyzable_at_risk: bool = False
     parent_archive_id: str | None
     stage: str
     stage_error: str | None

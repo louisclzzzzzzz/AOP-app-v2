@@ -2,10 +2,11 @@ import { useCallback, useState } from 'react'
 
 interface Props {
   onFileSelected: (file: File) => void
+  onInvalidFile?: (file: File) => void
   disabled?: boolean
 }
 
-export function UploadDropzone({ onFileSelected, disabled }: Props) {
+export function UploadDropzone({ onFileSelected, onInvalidFile, disabled }: Props) {
   const [isDragOver, setIsDragOver] = useState(false)
 
   const handleDrop = useCallback(
@@ -14,11 +15,14 @@ export function UploadDropzone({ onFileSelected, disabled }: Props) {
       setIsDragOver(false)
       if (disabled) return
       const file = e.dataTransfer.files?.[0]
-      if (file && file.name.toLowerCase().endsWith('.zip')) {
+      if (!file) return
+      if (file.name.toLowerCase().endsWith('.zip')) {
         onFileSelected(file)
+      } else {
+        onInvalidFile?.(file)
       }
     },
-    [onFileSelected, disabled],
+    [onFileSelected, onInvalidFile, disabled],
   )
 
   return (
@@ -61,7 +65,13 @@ export function UploadDropzone({ onFileSelected, disabled }: Props) {
             disabled={disabled}
             onChange={(e) => {
               const file = e.target.files?.[0]
-              if (file) onFileSelected(file)
+              if (file) {
+                if (file.name.toLowerCase().endsWith('.zip')) {
+                  onFileSelected(file)
+                } else {
+                  onInvalidFile?.(file)
+                }
+              }
               e.target.value = ''
             }}
           />

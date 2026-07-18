@@ -45,6 +45,14 @@ export async function getDossier(id: string): Promise<Dossier> {
   return handle<Dossier>(res)
 }
 
+export async function deleteDossier(id: string): Promise<void> {
+  const res = await fetch(`/api/dossiers/${id}`, { method: 'DELETE' })
+  if (!res.ok) {
+    const body = await res.text().catch(() => '')
+    throw new Error(`${res.status} ${res.statusText} — ${body}`)
+  }
+}
+
 export async function getDossierDocuments(id: string): Promise<DocumentItem[]> {
   const res = await fetch(`/api/dossiers/${id}/documents`)
   return handle<DocumentItem[]>(res)
@@ -53,6 +61,12 @@ export async function getDossierDocuments(id: string): Promise<DocumentItem[]> {
 export async function getDocumentText(dossierId: string, documentId: string): Promise<DocumentText> {
   const res = await fetch(`/api/dossiers/${dossierId}/documents/${documentId}/text`)
   return handle<DocumentText>(res)
+}
+
+/** URL du fichier original (jamais modifié) — à ouvrir dans un nouvel onglet pour vérifier
+ * une valeur extraite ou une pièce de complétude sans quitter l'application. */
+export function documentFileUrl(dossierId: string, documentId: string): string {
+  return `/api/dossiers/${dossierId}/documents/${documentId}/file`
 }
 
 export async function getTaxonomy(): Promise<TaxonomyCategory[]> {
@@ -81,6 +95,21 @@ export async function correctClassification(
 export async function applyReorganization(dossierId: string): Promise<ReorgApplyResult> {
   const res = await fetch(`/api/dossiers/${dossierId}/reorganize/apply`, { method: 'POST' })
   return handle<ReorgApplyResult>(res)
+}
+
+export async function reopenReorganization(dossierId: string): Promise<Dossier> {
+  const res = await fetch(`/api/dossiers/${dossierId}/reorganize/reopen`, { method: 'POST' })
+  return handle<Dossier>(res)
+}
+
+export async function reopenCompleteness(dossierId: string): Promise<Dossier> {
+  const res = await fetch(`/api/dossiers/${dossierId}/completeness/reopen`, { method: 'POST' })
+  return handle<Dossier>(res)
+}
+
+export async function reopenExtraction(dossierId: string): Promise<Dossier> {
+  const res = await fetch(`/api/dossiers/${dossierId}/extraction/reopen`, { method: 'POST' })
+  return handle<Dossier>(res)
 }
 
 export async function getReorganizationReport(dossierId: string): Promise<ReorgReport> {

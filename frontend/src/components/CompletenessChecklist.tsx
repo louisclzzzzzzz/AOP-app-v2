@@ -1,13 +1,23 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   correctCompleteness,
+  documentFileUrl,
   getCompleteness,
+  reopenCompleteness,
   runCompletenessAnalysis,
   updateCompletenessSelection,
   validateCompleteness,
 } from '../api'
 import type { CompletenessEntry, DocumentItem, DossierStatus } from '../types'
 import { isAtOrAfter } from '../statusFlow'
+import { HOVER_HINT_CLASS } from '../ui'
+import { ReopenButton } from './ReopenButton'
+
+const REOPENABLE_COMPLETENESS_STATUSES: DossierStatus[] = [
+  'completeness_validated',
+  'extraction_review',
+  'extraction_validated',
+]
 
 interface Props {
   dossierId: string
@@ -50,29 +60,38 @@ function certaintyTone(certainty: string | null): string {
   return 'text-slate-400'
 }
 
-function LocalisationCell({ paths }: { paths: string[] }) {
+function LocalisationCell({
+  dossierId,
+  items,
+}: {
+  dossierId: string
+  items: { documentId: string; path: string }[]
+}) {
   const [expanded, setExpanded] = useState(false)
-  if (paths.length === 0) return <span className="text-slate-300">—</span>
+  if (items.length === 0) return <span className="text-slate-300">—</span>
 
-  const shown = expanded ? paths : paths.slice(0, 1)
+  const shown = expanded ? items : items.slice(0, 1)
   return (
     <div className="flex max-w-[11rem] flex-col items-start gap-0.5">
-      {shown.map((p, i) => (
-        <span
-          key={i}
-          className="max-w-full truncate rounded bg-slate-100 px-1.5 py-0.5 text-[10px] text-slate-600"
-          title={p}
+      {shown.map((it) => (
+        <a
+          key={it.documentId}
+          href={documentFileUrl(dossierId, it.documentId)}
+          target="_blank"
+          rel="noreferrer"
+          className={`max-w-full truncate rounded bg-slate-100 px-1.5 py-0.5 text-[10px] text-blue-700 hover:bg-blue-50 hover:underline ${HOVER_HINT_CLASS}`}
+          title={`${it.path} — ouvrir le document original`}
         >
-          {p}
-        </span>
+          {it.path}
+        </a>
       ))}
-      {paths.length > 1 && (
+      {items.length > 1 && (
         <button
           type="button"
           onClick={() => setExpanded((v) => !v)}
           className="text-[10px] font-medium text-blue-600 hover:underline"
         >
-          {expanded ? 'Réduire' : `+ ${paths.length - 1} autre${paths.length - 1 > 1 ? 's' : ''}`}
+          {expanded ? 'Réduire' : `+ ${items.length - 1} autre${items.length - 1 > 1 ? 's' : ''}`}
         </button>
       )}
     </div>
@@ -177,6 +196,12 @@ export function CompletenessChecklist({ dossierId, status, documents, onApplied 
     }
   }, [dossierId, onApplied])
 
+  const handleReopen = useCallback(async () => {
+    await reopenCompleteness(dossierId)
+    setEntries(null)
+    onApplied()
+  }, [dossierId, onApplied])
+
   if (!isAtOrAfter(status, 'reorganized')) {
     return null
   }
@@ -224,6 +249,17 @@ export function CompletenessChecklist({ dossierId, status, documents, onApplied 
           >
             {validating ? 'Validation…' : 'Valider la complétude'}
           </button>
+        )}
+        {REOPENABLE_COMPLETENESS_STATUSES.includes(status) && (
+          <ReopenButton
+            label="Modifier la complétude"
+            warning={
+              isAtOrAfter(status, 'extraction_review')
+                ? "L'extraction (étape 3) déjà réalisée n'est pas effacée mais ne sera pas automatiquement remise à jour après correction."
+                : undefined
+            }
+            onReopen={handleReopen}
+          />
         )}
       </div>
 
@@ -322,10 +358,17 @@ export function CompletenessChecklist({ dossierId, status, documents, onApplied 
                   </td>
                   <td className="px-3 py-1.5 text-slate-500">
                     <LocalisationCell
-                      paths={entry.matched_document_ids.map((id) => documentPathById.get(id) ?? id)}
+                      dossierId={dossierId}
+                      items={entry.matched_document_ids.map((id) => ({
+                        documentId: id,
+                        path: documentPathById.get(id) ?? id,
+                      }))}
                     />
                   </td>
-                  <td className="max-w-xs truncate px-3 py-1.5 text-slate-500" title={entry.justification ?? ''}>
+                  <td
+                    className={`max-w-xs truncate px-3 py-1.5 text-slate-500 ${entry.justification ? HOVER_HINT_CLASS : ''}`}
+                    title={entry.justification ?? ''}
+                  >
                     {entry.completeness_error ? (
                       <span className="text-red-600">{entry.completeness_error}</span>
                     ) : (

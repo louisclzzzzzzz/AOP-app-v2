@@ -2,11 +2,13 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
+import shutil
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException, UploadFile
-from fastapi.responses import PlainTextResponse
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Response, UploadFile
+from fastapi.responses import FileResponse, PlainTextResponse
 
 from app.api.schemas import CountersOut, DocumentOut, DocumentTextOut, DossierOut
 from app.classify.pipeline import run_classification_pipeline
@@ -18,11 +20,14 @@ from app.store.db import session_scope
 from app.store.models import Dossier, DossierStatus, Document, TextCache
 from app.store.repository import (
     create_dossier,
+    delete_dossier,
+    find_dossier_by_upload_hash,
     get_dossier,
     get_document,
     list_documents,
     list_dossiers,
     set_dossier_status,
+    set_dossier_upload_info,
 )
 
 logger = logging.getLogger(__name__)
@@ -41,6 +46,7 @@ def dossier_to_out(d: Dossier) -> DossierOut:
             total_files=d.total_files,
             text_extracted=d.files_text_extracted,
             non_analyzable=d.files_non_analyzable,
+            non_analyzable_at_risk=d.files_non_analyzable_at_risk,
             error=d.files_error,
             classified=d.files_classified,
             pieces_selected=d.pieces_selected,
@@ -59,6 +65,9 @@ def dossier_to_out(d: Dossier) -> DossierOut:
         completeness_validated_at=d.completeness_validated_at,
         extraction_validated_at=d.extraction_validated_at,
         synthese_ia=d.synthese_ia,
+        duplicate_of_dossier_id=d.duplicate_of_dossier_id,
+        duplicate_of_filename=d.duplicate_of_filename,
+        duplicate_of_created_at=d.duplicate_of_created_at,
         created_at=d.created_at,
         updated_at=d.updated_at,
     )
@@ -75,6 +84,7 @@ def _document_to_out(doc: Document) -> DocumentOut:
         category=doc.category,
         is_analyzable=doc.is_analyzable,
         non_analyzable_reason=doc.non_analyzable_reason,
+        non_analyzable_at_risk=doc.non_analyzable_at_risk,
         parent_archive_id=doc.parent_archive_id,
         stage=doc.stage,
         stage_error=doc.stage_error,
@@ -124,19 +134,46 @@ async def upload_dossier(file: UploadFile, background_tasks: BackgroundTasks) ->
     with session_scope() as s:
         dossier = create_dossier(s, file.filename)
         dossier_id = dossier.id
-        result = dossier_to_out(dossier)
 
     settings = get_settings()
     dossier_dir = settings.workspace_dir / dossier_id
     dossier_dir.mkdir(parents=True, exist_ok=True)
     zip_path = dossier_dir / "upload.zip"
 
+    hasher = hashlib.sha256()
     with open(zip_path, "wb") as out:
         while chunk := await file.read(1024 * 1024):
+            hasher.update(chunk)
             out.write(chunk)
+    upload_sha256 = hasher.hexdigest()
+
+    with session_scope() as s:
+        dossier = get_dossier(s, dossier_id)
+        assert dossier is not None
+        # Avertissement non bloquant seulement : un même DCE peut légitimement être ré-analysé
+        # (ex. après une mise à jour de la taxonomie) — jamais un refus d'upload.
+        duplicate = find_dossier_by_upload_hash(s, upload_sha256, exclude_id=dossier_id)
+        set_dossier_upload_info(s, dossier, upload_sha256=upload_sha256, duplicate_of=duplicate)
+        result = dossier_to_out(dossier)
 
     background_tasks.add_task(_run_pipeline_safely, dossier_id, zip_path)
     return result
+
+
+@router.delete("/{dossier_id}", status_code=204)
+async def delete_dossier_endpoint(dossier_id: str) -> Response:
+    with session_scope() as s:
+        dossier = get_dossier(s, dossier_id)
+        if dossier is None:
+            raise HTTPException(404, "Dossier introuvable")
+        delete_dossier(s, dossier_id)
+
+    settings = get_settings()
+    dossier_dir = settings.workspace_dir / dossier_id
+    if dossier_dir.exists():
+        shutil.rmtree(dossier_dir, ignore_errors=True)
+
+    return Response(status_code=204)
 
 
 @router.get("", response_model=list[DossierOut])
@@ -186,3 +223,28 @@ async def get_document_text(dossier_id: str, document_id: str) -> DocumentTextOu
             char_count=cache.char_count,
             text=text,
         )
+
+
+@router.get("/{dossier_id}/documents/{document_id}/file")
+async def get_document_file(dossier_id: str, document_id: str) -> FileResponse:
+    """Sert le fichier original tel qu'uploadé (jamais une version modifiée), pour permettre à
+    l'expert métier de vérifier une valeur extraite en un clic plutôt que de devoir retrouver
+    le document par ses propres moyens (cf. FRICTIONS_EXPERT_METIER.md §5)."""
+    with session_scope() as s:
+        doc = get_document(s, document_id)
+        if doc is None or doc.dossier_id != dossier_id:
+            raise HTTPException(404, "Document introuvable")
+        relative_path = doc.relative_path
+        filename = doc.filename
+
+    settings = get_settings()
+    source_dir = (settings.workspace_dir / dossier_id / "source").resolve()
+    file_path = (source_dir / relative_path).resolve()
+    try:
+        file_path.relative_to(source_dir)
+    except ValueError:
+        raise HTTPException(400, "Chemin de document invalide") from None
+    if not file_path.is_file():
+        raise HTTPException(404, "Fichier introuvable sur disque")
+
+    return FileResponse(file_path, filename=filename, content_disposition_type="inline")

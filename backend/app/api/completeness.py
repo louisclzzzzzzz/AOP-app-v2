@@ -28,6 +28,7 @@ from app.store.repository import (
     get_dossier,
     list_completeness_checks,
     recompute_completeness_counters,
+    reopen_completeness,
     set_completeness_correction,
     set_completeness_selection,
     set_dossier_status,
@@ -211,6 +212,37 @@ async def validate_completeness_endpoint(dossier_id: str) -> CompletenessApplyOu
         message=f"Complétude validée — {report['total_pieces_selected']} pièce(s)",
     )
     return CompletenessApplyOut(dossier=dossier_out, report=report)
+
+
+_REOPENABLE_COMPLETENESS_STATUSES = (
+    DossierStatus.COMPLETENESS_VALIDATED.value,
+    DossierStatus.EXTRACTION_REVIEW.value,
+    DossierStatus.EXTRACTION_VALIDATED.value,
+)
+
+
+@router.post("/{dossier_id}/completeness/reopen", response_model=DossierOut)
+async def reopen_completeness_endpoint(dossier_id: str) -> DossierOut:
+    with session_scope() as s:
+        dossier = get_dossier(s, dossier_id)
+        if dossier is None:
+            raise HTTPException(404, "Dossier introuvable")
+        if dossier.status not in _REOPENABLE_COMPLETENESS_STATUSES:
+            raise HTTPException(
+                409,
+                f"Ce dossier ne peut pas être rouvert pour correction de la complétude "
+                f"(statut actuel : {dossier.status}).",
+            )
+        reopen_completeness(s, dossier)
+        dossier_out = dossier_to_out(dossier)
+
+    await progress_manager.broadcast(
+        dossier_id,
+        stage="completeness",
+        status=DossierStatus.COMPLETENESS_REVIEW.value,
+        message="Complétude rouverte pour correction",
+    )
+    return dossier_out
 
 
 @router.get("/{dossier_id}/completeness/report")

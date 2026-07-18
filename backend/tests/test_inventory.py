@@ -23,6 +23,7 @@ def _build(tmp_path, make_zip, entries):
                 "category": d.category,
                 "is_analyzable": d.is_analyzable,
                 "non_analyzable_reason": d.non_analyzable_reason,
+                "non_analyzable_at_risk": d.non_analyzable_at_risk,
                 "parent_archive_id": d.parent_archive_id,
                 "sha256": d.sha256,
                 "id": d.id,
@@ -138,6 +139,33 @@ def test_plan_pdf_and_image_marked_non_analyzable_by_filename(tmp_path, isolated
     assert "OCR non nécessaire" in by_path["PLANS/AR 010 - Plan masse.pdf"]["non_analyzable_reason"]
     assert by_path["PLANS/Facade nord.jpg"]["is_analyzable"] is False
     assert by_path["ADMIN/RC.pdf"]["is_analyzable"] is True
+
+
+def test_non_analyzable_at_risk_distinguishes_real_risk_from_harmless(tmp_path, isolated_workspace, make_zip):
+    """Parmi les fichiers non analysables, seuls ceux dont le contenu est potentiellement
+    pertinent mais inaccessible (archive protégée/corrompue, extension inconnue) doivent
+    porter `non_analyzable_at_risk=True` — un plan ou un fichier système non analysé n'est
+    pas un signal d'alerte pour l'expert métier (cf. FRICTIONS_EXPERT_METIER.md §5)."""
+    docs = _build(
+        tmp_path,
+        make_zip,
+        {
+            "ASS/corrompu.zip": b"not a real zip file",
+            "DIVERS/fichier.inconnu": "contenu dans un format non supporté",
+            "PLANS/AR 010 - Plan masse.pdf": "contenu plan",
+            "PLANS/Thumbs.db": "noise",
+            "ADMIN/RC.pdf": "contenu texte, pas un plan",
+        },
+    )
+    by_path = {d["relative_path"]: d for d in docs}
+
+    assert by_path["ASS/corrompu.zip"]["non_analyzable_at_risk"] is True
+    assert by_path["DIVERS/fichier.inconnu"]["non_analyzable_at_risk"] is True
+
+    assert by_path["PLANS/AR 010 - Plan masse.pdf"]["non_analyzable_at_risk"] is False
+    assert by_path["PLANS/Thumbs.db"]["non_analyzable_at_risk"] is False
+    # analysable : jamais "à risque" (la notion ne s'applique qu'aux non-analysables)
+    assert by_path["ADMIN/RC.pdf"]["non_analyzable_at_risk"] is False
 
 
 def test_hash_file_matches_sha256(tmp_path):

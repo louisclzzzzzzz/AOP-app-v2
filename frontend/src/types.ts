@@ -2,6 +2,7 @@ export interface Counters {
   total_files: number
   text_extracted: number
   non_analyzable: number
+  non_analyzable_at_risk: number
   error: number
   classified: number
   pieces_selected: number
@@ -46,6 +47,9 @@ export interface Dossier {
   completeness_validated_at: string | null
   extraction_validated_at: string | null
   synthese_ia: string | null
+  duplicate_of_dossier_id: string | null
+  duplicate_of_filename: string | null
+  duplicate_of_created_at: string | null
   created_at: string
   updated_at: string
 }
@@ -60,6 +64,7 @@ export interface DocumentItem {
   category: string
   is_analyzable: boolean
   non_analyzable_reason: string | null
+  non_analyzable_at_risk: boolean
   parent_archive_id: string | null
   stage: string
   stage_error: string | null

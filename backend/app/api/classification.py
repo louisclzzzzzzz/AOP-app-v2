@@ -12,6 +12,7 @@ from app.api.dossiers import dossier_to_out
 from app.api.schemas import (
     ClassificationCorrectionIn,
     ClassificationEntryOut,
+    DossierOut,
     ReorgApplyOut,
     TaxonomyCategoryOut,
 )
@@ -25,6 +26,7 @@ from app.store.repository import (
     get_dossier,
     get_document,
     list_documents,
+    reopen_reorganization,
     set_document_classification_correction,
     set_dossier_status,
 )
@@ -160,6 +162,43 @@ async def apply_reorganization_endpoint(dossier_id: str) -> ReorgApplyOut:
         message=f"Copie triée appliquée — {report['total_files']} fichiers copiés",
     )
     return ReorgApplyOut(dossier=dossier_out, report=report)
+
+
+_REOPENABLE_REORG_STATUSES = (
+    DossierStatus.REORGANIZED.value,
+    DossierStatus.COMPLETENESS_REVIEW.value,
+    DossierStatus.COMPLETENESS_VALIDATED.value,
+    DossierStatus.EXTRACTION_REVIEW.value,
+    DossierStatus.EXTRACTION_VALIDATED.value,
+)
+
+
+@router.post("/{dossier_id}/reorganize/reopen", response_model=DossierOut)
+async def reopen_reorganization_endpoint(dossier_id: str) -> DossierOut:
+    """Rouvre le plan de classement pour correction, même si les étapes 2/3 ont déjà été
+    réalisées — le moteur de copie triée est déjà idempotent (§ reorg.py), seule l'UI
+    verrouillait cette possibilité. Invalide les résultats des étapes 2/3 (cf.
+    `reopen_reorganization`) : ils devront être relancés après correction."""
+    with session_scope() as s:
+        dossier = get_dossier(s, dossier_id)
+        if dossier is None:
+            raise HTTPException(404, "Dossier introuvable")
+        if dossier.status not in _REOPENABLE_REORG_STATUSES:
+            raise HTTPException(
+                409,
+                f"Ce dossier ne peut pas être rouvert pour correction du classement "
+                f"(statut actuel : {dossier.status}).",
+            )
+        reopen_reorganization(s, dossier)
+        dossier_out = dossier_to_out(dossier)
+
+    await progress_manager.broadcast(
+        dossier_id,
+        stage="classify",
+        status=DossierStatus.CLASSIFIED.value,
+        message="Plan de classement rouvert pour correction — étapes 2/3 à relancer",
+    )
+    return dossier_out
 
 
 @router.get("/{dossier_id}/reorganize/report")

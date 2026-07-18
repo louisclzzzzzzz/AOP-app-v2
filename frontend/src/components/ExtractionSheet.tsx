@@ -1,16 +1,20 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   correctExtraction,
+  documentFileUrl,
   getCompleteness,
   getExtraction,
   getReorganizationReport,
+  reopenExtraction,
   runExtractionAnalysis,
   validateExtraction,
 } from '../api'
 import type { Dossier, DocumentItem, DossierStatus, ExtractionEntry } from '../types'
 import { isAtOrAfter } from '../statusFlow'
+import { HOVER_HINT_CLASS } from '../ui'
 import { CERTAINTY_LABELS, PRESENCE_LABELS } from './CompletenessChecklist'
 import { reorgReportEntriesToTree, treeToMarkdown } from './OrganizedTree'
+import { ReopenButton } from './ReopenButton'
 
 interface Props {
   dossierId: string
@@ -147,6 +151,12 @@ export function ExtractionSheet({ dossierId, dossier, documents, onApplied }: Pr
     } finally {
       setValidating(false)
     }
+  }, [dossierId, onApplied])
+
+  const handleReopen = useCallback(async () => {
+    await reopenExtraction(dossierId)
+    setEntries(null)
+    onApplied()
   }, [dossierId, onApplied])
 
   const handleDownloadReport = useCallback(async () => {
@@ -298,6 +308,9 @@ ${extractionMd}
               {validating ? 'Validation…' : "Valider l'extraction"}
             </button>
           )}
+          {status === 'extraction_validated' && (
+            <ReopenButton label="Modifier l'extraction" onReopen={handleReopen} />
+          )}
         </div>
       </div>
       {error && <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p>}
@@ -354,9 +367,20 @@ ${extractionMd}
                       </td>
                       <td className="px-3 py-1.5 text-slate-500">
                         {entry.sources.length > 0
-                          ? entry.sources
-                              .map((s) => documentPathById.get(s.document_id) ?? s.filename)
-                              .join(', ')
+                          ? entry.sources.map((s, i) => (
+                              <span key={s.document_id}>
+                                {i > 0 && ', '}
+                                <a
+                                  href={documentFileUrl(dossierId, s.document_id)}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="text-blue-600 hover:underline"
+                                  title="Ouvrir le document original dans un nouvel onglet"
+                                >
+                                  {documentPathById.get(s.document_id) ?? s.filename}
+                                </a>
+                              </span>
+                            ))
                           : '—'}
                       </td>
                       <td className={`px-3 py-1.5 font-medium ${confidenceTone(entry.confidence)}`}>
@@ -365,7 +389,7 @@ ${extractionMd}
                       <td className="px-3 py-1.5">
                         {entry.cross_check_status && entry.cross_check_status !== 'not_applicable' ? (
                           <span
-                            className={`rounded px-1.5 py-0.5 text-[10px] ${crossCheckTone(entry.cross_check_status)}`}
+                            className={`rounded px-1.5 py-0.5 text-[10px] ${crossCheckTone(entry.cross_check_status)} ${entry.cross_check_status === 'incoherent' ? HOVER_HINT_CLASS : ''}`}
                             title={
                               entry.cross_check_status === 'incoherent'
                                 ? entry.sources.map((s) => `${s.value} (${s.filename})`).join(' vs ')

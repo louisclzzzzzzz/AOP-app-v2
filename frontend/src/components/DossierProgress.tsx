@@ -12,6 +12,7 @@ import { StatusBadge } from './StatusBadge'
 interface Props {
   dossierId: string
   onBack: () => void
+  onSelectDossier?: (id: string) => void
 }
 
 const STAGE_LABELS: Record<string, string> = {
@@ -88,7 +89,7 @@ function computeProgress(
   }
 }
 
-export function DossierProgress({ dossierId, onBack }: Props) {
+export function DossierProgress({ dossierId, onBack, onSelectDossier }: Props) {
   const [dossier, setDossier] = useState<Dossier | null>(null)
   const [events, setEvents] = useState<ProgressEvent[]>([])
   const [documents, setDocuments] = useState<DocumentItem[] | null>(null)
@@ -190,6 +191,23 @@ export function DossierProgress({ dossierId, onBack }: Props) {
             {dossier.error_message}
           </p>
         )}
+        {dossier.duplicate_of_dossier_id && (
+          <p className="mt-2 rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-800">
+            Ce dossier semble identique à «&nbsp;{dossier.duplicate_of_filename}&nbsp;» déjà traité le{' '}
+            {dossier.duplicate_of_created_at && new Date(dossier.duplicate_of_created_at).toLocaleString('fr-FR')}
+            {onSelectDossier && dossier.duplicate_of_dossier_id && (
+              <>
+                {' — '}
+                <button
+                  onClick={() => onSelectDossier(dossier.duplicate_of_dossier_id!)}
+                  className="font-medium underline hover:text-amber-900"
+                >
+                  voir ce dossier
+                </button>
+              </>
+            )}
+          </p>
+        )}
       </div>
 
       <DossierSummary synthese={dossier.synthese_ia} />
@@ -210,7 +228,21 @@ export function DossierProgress({ dossierId, onBack }: Props) {
       <div className="grid grid-cols-4 gap-3 text-center">
         <Stat label="Total" value={counters.total_files} />
         <Stat label="Texte extrait" value={counters.text_extracted} tone="text-green-700" />
-        <Stat label="Non analysables" value={counters.non_analyzable} tone="text-slate-500" />
+        <Stat
+          label="Non analysables"
+          value={counters.non_analyzable}
+          tone="text-slate-500"
+          hint={
+            counters.non_analyzable_at_risk > 0 ? (
+              <span
+                className="mt-1 inline-block rounded-full bg-red-100 px-2 py-0.5 text-[10px] font-medium text-red-700"
+                title="Archives protégées/corrompues ou extensions non supportées : contenu potentiellement pertinent mais inaccessible — voir le détail dans l'inventaire ci-dessous."
+              >
+                {counters.non_analyzable_at_risk} à vérifier
+              </span>
+            ) : undefined
+          }
+        />
         <Stat label="Erreurs" value={counters.error} tone="text-red-700" />
       </div>
 
@@ -287,12 +319,20 @@ export function DossierProgress({ dossierId, onBack }: Props) {
               </thead>
               <tbody className="divide-y divide-slate-100">
                 {documents.map((doc) => (
-                  <tr key={doc.id} className={doc.is_analyzable ? '' : 'text-slate-400'}>
+                  <tr
+                    key={doc.id}
+                    className={doc.non_analyzable_at_risk ? 'bg-red-50' : doc.is_analyzable ? '' : 'text-slate-400'}
+                  >
                     <td className="px-3 py-1.5">{doc.relative_path}</td>
                     <td className="px-3 py-1.5">{doc.category}</td>
                     <td className="px-3 py-1.5">
                       {doc.stage === 'error' ? (
                         <span className="text-red-600">{doc.stage_error ?? 'erreur'}</span>
+                      ) : doc.non_analyzable_at_risk ? (
+                        <span className="text-red-700">
+                          <span className="mr-1 rounded bg-red-100 px-1 text-[10px] font-medium">à vérifier</span>
+                          {doc.non_analyzable_reason}
+                        </span>
                       ) : (
                         doc.non_analyzable_reason ?? doc.stage
                       )}
@@ -309,11 +349,22 @@ export function DossierProgress({ dossierId, onBack }: Props) {
   )
 }
 
-function Stat({ label, value, tone }: { label: string; value: number; tone?: string }) {
+function Stat({
+  label,
+  value,
+  tone,
+  hint,
+}: {
+  label: string
+  value: number
+  tone?: string
+  hint?: React.ReactNode
+}) {
   return (
     <div className="rounded-lg border border-slate-200 bg-white py-3">
       <p className={`text-xl font-semibold ${tone ?? 'text-slate-800'}`}>{value}</p>
       <p className="text-xs text-slate-400">{label}</p>
+      {hint}
     </div>
   )
 }

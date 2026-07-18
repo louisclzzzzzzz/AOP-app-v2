@@ -116,6 +116,18 @@ def test_upload_and_full_ingestion_via_api(isolated_workspace, monkeypatch):
     assert "Règlement de consultation" in body["text"]
     assert body["method"] == "native_pdf"
 
+    # --- Fichier original téléchargeable/prévisualisable (§7 FRICTIONS_EXPERT_METIER.md) -----
+    with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
+        expected_bytes = zf.read("ADMIN/RC 2024.pdf")
+    file_resp = client.get(f"/api/dossiers/{dossier_id}/documents/{rc_doc_id}/file")
+    assert file_resp.status_code == 200
+    assert file_resp.content == expected_bytes
+    assert file_resp.headers["content-type"] == "application/pdf"
+    assert "inline" in file_resp.headers["content-disposition"]
+
+    missing_resp = client.get(f"/api/dossiers/{dossier_id}/documents/00000000-0000-0000-0000-000000000000/file")
+    assert missing_resp.status_code == 404
+
 
 def test_upload_rejects_non_zip(isolated_workspace):
     from app.main import app
@@ -126,6 +138,87 @@ def test_upload_rejects_non_zip(isolated_workspace):
         files={"file": ("notes.txt", b"hello", "text/plain")},
     )
     assert response.status_code == 400
+
+
+def _wait_for_terminal_status(client, dossier_id, deadline_seconds=20):
+    deadline = time.time() + deadline_seconds
+    while time.time() < deadline:
+        detail = client.get(f"/api/dossiers/{dossier_id}").json()
+        if detail["status"] in ("classified", "error"):
+            return detail
+        time.sleep(0.1)
+    raise AssertionError("le pipeline n'a pas terminé dans le délai imparti")
+
+
+def test_reuploading_identical_zip_flags_duplicate_without_blocking(isolated_workspace, monkeypatch):
+    """Ré-uploader un zip identique doit passer (jamais bloqué) mais porter un avertissement
+    de doublon non intrusif pointant vers le premier dossier (cf. FRICTIONS_EXPERT_METIER.md §1)."""
+    _stub_classification_llm(monkeypatch)
+    from app.main import app
+
+    client = TestClient(app)
+    zip_bytes = _build_test_zip()
+
+    first = client.post("/api/dossiers", files={"file": ("root.zip", zip_bytes, "application/zip")}).json()
+    _wait_for_terminal_status(client, first["id"])
+
+    second = client.post("/api/dossiers", files={"file": ("root.zip", zip_bytes, "application/zip")}).json()
+
+    assert second["duplicate_of_dossier_id"] == first["id"]
+    assert second["duplicate_of_filename"] == "root.zip"
+    # le premier dossier, uploadé avant que le doublon n'existe, n'en porte aucune trace
+    assert first["duplicate_of_dossier_id"] is None
+
+    _wait_for_terminal_status(client, second["id"])
+    assert client.get(f"/api/dossiers/{second['id']}").json()["status"] == "classified"
+
+
+def test_uploading_different_zip_does_not_flag_duplicate(isolated_workspace, monkeypatch):
+    _stub_classification_llm(monkeypatch)
+    from app.main import app
+
+    client = TestClient(app)
+
+    first = client.post(
+        "/api/dossiers", files={"file": ("root.zip", _build_test_zip(), "application/zip")}
+    ).json()
+    _wait_for_terminal_status(client, first["id"])
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("ADMIN/AUTRE.pdf", _dense_pdf_bytes("Contenu totalement différent."))
+    second = client.post(
+        "/api/dossiers", files={"file": ("autre.zip", buf.getvalue(), "application/zip")}
+    ).json()
+
+    assert second["duplicate_of_dossier_id"] is None
+
+
+def test_delete_dossier_removes_db_rows_and_workspace_files(isolated_workspace, monkeypatch):
+    _stub_classification_llm(monkeypatch)
+    from app.main import app
+    from app.settings import get_settings
+
+    client = TestClient(app)
+    dossier = client.post(
+        "/api/dossiers", files={"file": ("root.zip", _build_test_zip(), "application/zip")}
+    ).json()
+    dossier_id = dossier["id"]
+    _wait_for_terminal_status(client, dossier_id)
+
+    dossier_dir = get_settings().workspace_dir / dossier_id
+    assert dossier_dir.exists()
+
+    delete_response = client.delete(f"/api/dossiers/{dossier_id}")
+    assert delete_response.status_code == 204
+
+    assert client.get(f"/api/dossiers/{dossier_id}").status_code == 404
+    assert client.get(f"/api/dossiers/{dossier_id}/documents").status_code == 404
+    assert not dossier_dir.exists()
+
+    # dossier absent de la liste et suppression idempotente en cas de double-clic
+    assert dossier_id not in {d["id"] for d in client.get("/api/dossiers").json()}
+    assert client.delete(f"/api/dossiers/{dossier_id}").status_code == 404
 
 
 def test_websocket_receives_progress_events(isolated_workspace, monkeypatch):

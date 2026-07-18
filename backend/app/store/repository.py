@@ -5,7 +5,7 @@ import datetime as dt
 import json
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from app.store.models import (
@@ -51,11 +51,102 @@ def set_dossier_status(
     session.flush()
 
 
+def find_dossier_by_upload_hash(session: Session, sha256: str, *, exclude_id: str) -> Dossier | None:
+    """Le plus récent autre dossier portant le même hash de zip uploadé — sert uniquement à
+    avertir d'un probable doublon, jamais à bloquer l'upload."""
+    stmt = (
+        select(Dossier)
+        .where(Dossier.upload_sha256 == sha256, Dossier.id != exclude_id)
+        .order_by(Dossier.created_at.desc())
+    )
+    return session.scalars(stmt).first()
+
+
+def set_dossier_upload_info(
+    session: Session, dossier: Dossier, *, upload_sha256: str, duplicate_of: Dossier | None
+) -> None:
+    dossier.upload_sha256 = upload_sha256
+    if duplicate_of is not None:
+        dossier.duplicate_of_dossier_id = duplicate_of.id
+        dossier.duplicate_of_filename = duplicate_of.original_filename
+        dossier.duplicate_of_created_at = duplicate_of.created_at
+    session.add(dossier)
+    session.flush()
+
+
+def reopen_reorganization(session: Session, dossier: Dossier) -> None:
+    """Rouvre l'étape 1 pour correction. Les résultats des étapes 2/3, s'ils existent,
+    référencent des documents dont le classement (catégorie/lot) va changer une fois
+    reclassés : les garder laisserait un état silencieusement incohérent plutôt que de
+    forcer une ré-analyse propre — cf. FRICTIONS_EXPERT_METIER.md §3."""
+    session.execute(delete(ExtractionResult).where(ExtractionResult.dossier_id == dossier.id))
+    session.execute(delete(CompletenessCheck).where(CompletenessCheck.dossier_id == dossier.id))
+    dossier.reorg_applied_at = None
+    dossier.reorg_report_json_path = None
+    dossier.reorg_report_md_path = None
+    dossier.completeness_validated_at = None
+    dossier.completeness_report_json_path = None
+    dossier.completeness_report_md_path = None
+    dossier.extraction_validated_at = None
+    dossier.extraction_report_json_path = None
+    dossier.extraction_report_md_path = None
+    dossier.pieces_selected = 0
+    dossier.pieces_checked = 0
+    dossier.pieces_present = 0
+    dossier.pieces_absent = 0
+    dossier.pieces_error = 0
+    dossier.fields_total = 0
+    dossier.fields_extracted = 0
+    dossier.fields_present = 0
+    dossier.fields_absent = 0
+    dossier.fields_incoherent = 0
+    dossier.fields_error = 0
+    dossier.status = DossierStatus.CLASSIFIED.value
+    session.add(dossier)
+    session.flush()
+
+
+def reopen_completeness(session: Session, dossier: Dossier) -> None:
+    """Rouvre l'étape 2 pour correction. N'invalide pas l'extraction (étape 3) : elle relit
+    l'intégralité des documents organisés, indépendamment des sélections/corrections de
+    complétude — seulement potentiellement obsolète si l'étape 1 est elle-même rouverte."""
+    dossier.completeness_validated_at = None
+    dossier.completeness_report_json_path = None
+    dossier.completeness_report_md_path = None
+    dossier.status = DossierStatus.COMPLETENESS_REVIEW.value
+    session.add(dossier)
+    session.flush()
+
+
+def reopen_extraction(session: Session, dossier: Dossier) -> None:
+    """Rouvre l'étape 3 pour correction — dernière étape, aucune donnée en aval à invalider."""
+    dossier.extraction_validated_at = None
+    dossier.extraction_report_json_path = None
+    dossier.extraction_report_md_path = None
+    dossier.status = DossierStatus.EXTRACTION_REVIEW.value
+    session.add(dossier)
+    session.flush()
+
+
+def delete_dossier(session: Session, dossier_id: str) -> None:
+    """Supprime le dossier et toutes ses lignes dépendantes. Ne touche jamais `text_cache` :
+    ces entrées sont partagées par hash de contenu entre dossiers (§ TextCache) et peuvent
+    être référencées par d'autres dossiers encore présents."""
+    session.execute(delete(ExtractionResult).where(ExtractionResult.dossier_id == dossier_id))
+    session.execute(delete(CompletenessCheck).where(CompletenessCheck.dossier_id == dossier_id))
+    session.execute(delete(Document).where(Document.dossier_id == dossier_id))
+    session.execute(delete(Dossier).where(Dossier.id == dossier_id))
+    session.flush()
+
+
 def recompute_dossier_counters(session: Session, dossier: Dossier) -> None:
     docs = session.scalars(select(Document).where(Document.dossier_id == dossier.id)).all()
     dossier.total_files = len(docs)
     dossier.files_text_extracted = sum(1 for d in docs if d.stage == "text_extracted")
     dossier.files_non_analyzable = sum(1 for d in docs if d.stage == "non_analyzable")
+    dossier.files_non_analyzable_at_risk = sum(
+        1 for d in docs if d.stage == "non_analyzable" and d.non_analyzable_at_risk
+    )
     dossier.files_error = sum(1 for d in docs if d.stage == "error")
     dossier.files_classified = sum(
         1

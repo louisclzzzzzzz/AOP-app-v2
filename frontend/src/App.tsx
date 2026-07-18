@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { listDossiers, uploadDossier } from './api'
+import { deleteDossier, listDossiers, uploadDossier } from './api'
 import type { Dossier } from './types'
 import { UploadDropzone } from './components/UploadDropzone'
 import { DossierList } from './components/DossierList'
@@ -33,10 +33,19 @@ export default function App() {
     }
   }, [])
 
+  const handleInvalidFile = useCallback((file: File) => {
+    setUploadError(`« ${file.name} » n’est pas un fichier .zip — seuls les fichiers .zip sont acceptés.`)
+  }, [])
+
   const handleBack = useCallback(() => {
     setSelectedId(null)
     refresh()
   }, [refresh])
+
+  const handleDelete = useCallback(async (id: string) => {
+    await deleteDossier(id)
+    setDossiers((prev) => prev.filter((d) => d.id !== id))
+  }, [])
 
   return (
     <div className="min-h-screen bg-slate-50">
@@ -51,11 +60,15 @@ export default function App() {
 
       <main className="mx-auto max-w-4xl px-6 py-8">
         {selectedId ? (
-          <DossierProgress dossierId={selectedId} onBack={handleBack} />
+          <DossierProgress dossierId={selectedId} onBack={handleBack} onSelectDossier={setSelectedId} />
         ) : (
           <div className="flex flex-col gap-8">
             <section>
-              <UploadDropzone onFileSelected={handleFileSelected} disabled={isUploading} />
+              <UploadDropzone
+                onFileSelected={handleFileSelected}
+                onInvalidFile={handleInvalidFile}
+                disabled={isUploading}
+              />
               {isUploading && <p className="mt-2 text-sm text-slate-400">Envoi en cours…</p>}
               {uploadError && (
                 <p className="mt-2 rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">
@@ -66,7 +79,7 @@ export default function App() {
 
             <section>
               <h2 className="mb-3 text-sm font-medium text-slate-600">Dossiers</h2>
-              <DossierList dossiers={dossiers} onSelect={setSelectedId} />
+              <DossierList dossiers={dossiers} onSelect={setSelectedId} onDelete={handleDelete} />
             </section>
           </div>
         )}
