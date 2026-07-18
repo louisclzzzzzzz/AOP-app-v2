@@ -4,6 +4,7 @@ import type { Counters, Dossier, DossierStatus, DocumentItem, ProgressEvent } fr
 import { isAtOrAfter } from '../statusFlow'
 import { CollapsiblePanel } from './CollapsiblePanel'
 import { CompletenessChecklist } from './CompletenessChecklist'
+import { DossierSummary } from './DossierSummary'
 import { ExtractionSheet } from './ExtractionSheet'
 import { ReorganizationPlan } from './ReorganizationPlan'
 import { StatusBadge } from './StatusBadge'
@@ -94,6 +95,7 @@ export function DossierProgress({ dossierId, onBack }: Props) {
   const [activeStep, setActiveStep] = useState<StepNumber | null>(null)
   const logEndRef = useRef<HTMLDivElement>(null)
   const autoFollowRef = useRef(true)
+  const synthesisFetchedForRef = useRef<string | null>(null)
 
   useEffect(() => {
     let cancelled = false
@@ -126,6 +128,17 @@ export function DossierProgress({ dossierId, onBack }: Props) {
       getDossierDocuments(dossierId).then(setDocuments)
     }
   }, [dossier, dossierId, documents])
+
+  useEffect(() => {
+    if (
+      dossier &&
+      isAtOrAfter(dossier.status, 'extraction_review') &&
+      synthesisFetchedForRef.current !== dossier.id
+    ) {
+      synthesisFetchedForRef.current = dossier.id
+      getDossier(dossierId).then(setDossier)
+    }
+  }, [dossier, dossierId])
 
   const handleApplied = useCallback(() => {
     getDossier(dossierId).then(setDossier)
@@ -178,6 +191,8 @@ export function DossierProgress({ dossierId, onBack }: Props) {
           </p>
         )}
       </div>
+
+      <DossierSummary synthese={dossier.synthese_ia} />
 
       <div>
         <div className="mb-1 flex justify-between text-xs text-slate-500">

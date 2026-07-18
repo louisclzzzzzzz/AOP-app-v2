@@ -93,7 +93,9 @@ def _fake_completeness_call(monkeypatch):
 
 def _fake_extraction_call(monkeypatch):
     """Simule le LLM d'extraction groupé par document (§3 OPTIMISATION.md) : un seul appel par
-    document, une décision par field_id demandé dans le prompt."""
+    document, une décision par field_id demandé dans le prompt. Simule aussi l'appel de synthèse
+    textuelle en fin de pipeline (réponse à champ unique `synthese`, pas de regroupement par
+    field_id — reconnu par l'absence du champ `items` sur le modèle de réponse demandé)."""
     import re
 
     import app.extraction.engine as engine
@@ -117,6 +119,8 @@ def _fake_extraction_call(monkeypatch):
         return dict(found=False, value="", confidence=0.1, justification="Absent.", citation="")
 
     def _fake(*, system_prompt, user_prompt, response_model, what):
+        if "synthese" in response_model.model_fields:
+            return response_model(synthese="Synthèse de test."), "mistral-large-test-fake"
         filename_match = re.search(r"Document analysé : (.+)", user_prompt)
         filename = filename_match.group(1).strip() if filename_match else ""
         field_ids = re.findall(r'field_id="([^"]+)"', user_prompt)
@@ -232,3 +236,4 @@ def test_full_extraction_flow_with_cross_check_incoherence(isolated_workspace, m
     final_dossier = client.get(f"/api/dossiers/{dossier_id}").json()
     assert final_dossier["status"] == "extraction_validated"
     assert final_dossier["extraction_validated_at"] is not None
+    assert final_dossier["synthese_ia"] == "Synthèse de test."

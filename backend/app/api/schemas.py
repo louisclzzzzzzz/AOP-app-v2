@@ -35,6 +35,7 @@ class DossierOut(BaseModel):
     reorg_applied_at: dt.datetime | None = None
     completeness_validated_at: dt.datetime | None = None
     extraction_validated_at: dt.datetime | None = None
+    synthese_ia: str | None = None
     created_at: dt.datetime
     updated_at: dt.datetime
 
