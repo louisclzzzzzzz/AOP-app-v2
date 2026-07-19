@@ -13,7 +13,7 @@ from fastapi.responses import FileResponse, PlainTextResponse
 from app.api.schemas import CountersOut, DocumentOut, DocumentTextOut, DossierOut
 from app.classify.pipeline import run_classification_pipeline
 from app.ingestion.pipeline import run_ingestion_pipeline
-from app.ocr.cache import read_text_cache
+from app.ocr.cache import delete_text_cache_files, read_text_cache
 from app.progress import progress_manager
 from app.settings import get_settings
 from app.store.db import session_scope
@@ -166,12 +166,17 @@ async def delete_dossier_endpoint(dossier_id: str) -> Response:
         dossier = get_dossier(s, dossier_id)
         if dossier is None:
             raise HTTPException(404, "Dossier introuvable")
-        delete_dossier(s, dossier_id)
+        orphaned_hashes = delete_dossier(s, dossier_id)
+
+    for content_hash in orphaned_hashes:
+        delete_text_cache_files(content_hash)
 
     settings = get_settings()
     dossier_dir = settings.workspace_dir / dossier_id
     if dossier_dir.exists():
         shutil.rmtree(dossier_dir, ignore_errors=True)
+
+    await progress_manager.forget(dossier_id)
 
     return Response(status_code=204)
 

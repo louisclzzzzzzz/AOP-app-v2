@@ -81,11 +81,20 @@ def _fake_classification_call(monkeypatch):
 def _fake_completeness_call(monkeypatch):
     """Aucune pièce de la checklist étape 2 ne correspond aux catégories ASS/RC ou ASS/CCAP
     de ce dossier de test — tout doit rester résolu sans appel LLM, sauf recherche par
-    mots-clés éventuelle, qu'on fait échouer systématiquement en absent."""
+    mots-clés éventuelle, qu'on fait échouer systématiquement en absent. La complétude regroupe
+    les appels LLM par document candidat (§4 AUDIT_BACKEND.md) : la réponse simulée couvre
+    toutes les pièces demandées dans le prompt pour ce document."""
+    import re
+
     import app.completeness.engine as engine
 
     def _fake(*, system_prompt, user_prompt, response_model, what):
-        decision = response_model(presence="absent", confidence=0.5, justification="Hors sujet.", citation="")
+        piece_ids = re.findall(r'piece_id="([^"]+)"', user_prompt)
+        items = [
+            {"piece_id": piece_id, "presence": "absent", "confidence": 0.5, "justification": "Hors sujet.", "citation": ""}
+            for piece_id in piece_ids
+        ]
+        decision = response_model(items=items)
         return decision, "mistral-large-test-fake"
 
     monkeypatch.setattr(engine, "call_structured_chat", _fake)

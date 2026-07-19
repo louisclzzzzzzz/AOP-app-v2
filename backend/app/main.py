@@ -17,6 +17,7 @@ from app.api.dossiers import router as dossiers_router
 from app.api.extraction import extraction_schema_router
 from app.api.extraction import router as extraction_router
 from app.api.websocket import router as websocket_router
+from app.settings import get_settings
 from app.store.db import init_db
 
 logging.basicConfig(level=logging.INFO)
@@ -32,9 +33,15 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="AOP v2", lifespan=lifespan)
 
+# Dérivé de settings.frontend_port (AOP_FRONTEND_PORT) plutôt que codé en dur : sinon changer
+# le port frontend via l'env casse silencieusement le CORS (AUDIT_BACKEND.md §7).
+_frontend_port = get_settings().frontend_port
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_origins=[
+        f"http://localhost:{_frontend_port}",
+        f"http://127.0.0.1:{_frontend_port}",
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

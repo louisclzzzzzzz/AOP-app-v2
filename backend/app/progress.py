@@ -31,7 +31,23 @@ class ProgressManager:
 
     async def disconnect(self, dossier_id: str, websocket: WebSocket) -> None:
         async with self._lock:
-            self._connections[dossier_id].discard(websocket)
+            remaining = self._connections.get(dossier_id)
+            if remaining is None:
+                return
+            remaining.discard(websocket)
+            if not remaining:
+                # Ne pas laisser une entrée vide s'accumuler indéfiniment dans le dict
+                # (AUDIT_BACKEND.md §5) : un process longue durée avec beaucoup de dossiers
+                # créés/consultés finirait par accumuler une clé par dossier pour toujours.
+                del self._connections[dossier_id]
+
+    async def forget(self, dossier_id: str) -> None:
+        """Purge tout état résiduel d'un dossier (connexions + dernier évènement) — à appeler
+        à la suppression du dossier, sans quoi `_last_event` grossit indéfiniment
+        (AUDIT_BACKEND.md §5)."""
+        async with self._lock:
+            self._connections.pop(dossier_id, None)
+            self._last_event.pop(dossier_id, None)
 
     async def broadcast(
         self,

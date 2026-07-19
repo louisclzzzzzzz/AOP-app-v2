@@ -11,6 +11,9 @@ ocr:
   # Concurrence max sur la file OCR (upload + /v1/ocr) — indépendante de la file LLM chat,
   # cadencée séparément (§1/§4 OPTIMISATION.md). Valeur prudente par défaut, ajustable.
   max_concurrency: 3
+  # Timeout par appel (upload et /v1/ocr) — sans ça, un appel qui reste bloqué fige tout le
+  # lot en cours (asyncio.gather), donc toute la progression du dossier (AUDIT_BACKEND.md §2).
+  timeout_seconds: 180
 
 llm:
   # Classification (étape 1), complétude (étape 2), extraction (étape 3)

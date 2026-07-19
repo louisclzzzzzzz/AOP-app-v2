@@ -74,15 +74,17 @@ async def run_ingestion_pipeline(dossier_id: str, uploaded_zip_path: Path) -> No
         dossier_id, stage="inventory", status=DossierStatus.INVENTORYING.value, message="Inventaire des fichiers…"
     )
 
-    def _do_inventory() -> list[str]:
+    def _do_inventory() -> list[tuple[str, str]]:
         with session_scope() as s:
             dossier = get_dossier(s, dossier_id)
             assert dossier is not None
             docs = build_inventory(s, dossier, source_dir)
             recompute_dossier_counters(s, dossier)
-            return [d.id for d in docs]
+            return [(d.id, d.sha256) for d in docs]
 
-    document_ids = await asyncio.to_thread(_do_inventory)
+    inventory_items = await asyncio.to_thread(_do_inventory)
+    document_ids = [doc_id for doc_id, _sha256 in inventory_items]
+    hash_by_document_id = dict(inventory_items)
 
     def _read_counters() -> dict[str, int]:
         with session_scope() as s:
@@ -115,9 +117,24 @@ async def run_ingestion_pipeline(dossier_id: str, uploaded_zip_path: Path) -> No
     batch_size = max(1, int(get_models_config()["ocr"].get("max_concurrency", 3)))
     for i in range(0, len(document_ids), batch_size):
         batch = document_ids[i : i + batch_size]
-        doc_events = await asyncio.gather(
-            *(asyncio.to_thread(_process_document_text, dossier_id, doc_id, source_dir) for doc_id in batch)
+
+        # Dédupliquer par hash de contenu AVANT de dispatcher en parallèle : deux documents
+        # identiques dans le même lot (fréquent dans les DCE réels, cf. OPTIMISATION.md §1)
+        # déclencheraient sinon une course sur la contrainte unique TextCache.content_hash —
+        # IntegrityError non catchée qui fait passer tout le dossier en erreur
+        # (AUDIT_BACKEND.md §1). On ne traite en concurrence qu'un représentant par hash ; les
+        # doublons du lot sont traités juste après, séquentiellement — à ce moment le cache est
+        # déjà rempli, donc simple lecture, sans coût OCR/LLM supplémentaire.
+        leaders, followers = _dedupe_batch_by_hash(batch, hash_by_document_id)
+
+        doc_events = list(
+            await asyncio.gather(
+                *(asyncio.to_thread(_process_document_text, dossier_id, doc_id, source_dir) for doc_id in leaders)
+            )
         )
+        for doc_id in followers:
+            doc_events.append(await asyncio.to_thread(_process_document_text, dossier_id, doc_id, source_dir))
+
         for doc_event in doc_events:
             if doc_event is None:
                 continue  # non analysable, rien à diffuser
@@ -147,6 +164,25 @@ async def run_ingestion_pipeline(dossier_id: str, uploaded_zip_path: Path) -> No
         counters=final_counters,
         message="Ingestion terminée — prêt pour l'étape 1",
     )
+
+
+def _dedupe_batch_by_hash(
+    batch: list[str], hash_by_document_id: dict[str, str]
+) -> tuple[list[str], list[str]]:
+    """Sépare un lot en (leaders, followers) : un seul document par hash de contenu part en
+    traitement concurrent (leader), les autres documents partageant ce même hash (followers)
+    sont traités après coup, une fois le cache rempli par leur leader."""
+    seen_hashes: set[str] = set()
+    leaders: list[str] = []
+    followers: list[str] = []
+    for doc_id in batch:
+        content_hash = hash_by_document_id[doc_id]
+        if content_hash in seen_hashes:
+            followers.append(doc_id)
+        else:
+            seen_hashes.add(content_hash)
+            leaders.append(doc_id)
+    return leaders, followers
 
 
 def _process_document_text(dossier_id: str, document_id: str, source_dir: Path) -> dict | None:

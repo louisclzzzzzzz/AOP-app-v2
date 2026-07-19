@@ -128,15 +128,41 @@ def reopen_extraction(session: Session, dossier: Dossier) -> None:
     session.flush()
 
 
-def delete_dossier(session: Session, dossier_id: str) -> None:
-    """Supprime le dossier et toutes ses lignes dépendantes. Ne touche jamais `text_cache` :
-    ces entrées sont partagées par hash de contenu entre dossiers (§ TextCache) et peuvent
-    être référencées par d'autres dossiers encore présents."""
+def delete_dossier(session: Session, dossier_id: str) -> list[str]:
+    """Supprime le dossier et toutes ses lignes dépendantes. `text_cache` est partagé par hash
+    de contenu entre dossiers, donc on ne le supprime que pour les entrées devenues orphelines
+    (plus référencées par aucun document d'aucun dossier) — sans quoi le cache disque grossit
+    indéfiniment à chaque suppression (AUDIT_BACKEND.md §5). Retourne les hash de contenu dont
+    l'entrée a été supprimée, pour que l'appelant purge aussi les fichiers `.md`/`.ocr.json`
+    correspondants sur disque."""
+    text_cache_ids = set(
+        session.scalars(
+            select(Document.text_cache_id).where(
+                Document.dossier_id == dossier_id, Document.text_cache_id.is_not(None)
+            )
+        )
+    )
+
     session.execute(delete(ExtractionResult).where(ExtractionResult.dossier_id == dossier_id))
     session.execute(delete(CompletenessCheck).where(CompletenessCheck.dossier_id == dossier_id))
     session.execute(delete(Document).where(Document.dossier_id == dossier_id))
     session.execute(delete(Dossier).where(Dossier.id == dossier_id))
     session.flush()
+
+    orphaned_hashes: list[str] = []
+    for cache_id in text_cache_ids:
+        still_referenced = session.scalars(
+            select(Document.id).where(Document.text_cache_id == cache_id).limit(1)
+        ).first()
+        if still_referenced is not None:
+            continue
+        cache_entry = session.get(TextCache, cache_id)
+        if cache_entry is None:
+            continue
+        orphaned_hashes.append(cache_entry.content_hash)
+        session.execute(delete(TextCache).where(TextCache.id == cache_id))
+    session.flush()
+    return orphaned_hashes
 
 
 def recompute_dossier_counters(session: Session, dossier: Dossier) -> None:

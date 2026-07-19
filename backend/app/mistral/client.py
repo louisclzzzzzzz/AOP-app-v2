@@ -98,6 +98,11 @@ def _retry(fn: Callable[[], T], *, what: str) -> T:
     raise last_error
 
 
+def _ocr_timeout_ms() -> int | None:
+    timeout = get_models_config()["ocr"].get("timeout_seconds")
+    return int(timeout) * 1000 if timeout else None
+
+
 def upload_file_for_ocr(path: Path) -> str:
     """Upload un fichier local vers l'API Mistral (purpose=ocr) et retourne son file_id."""
     client = get_client()
@@ -108,6 +113,7 @@ def upload_file_for_ocr(path: Path) -> str:
         return client.files.upload(
             file={"file_name": path.name, "content": content},
             purpose="ocr",
+            timeout_ms=_ocr_timeout_ms(),
         )
 
     with _get_ocr_semaphore():
@@ -136,6 +142,7 @@ def call_ocr(
             document={"type": "file", "file_id": file_id},
             confidence_scores_granularity="page",
             include_blocks=True,
+            timeout_ms=_ocr_timeout_ms(),
             **kwargs,
         )
 

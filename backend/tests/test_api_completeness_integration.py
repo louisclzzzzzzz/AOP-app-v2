@@ -85,19 +85,35 @@ def _fake_classification_call(monkeypatch):
 def _fake_completeness_call(monkeypatch):
     """La seule pièce noyée-dans-un-autre-document de ce dossier de test est l'attestation
     décennale, citée dans le marché signé plutôt que comme fichier dédié — tout le reste doit
-    être résolu sans appel LLM (couche 1 ou absence sans candidat)."""
+    être résolu sans appel LLM (couche 1 ou absence sans candidat). La complétude regroupe les
+    appels LLM par document candidat (§4 AUDIT_BACKEND.md) : la réponse simulée couvre donc
+    TOUTES les pièces demandées dans le prompt pour ce document, pas une seule."""
+    import re
+
     import app.completeness.engine as engine
 
     def _fake(*, system_prompt, user_prompt, response_model, what):
-        if "MARCHE_SIGNE.pdf" in user_prompt:
-            decision = response_model(
-                presence="present",
-                confidence=0.85,
-                justification="Le marché signé mentionne explicitement la garantie décennale de l'entreprise.",
-                citation="justifie d'une assurance responsabilité civile décennale en cours de validité",
-            )
-        else:
-            decision = response_model(presence="absent", confidence=0.6, justification="Hors sujet.", citation="")
+        present = "MARCHE_SIGNE.pdf" in user_prompt
+        piece_ids = re.findall(r'piece_id="([^"]+)"', user_prompt)
+        items = [
+            {
+                "piece_id": piece_id,
+                "presence": "present" if present else "absent",
+                "confidence": 0.85 if present else 0.6,
+                "justification": (
+                    "Le marché signé mentionne explicitement la garantie décennale de l'entreprise."
+                    if present
+                    else "Hors sujet."
+                ),
+                "citation": (
+                    "justifie d'une assurance responsabilité civile décennale en cours de validité"
+                    if present
+                    else ""
+                ),
+            }
+            for piece_id in piece_ids
+        ]
+        decision = response_model(items=items)
         return decision, "mistral-large-test-fake"
 
     monkeypatch.setattr(engine, "call_structured_chat", _fake)

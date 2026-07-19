@@ -5,6 +5,12 @@ nécessite aucun jugement humain), le lancement de l'analyse de complétude est 
 explicitement par l'utilisateur (`POST .../completeness/run`) après qu'il a sélectionné, sur
 l'écran de sélection (§5.2), les pièces recherchées pour CE dossier — exactement comme
 l'application de la copie triée n'est pas enchaînée automatiquement après `classified`.
+
+Couches 1/2 (fichier direct, recherche par mots-clés) : résolues sans LLM, persistées et
+diffusées immédiatement. Couche 3 (LLM) : un appel par document candidat plutôt que par
+(pièce, document) — `plan_completeness` regroupe les pièces par document, chaque appel est
+exécuté ici un par un (progression diffusée après chacun), puis `finalize_completeness`
+reconstitue le résultat par pièce (§4 AUDIT_BACKEND.md).
 """
 from __future__ import annotations
 
@@ -13,8 +19,14 @@ import logging
 
 from sqlalchemy.orm import Session
 
-from app.completeness.engine import analyze_piece
-from app.completeness.pieces_checklist import Piece, PiecesChecklist, load_pieces_checklist
+from app.completeness.engine import (
+    CompletenessOutcome,
+    DocumentCompletenessResult,
+    analyze_document_for_pieces,
+    finalize_completeness,
+    plan_completeness,
+)
+from app.completeness.pieces_checklist import Piece, load_pieces_checklist
 from app.ingestion.document_signal import DocumentSignal, build_document_signal
 from app.progress import progress_manager
 from app.store.db import session_scope
@@ -79,7 +91,7 @@ async def run_completeness_pipeline(dossier_id: str) -> None:
         message="Analyse de complétude (fichier direct + recherche intra-document + LLM)…",
     )
 
-    def _prepare() -> tuple[list[str], list[DocumentSignal], list[str]]:
+    def _prepare() -> tuple[list[Piece], list[DocumentSignal], list[str]]:
         with session_scope() as s:
             checks = [c for c in list_completeness_checks(s, dossier_id) if c.is_selected]
             piece_ids = [c.piece_id for c in checks]
@@ -97,10 +109,12 @@ async def run_completeness_pipeline(dossier_id: str) -> None:
             ]
             all_lots = sorted({d.final_lot for d in documents if d.final_lot})
         signals = [build_document_signal(snap) for snap in doc_snapshots]
-        return piece_ids, signals, all_lots
+        checklist = load_pieces_checklist()
+        pieces = [p for p in (checklist.by_id(pid) for pid in piece_ids) if p is not None]
+        return pieces, signals, all_lots
 
-    piece_ids, signals, all_lots = await asyncio.to_thread(_prepare)
-    checklist = load_pieces_checklist()
+    pieces, signals, all_lots = await asyncio.to_thread(_prepare)
+    piece_by_id = {p.id: p for p in pieces}
 
     def _read_counters() -> dict[str, int]:
         with session_scope() as s:
@@ -108,8 +122,35 @@ async def run_completeness_pipeline(dossier_id: str) -> None:
             assert dossier is not None
             return _counters(dossier)
 
-    for piece_id in piece_ids:
-        doc_event = await asyncio.to_thread(_analyze_one, dossier_id, piece_id, checklist, signals, all_lots)
+    def _persist(piece: Piece, outcome: CompletenessOutcome) -> dict:
+        with session_scope() as s:
+            check = get_completeness_check_by_piece(s, dossier_id, piece.id)
+            assert check is not None
+            set_completeness_result(
+                s,
+                check,
+                match_layer=outcome.match_layer,
+                presence=outcome.presence,
+                certainty=outcome.certainty,
+                confidence=outcome.confidence,
+                justification=outcome.justification,
+                matched_document_ids=outcome.matched_document_ids,
+                matched_lots=outcome.matched_lots,
+                model_name=outcome.model_name,
+                model_version=outcome.model_version,
+                error=outcome.error,
+            )
+        return {
+            "id": piece.id,
+            "filename": piece.libelle,
+            "relative_path": piece.libelle,
+            "presence": outcome.presence,
+            "certainty": outcome.certainty,
+            "error": outcome.error,
+        }
+
+    async def _persist_and_broadcast(piece: Piece, outcome: CompletenessOutcome) -> None:
+        doc_event = await asyncio.to_thread(_persist, piece, outcome)
         counters = await asyncio.to_thread(_read_counters)
         await progress_manager.broadcast(
             dossier_id,
@@ -118,6 +159,31 @@ async def run_completeness_pipeline(dossier_id: str) -> None:
             counters=counters,
             document=doc_event,
         )
+
+    # --- Couches 1/2 (sans LLM) : ce qui est déjà résolu est persisté/diffusé tout de suite ---
+    plan = await asyncio.to_thread(plan_completeness, pieces, signals, all_lots)
+    for piece_id, outcome in plan.resolved.items():
+        await _persist_and_broadcast(piece_by_id[piece_id], outcome)
+
+    # --- Couche 3 (LLM) : un appel par document candidat, regroupant plusieurs pièces à la fois
+    # (§4 AUDIT_BACKEND.md) — diffuse une progression après chaque appel, potentiellement la
+    # phase la plus longue, avant de persister le résultat détaillé par pièce.
+    results_by_doc_id: dict[str, DocumentCompletenessResult] = {}
+    for doc, pieces_for_doc in plan.doc_calls:
+        result = await asyncio.to_thread(analyze_document_for_pieces, doc, pieces_for_doc)
+        results_by_doc_id[doc.document_id] = result
+        counters = await asyncio.to_thread(_read_counters)
+        await progress_manager.broadcast(
+            dossier_id,
+            stage="completeness",
+            status=DossierStatus.ANALYZING_COMPLETENESS.value,
+            counters=counters,
+            message=f"Vérification LLM : {doc.filename} ({len(pieces_for_doc)} pièce(s) candidates)…",
+        )
+
+    llm_outcomes = finalize_completeness(plan, results_by_doc_id)
+    for piece_id, outcome in llm_outcomes.items():
+        await _persist_and_broadcast(piece_by_id[piece_id], outcome)
 
     def _finalize() -> dict[str, int]:
         with session_scope() as s:
@@ -135,43 +201,3 @@ async def run_completeness_pipeline(dossier_id: str) -> None:
         counters=final_counters,
         message="Analyse de complétude terminée — résultats prêts à valider",
     )
-
-
-def _analyze_one(
-    dossier_id: str,
-    piece_id: str,
-    checklist: PiecesChecklist,
-    signals: list[DocumentSignal],
-    all_lots: list[str],
-) -> dict:
-    piece: Piece | None = checklist.by_id(piece_id)
-    assert piece is not None
-
-    outcome = analyze_piece(piece=piece, documents=signals, all_lots=all_lots)
-
-    with session_scope() as s:
-        check = get_completeness_check_by_piece(s, dossier_id, piece_id)
-        assert check is not None
-        set_completeness_result(
-            s,
-            check,
-            match_layer=outcome.match_layer,
-            presence=outcome.presence,
-            certainty=outcome.certainty,
-            confidence=outcome.confidence,
-            justification=outcome.justification,
-            matched_document_ids=outcome.matched_document_ids,
-            matched_lots=outcome.matched_lots,
-            model_name=outcome.model_name,
-            model_version=outcome.model_version,
-            error=outcome.error,
-        )
-
-    return {
-        "id": piece_id,
-        "filename": piece.libelle,
-        "relative_path": piece.libelle,
-        "presence": outcome.presence,
-        "certainty": outcome.certainty,
-        "error": outcome.error,
-    }
