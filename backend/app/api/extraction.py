@@ -7,7 +7,7 @@ import logging
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException
 
-from app.api.dossiers import dossier_to_out
+from app.api.dossiers import dossier_to_out, reopen_stage
 from app.api.schemas import (
     ExtractionApplyOut,
     ExtractionCorrectionIn,
@@ -18,6 +18,7 @@ from app.api.schemas import (
 from app.extraction.extraction_schema import load_extraction_schema
 from app.extraction.pipeline import ensure_results_initialized, run_extraction_pipeline
 from app.extraction.report import REPORT_JSON_FILENAME, validate_extraction
+from app.pipeline_support import run_pipeline_safely
 from app.progress import progress_manager
 from app.settings import get_settings
 from app.store.db import session_scope
@@ -64,18 +65,9 @@ def _entry_to_out(result: ExtractionResult) -> ExtractionEntryOut:
 
 
 async def _run_extraction_safely(dossier_id: str) -> None:
-    """Filet de sécurité, miroir de `app/api/completeness.py::_run_completeness_safely`."""
-    try:
-        await run_extraction_pipeline(dossier_id)
-    except Exception as exc:  # pragma: no cover - filet de sécurité générique
-        logger.exception("Erreur non gérée dans le pipeline d'extraction pour %s", dossier_id)
-        with session_scope() as s:
-            dossier = get_dossier(s, dossier_id)
-            if dossier is not None:
-                set_dossier_status(s, dossier, DossierStatus.ERROR, error_message=str(exc))
-        await progress_manager.broadcast(
-            dossier_id, stage="error", status=DossierStatus.ERROR.value, message=str(exc)
-        )
+    await run_pipeline_safely(
+        dossier_id, lambda: run_extraction_pipeline(dossier_id), what="le pipeline d'extraction"
+    )
 
 
 @extraction_schema_router.get("", response_model=list[ExtractionFieldOut])
@@ -172,28 +164,20 @@ async def validate_extraction_endpoint(dossier_id: str) -> ExtractionApplyOut:
     return ExtractionApplyOut(dossier=dossier_out, report=report)
 
 
+_REOPENABLE_EXTRACTION_STATUSES = (DossierStatus.EXTRACTION_VALIDATED.value,)
+
+
 @router.post("/{dossier_id}/extraction/reopen", response_model=DossierOut)
 async def reopen_extraction_endpoint(dossier_id: str) -> DossierOut:
-    with session_scope() as s:
-        dossier = get_dossier(s, dossier_id)
-        if dossier is None:
-            raise HTTPException(404, "Dossier introuvable")
-        if dossier.status != DossierStatus.EXTRACTION_VALIDATED.value:
-            raise HTTPException(
-                409,
-                f"Ce dossier ne peut pas être rouvert pour correction de l'extraction "
-                f"(statut actuel : {dossier.status}).",
-            )
-        reopen_extraction(s, dossier)
-        dossier_out = dossier_to_out(dossier)
-
-    await progress_manager.broadcast(
+    return await reopen_stage(
         dossier_id,
+        allowed_statuses=_REOPENABLE_EXTRACTION_STATUSES,
+        reopen_fn=reopen_extraction,
+        not_ready_message="Ce dossier ne peut pas être rouvert pour correction de l'extraction (statut actuel : {status}).",
         stage="extraction",
-        status=DossierStatus.EXTRACTION_REVIEW.value,
-        message="Extraction rouverte pour correction",
+        target_status=DossierStatus.EXTRACTION_REVIEW,
+        broadcast_message="Extraction rouverte pour correction",
     )
-    return dossier_out
 
 
 @router.get("/{dossier_id}/extraction/report")

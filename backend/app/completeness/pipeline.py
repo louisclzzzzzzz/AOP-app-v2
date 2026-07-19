@@ -28,6 +28,7 @@ from app.completeness.engine import (
 )
 from app.completeness.pieces_checklist import Piece, load_pieces_checklist
 from app.ingestion.document_signal import DocumentSignal, build_document_signal
+from app.pipeline_support import finalize_stage, start_stage
 from app.progress import progress_manager
 from app.store.db import session_scope
 from app.store.models import CompletenessCheck, Dossier, DossierStatus
@@ -39,7 +40,6 @@ from app.store.repository import (
     list_documents,
     recompute_completeness_counters,
     set_completeness_result,
-    set_dossier_status,
 )
 
 logger = logging.getLogger(__name__)
@@ -77,17 +77,10 @@ def _counters(dossier: Dossier) -> dict[str, int]:
 
 
 async def run_completeness_pipeline(dossier_id: str) -> None:
-    def _set_status(status: DossierStatus) -> None:
-        with session_scope() as s:
-            dossier = get_dossier(s, dossier_id)
-            assert dossier is not None
-            set_dossier_status(s, dossier, status)
-
-    await asyncio.to_thread(_set_status, DossierStatus.ANALYZING_COMPLETENESS)
-    await progress_manager.broadcast(
+    await start_stage(
         dossier_id,
+        status=DossierStatus.ANALYZING_COMPLETENESS,
         stage="completeness",
-        status=DossierStatus.ANALYZING_COMPLETENESS.value,
         message="Analyse de complétude (fichier direct + recherche intra-document + LLM)…",
     )
 
@@ -185,19 +178,11 @@ async def run_completeness_pipeline(dossier_id: str) -> None:
     for piece_id, outcome in llm_outcomes.items():
         await _persist_and_broadcast(piece_by_id[piece_id], outcome)
 
-    def _finalize() -> dict[str, int]:
-        with session_scope() as s:
-            dossier = get_dossier(s, dossier_id)
-            assert dossier is not None
-            recompute_completeness_counters(s, dossier)
-            set_dossier_status(s, dossier, DossierStatus.COMPLETENESS_REVIEW)
-            return _counters(dossier)
-
-    final_counters = await asyncio.to_thread(_finalize)
-    await progress_manager.broadcast(
+    await finalize_stage(
         dossier_id,
+        status=DossierStatus.COMPLETENESS_REVIEW,
         stage="completeness",
-        status=DossierStatus.COMPLETENESS_REVIEW.value,
-        counters=final_counters,
         message="Analyse de complétude terminée — résultats prêts à valider",
+        counters=_counters,
+        recompute=lambda s, dossier: recompute_completeness_counters(s, dossier),
     )

@@ -8,7 +8,7 @@ import logging
 
 from fastapi import APIRouter, HTTPException
 
-from app.api.dossiers import dossier_to_out
+from app.api.dossiers import dossier_to_out, reopen_stage
 from app.api.schemas import (
     ClassificationCorrectionIn,
     ClassificationEntryOut,
@@ -179,26 +179,15 @@ async def reopen_reorganization_endpoint(dossier_id: str) -> DossierOut:
     réalisées — le moteur de copie triée est déjà idempotent (§ reorg.py), seule l'UI
     verrouillait cette possibilité. Invalide les résultats des étapes 2/3 (cf.
     `reopen_reorganization`) : ils devront être relancés après correction."""
-    with session_scope() as s:
-        dossier = get_dossier(s, dossier_id)
-        if dossier is None:
-            raise HTTPException(404, "Dossier introuvable")
-        if dossier.status not in _REOPENABLE_REORG_STATUSES:
-            raise HTTPException(
-                409,
-                f"Ce dossier ne peut pas être rouvert pour correction du classement "
-                f"(statut actuel : {dossier.status}).",
-            )
-        reopen_reorganization(s, dossier)
-        dossier_out = dossier_to_out(dossier)
-
-    await progress_manager.broadcast(
+    return await reopen_stage(
         dossier_id,
+        allowed_statuses=_REOPENABLE_REORG_STATUSES,
+        reopen_fn=reopen_reorganization,
+        not_ready_message="Ce dossier ne peut pas être rouvert pour correction du classement (statut actuel : {status}).",
         stage="classify",
-        status=DossierStatus.CLASSIFIED.value,
-        message="Plan de classement rouvert pour correction — étapes 2/3 à relancer",
+        target_status=DossierStatus.CLASSIFIED,
+        broadcast_message="Plan de classement rouvert pour correction — étapes 2/3 à relancer",
     )
-    return dossier_out
 
 
 @router.get("/{dossier_id}/reorganize/report")

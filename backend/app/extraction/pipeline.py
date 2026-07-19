@@ -33,6 +33,7 @@ from app.extraction.engine import (
 )
 from app.extraction.extraction_schema import ExtractionField, load_extraction_schema
 from app.ingestion.document_signal import DocumentSignal, build_document_signal, ensure_document_ocr
+from app.pipeline_support import finalize_stage, start_stage
 from app.progress import progress_manager
 from app.settings import get_models_config
 from app.store.db import session_scope
@@ -44,7 +45,6 @@ from app.store.repository import (
     list_documents,
     list_extraction_results,
     recompute_extraction_counters,
-    set_dossier_status,
     set_extraction_result,
 )
 
@@ -84,17 +84,10 @@ def _counters(dossier: Dossier) -> dict[str, int]:
 
 
 async def run_extraction_pipeline(dossier_id: str) -> None:
-    def _set_status(status: DossierStatus) -> None:
-        with session_scope() as s:
-            dossier = get_dossier(s, dossier_id)
-            assert dossier is not None
-            set_dossier_status(s, dossier, status)
-
-    await asyncio.to_thread(_set_status, DossierStatus.EXTRACTING)
-    await progress_manager.broadcast(
+    await start_stage(
         dossier_id,
+        status=DossierStatus.EXTRACTING,
         stage="extraction",
-        status=DossierStatus.EXTRACTING.value,
         message="Extraction des données (un appel par document de référence, recoupement, recherche élargie)…",
     )
 
@@ -256,19 +249,11 @@ async def run_extraction_pipeline(dossier_id: str) -> None:
 
     await asyncio.to_thread(_persist_synthesis)
 
-    def _finalize() -> dict[str, int]:
-        with session_scope() as s:
-            dossier = get_dossier(s, dossier_id)
-            assert dossier is not None
-            recompute_extraction_counters(s, dossier)
-            set_dossier_status(s, dossier, DossierStatus.EXTRACTION_REVIEW)
-            return _counters(dossier)
-
-    final_counters = await asyncio.to_thread(_finalize)
-    await progress_manager.broadcast(
+    await finalize_stage(
         dossier_id,
+        status=DossierStatus.EXTRACTION_REVIEW,
         stage="extraction",
-        status=DossierStatus.EXTRACTION_REVIEW.value,
-        counters=final_counters,
         message="Extraction terminée — résultats prêts à valider",
+        counters=_counters,
+        recompute=lambda s, dossier: recompute_extraction_counters(s, dossier),
     )

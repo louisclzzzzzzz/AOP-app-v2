@@ -1,19 +1,21 @@
 """Endpoints REST : upload d'un dossier (zip), liste, détail, inventaire, texte extrait."""
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import json
 import logging
 import shutil
+from typing import Callable
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Response, UploadFile
 from fastapi.responses import FileResponse, PlainTextResponse
+from sqlalchemy.orm import Session
 
 from app.api.schemas import CountersOut, DocumentOut, DocumentTextOut, DossierOut
 from app.classify.pipeline import run_classification_pipeline
 from app.ingestion.pipeline import run_ingestion_pipeline
 from app.ocr.cache import delete_text_cache_files, read_text_cache
+from app.pipeline_support import run_pipeline_safely
 from app.progress import progress_manager
 from app.settings import get_settings
 from app.store.db import session_scope
@@ -26,7 +28,6 @@ from app.store.repository import (
     get_document,
     list_documents,
     list_dossiers,
-    set_dossier_status,
     set_dossier_upload_info,
 )
 
@@ -96,13 +97,13 @@ def _document_to_out(doc: Document) -> DocumentOut:
 
 
 async def _run_pipeline_safely(dossier_id: str, zip_path) -> None:
-    """Filet de sécurité : toute exception non prévue par le pipeline lui-même bascule le
-    dossier en erreur au lieu de le laisser bloqué silencieusement à mi-chemin.
-
-    Enchaîne automatiquement l'étape 1 (classification) après l'ingestion : classer ne
+    """Enchaîne automatiquement l'étape 1 (classification) après l'ingestion : classer ne
     nécessite aucun jugement humain, seule la validation du plan proposé en nécessite un —
-    c'est pourquoi `classified` est le premier vrai checkpoint (§0, §4.4 du PLAN)."""
-    try:
+    c'est pourquoi `classified` est le premier vrai checkpoint (§0, §4.4 du PLAN). Le filet de
+    sécurité générique (`run_pipeline_safely`) bascule le dossier en erreur si l'un ou l'autre
+    lève une exception non prévue, au lieu de le laisser bloqué silencieusement à mi-chemin."""
+
+    async def _run() -> None:
         await run_ingestion_pipeline(dossier_id, zip_path)
 
         with session_scope() as s:
@@ -111,19 +112,37 @@ async def _run_pipeline_safely(dossier_id: str, zip_path) -> None:
 
         if ingestion_ok:
             await run_classification_pipeline(dossier_id)
-    except Exception as exc:  # pragma: no cover - filet de sécurité générique
-        logger.exception("Erreur non gérée dans le pipeline d'ingestion pour %s", dossier_id)
 
-        def _mark_error() -> None:
-            with session_scope() as s:
-                dossier = get_dossier(s, dossier_id)
-                if dossier is not None:
-                    set_dossier_status(s, dossier, DossierStatus.ERROR, error_message=str(exc))
+    await run_pipeline_safely(dossier_id, _run, what="le pipeline d'ingestion")
 
-        await asyncio.to_thread(_mark_error)
-        await progress_manager.broadcast(
-            dossier_id, stage="error", status=DossierStatus.ERROR.value, message=str(exc)
-        )
+
+async def reopen_stage(
+    dossier_id: str,
+    *,
+    allowed_statuses: tuple[str, ...],
+    reopen_fn: Callable[[Session, Dossier], None],
+    not_ready_message: str,
+    stage: str,
+    target_status: DossierStatus,
+    broadcast_message: str,
+) -> DossierOut:
+    """Filet commun aux 3 endpoints "reopen" (classification/complétude/extraction) : même
+    structure à l'identique pour les 3 avant factorisation — vérifier que le statut actuel
+    autorise la réouverture, rouvrir, puis diffuser (§8 AUDIT_BACKEND.md). `not_ready_message`
+    reçoit le statut actuel via `.format(status=...)`."""
+    with session_scope() as s:
+        dossier = get_dossier(s, dossier_id)
+        if dossier is None:
+            raise HTTPException(404, "Dossier introuvable")
+        if dossier.status not in allowed_statuses:
+            raise HTTPException(409, not_ready_message.format(status=dossier.status))
+        reopen_fn(s, dossier)
+        dossier_out = dossier_to_out(dossier)
+
+    await progress_manager.broadcast(
+        dossier_id, stage=stage, status=target_status.value, message=broadcast_message
+    )
+    return dossier_out
 
 
 @router.post("", response_model=DossierOut)

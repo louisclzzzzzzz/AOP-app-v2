@@ -27,6 +27,7 @@ from app.classify.engine import (
     score_filename,
 )
 from app.ocr.cache import read_text_cache
+from app.pipeline_support import finalize_stage, start_stage
 from app.progress import progress_manager
 from app.settings import get_models_config
 from app.store.db import session_scope
@@ -37,7 +38,6 @@ from app.store.repository import (
     list_documents,
     recompute_dossier_counters,
     set_document_classification_result,
-    set_dossier_status,
 )
 
 logger = logging.getLogger(__name__)
@@ -54,17 +54,10 @@ def _counters(dossier: Dossier) -> dict[str, int]:
 
 
 async def run_classification_pipeline(dossier_id: str) -> None:
-    def _set_status(status: DossierStatus) -> None:
-        with session_scope() as s:
-            dossier = get_dossier(s, dossier_id)
-            assert dossier is not None
-            set_dossier_status(s, dossier, status)
-
-    await asyncio.to_thread(_set_status, DossierStatus.CLASSIFYING)
-    await progress_manager.broadcast(
+    await start_stage(
         dossier_id,
+        status=DossierStatus.CLASSIFYING,
         stage="classify",
-        status=DossierStatus.CLASSIFYING.value,
         message="Classification des documents (règles nom+contenu, puis LLM batché sur les ambigus)…",
     )
 
@@ -111,22 +104,14 @@ async def run_classification_pipeline(dossier_id: str) -> None:
                 document=doc_event,
             )
 
-    def _finalize() -> dict[str, int]:
-        with session_scope() as s:
-            dossier = get_dossier(s, dossier_id)
-            assert dossier is not None
-            recompute_dossier_counters(s, dossier)
-            dossier.current_step = 1
-            set_dossier_status(s, dossier, DossierStatus.CLASSIFIED)
-            return _counters(dossier)
-
-    final_counters = await asyncio.to_thread(_finalize)
-    await progress_manager.broadcast(
+    await finalize_stage(
         dossier_id,
+        status=DossierStatus.CLASSIFIED,
         stage="classify",
-        status=DossierStatus.CLASSIFIED.value,
-        counters=final_counters,
         message="Classification terminée — plan de réorganisation prêt à valider",
+        counters=_counters,
+        recompute=lambda s, dossier: recompute_dossier_counters(s, dossier),
+        before_status_change=lambda s, dossier: setattr(dossier, "current_step", 1),
     )
 
 
