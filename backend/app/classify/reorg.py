@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import logging
 import shutil
 from collections import defaultdict
 from dataclasses import dataclass
@@ -21,6 +22,8 @@ from app.classify.naming import dedupe_target_filename
 from app.classify.taxonomy import load_taxonomy
 from app.store.models import Dossier, Document
 from app.store.repository import list_documents, mark_reorg_applied, set_document_organized_path
+
+logger = logging.getLogger(__name__)
 
 REPORT_JSON_FILENAME = "organized_report.json"
 REPORT_MD_FILENAME = "organized_report.md"
@@ -67,6 +70,7 @@ def apply_reorganization(session: Session, dossier: Dossier, *, source_dir: Path
     documents = list_documents(session, dossier.id)
     taken_names_by_dir: dict[Path, set[str]] = defaultdict(set)
     entries: list[ReorgEntry] = []
+    failures: list[dict] = []
 
     for document in documents:
         category = document.final_category or fallback
@@ -82,7 +86,30 @@ def apply_reorganization(session: Session, dossier: Dossier, *, source_dir: Path
 
         source_path = source_dir / document.relative_path
         target_path = target_dir / final_name
-        shutil.copy2(source_path, target_path)
+
+        # Un fichier source manquant/corrompu (incohérence DB/disque) ne doit pas faire
+        # échouer toute la copie triée à mi-parcours : les fichiers déjà copiés resteraient en
+        # place mais le rapport ne serait jamais généré et le dossier resterait bloqué dans un
+        # état intermédiaire sans message clair (AUDIT_BACKEND.md §9). On consigne l'échec et
+        # on continue avec les documents suivants.
+        try:
+            shutil.copy2(source_path, target_path)
+        except OSError as exc:
+            logger.error(
+                "Échec de la copie triée pour %s (document %s) : %s",
+                document.relative_path,
+                document.id,
+                exc,
+            )
+            failures.append(
+                {
+                    "document_id": document.id,
+                    "source": document.relative_path,
+                    "category": category,
+                    "error": str(exc),
+                }
+            )
+            continue
 
         target_relative = str(target_path.relative_to(organized_root))
         set_document_organized_path(session, document, target_relative)
@@ -103,7 +130,7 @@ def apply_reorganization(session: Session, dossier: Dossier, *, source_dir: Path
             )
         )
 
-    report = _build_report(dossier, entries)
+    report = _build_report(dossier, entries, failures)
     dossier_dir = organized_root.parent
     json_path = dossier_dir / REPORT_JSON_FILENAME
     md_path = dossier_dir / REPORT_MD_FILENAME
@@ -114,12 +141,15 @@ def apply_reorganization(session: Session, dossier: Dossier, *, source_dir: Path
     return report
 
 
-def _build_report(dossier: Dossier, entries: list[ReorgEntry]) -> dict:
+def _build_report(dossier: Dossier, entries: list[ReorgEntry], failures: list[dict] | None = None) -> dict:
+    failures = failures or []
     return {
         "dossier_id": dossier.id,
         "original_filename": dossier.original_filename,
         "generated_at": dt.datetime.now(dt.timezone.utc).isoformat(),
         "total_files": len(entries),
+        "files_failed": len(failures),
+        "failures": failures,
         "entries": [
             {
                 "document_id": e.document_id,
@@ -152,6 +182,12 @@ def _render_markdown(report: dict) -> str:
         "La source d'origine n'a jamais été modifiée ; ceci est une copie triée.",
         "",
     ]
+    if report.get("files_failed"):
+        lines.append(f"## ⚠ {report['files_failed']} fichier(s) n'ont pas pu être copiés")
+        lines.append("")
+        for f in report["failures"]:
+            lines.append(f"- `{f['source']}` ({f['category']}) — {f['error']}")
+        lines.append("")
     for category in sorted(by_category):
         lines.append(f"## {category}")
         lines.append("")

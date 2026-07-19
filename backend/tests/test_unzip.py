@@ -57,6 +57,49 @@ def test_deeply_nested_zips_are_extracted_recursively(tmp_path):
     assert deep_file.read_text() == "contenu profond"
 
 
+def test_cumulative_size_budget_spans_the_whole_nested_tree(tmp_path, monkeypatch):
+    """AUDIT_BACKEND.md §7 : le garde-fou zip bomb était vérifié PAR ARCHIVE individuelle, pas
+    cumulé sur toute l'arborescence récursive — plusieurs zips imbriqués, chacun bien en-deçà
+    du seuil individuel, pouvaient donc au total écrire beaucoup plus que la limite. Ici,
+    3 zips imbriqués de 600 octets décompressés chacun (bien en-deçà d'un seuil individuel)
+    doivent être bornés par un budget CUMULÉ : seuls les premiers tenant dans le budget total
+    sont effectivement extraits, les suivants sont laissés tels quels (comme une archive
+    corrompue), sans faire échouer le reste du dézippage."""
+    import app.ingestion.unzip as unzip
+
+    nested_paths = []
+    for i in range(3):
+        p = tmp_path / f"nested{i}.zip"
+        with zipfile.ZipFile(p, "w", zipfile.ZIP_STORED) as zf:
+            zf.writestr("inner.pdf", "x" * 600)
+        nested_paths.append(p)
+
+    root = tmp_path / "root.zip"
+    with zipfile.ZipFile(root, "w", zipfile.ZIP_STORED) as zf:
+        for i, p in enumerate(nested_paths):
+            zf.write(p, f"sub/nested{i}.zip")
+
+    # Budget cumulé = charge de la racine (3 x 716 octets, la taille sur disque des 3 zips
+    # imbriqués qu'elle contient) + de quoi extraire exactement 2 des 3 zips imbriqués
+    # (600 octets chacun) — le 3e dépasserait le budget restant.
+    root_charge = sum(p.stat().st_size for p in nested_paths)
+    monkeypatch.setattr(unzip, "MAX_TOTAL_UNCOMPRESSED_BYTES", root_charge + 600 + 600)
+
+    dest = tmp_path / "source"
+    extract_zip_recursive(root, dest)
+
+    extracted = [
+        (dest / "sub" / f"nested{i}__extrait" / "inner.pdf").exists() for i in range(3)
+    ]
+    # Les 2 premiers zips imbriqués rencontrés (ordre trié) tiennent dans le budget cumulé...
+    assert extracted[0] is True
+    assert extracted[1] is True
+    # ...le 3e dépasse le budget restant : laissé tel quel, comme une archive corrompue —
+    # sans exception propagée qui ferait échouer tout le dézippage.
+    assert extracted[2] is False
+    assert (dest / "sub" / "nested2.zip").exists()
+
+
 def test_corrupted_nested_zip_is_left_untouched(tmp_path, make_zip):
     """Une archive imbriquée corrompue ne doit pas interrompre le dézippage global : elle
     reste telle quelle, le reste du dossier est extrait normalement."""
