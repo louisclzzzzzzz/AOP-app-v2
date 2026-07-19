@@ -7,6 +7,7 @@ from app.extraction.engine import (
     DocumentExtractionResult,
     absent_outcome,
     analyze_document,
+    generate_synthesis,
     layer2_candidates,
     plan_layer2_calls,
     plan_reference_document_calls,
@@ -345,3 +346,43 @@ def test_select_relevant_excerpt_returns_full_text_when_under_budget():
     doc = _doc(content_excerpt=text)
     excerpt = engine._select_relevant_excerpt(doc, [_field()], max_chars=200)
     assert excerpt == text
+
+
+# --- Synthèse textuelle (§9 AUDIT_BACKEND.md : aucun test avant) --------------------------------
+
+def test_generate_synthesis_returns_none_without_any_field_value_and_no_llm_call(monkeypatch):
+    def _boom(**kwargs):
+        raise AssertionError("le LLM ne doit jamais être appelé sans aucune valeur à synthétiser")
+
+    monkeypatch.setattr(engine, "call_structured_chat", _boom)
+
+    assert generate_synthesis([]) is None
+
+
+def test_generate_synthesis_returns_text_and_model_name_on_success(monkeypatch):
+    captured = {}
+
+    def _fake(*, system_prompt, user_prompt, response_model, what):
+        captured["user_prompt"] = user_prompt
+        return response_model(synthese="Synthèse générée."), "mistral-large-test"
+
+    monkeypatch.setattr(engine, "call_structured_chat", _fake)
+
+    outcome = generate_synthesis([("Montant total HT", "1 234 567 EUR")])
+
+    assert outcome is not None
+    assert outcome.text == "Synthèse générée."
+    assert outcome.model_name == "mistral-large-test"
+    assert "Montant total HT" in captured["user_prompt"]
+
+
+def test_generate_synthesis_returns_none_on_llm_failure_without_raising(monkeypatch):
+    """Best-effort : un échec de la synthèse ne doit jamais bloquer la validation du
+    checkpoint étape 3 (cf. docstring de `generate_synthesis`)."""
+
+    def _boom(**kwargs):
+        raise RuntimeError("API indisponible")
+
+    monkeypatch.setattr(engine, "call_structured_chat", _boom)
+
+    assert generate_synthesis([("Montant total HT", "1 234 567 EUR")]) is None
