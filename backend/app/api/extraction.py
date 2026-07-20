@@ -13,10 +13,11 @@ from app.api.schemas import (
     ExtractionCorrectionIn,
     ExtractionEntryOut,
     ExtractionFieldOut,
+    ExtractionRunIn,
     DossierOut,
 )
 from app.extraction.extraction_schema import load_extraction_schema
-from app.extraction.pipeline import ensure_results_initialized, run_extraction_pipeline
+from app.extraction.pipeline import deepen_field, ensure_results_initialized, run_extraction_pipeline
 from app.extraction.report import REPORT_JSON_FILENAME, validate_extraction
 from app.pipeline_support import run_pipeline_safely
 from app.progress import progress_manager
@@ -64,9 +65,11 @@ def _entry_to_out(result: ExtractionResult) -> ExtractionEntryOut:
     )
 
 
-async def _run_extraction_safely(dossier_id: str) -> None:
+async def _run_extraction_safely(dossier_id: str, document_ids: list[str] | None = None) -> None:
     await run_pipeline_safely(
-        dossier_id, lambda: run_extraction_pipeline(dossier_id), what="le pipeline d'extraction"
+        dossier_id,
+        lambda: run_extraction_pipeline(dossier_id, document_ids=document_ids),
+        what="le pipeline d'extraction",
     )
 
 
@@ -96,7 +99,12 @@ async def get_extraction(dossier_id: str) -> list[ExtractionEntryOut]:
 
 
 @router.post("/{dossier_id}/extraction/run", response_model=DossierOut)
-async def run_extraction(dossier_id: str, background_tasks: BackgroundTasks) -> DossierOut:
+async def run_extraction(
+    dossier_id: str, background_tasks: BackgroundTasks, body: ExtractionRunIn | None = None
+) -> DossierOut:
+    """`body.document_ids` (optionnel) : sélection manuelle de documents — restreint tout le run
+    à cette liste au lieu du filtrage standard par catégorie de référence (§pipeline.py)."""
+    document_ids = body.document_ids if body and body.document_ids else None
     with session_scope() as s:
         dossier = get_dossier(s, dossier_id)
         if dossier is None:
@@ -110,7 +118,7 @@ async def run_extraction(dossier_id: str, background_tasks: BackgroundTasks) -> 
         ensure_results_initialized(s, dossier_id)
         result = dossier_to_out(dossier)
 
-    background_tasks.add_task(_run_extraction_safely, dossier_id)
+    background_tasks.add_task(_run_extraction_safely, dossier_id, document_ids)
     return result
 
 
@@ -126,6 +134,31 @@ async def correct_extraction(
         dossier = get_dossier(s, dossier_id)
         assert dossier is not None
         recompute_extraction_counters(s, dossier)
+        return _entry_to_out(result)
+
+
+@router.post("/{dossier_id}/extraction/{field_id}/deepen", response_model=ExtractionEntryOut)
+async def deepen_extraction_field(dossier_id: str, field_id: str) -> ExtractionEntryOut:
+    """Approfondissement ponctuel d'un champ resté absent : recherche élargie par mots-clés sur
+    tout le dossier (§extraction/engine.py), déclenchée explicitement par l'expert — ne touche
+    qu'à ce champ, jamais aux autres. Écrase la proposition existante de ce champ."""
+    if load_extraction_schema().by_id(field_id) is None:
+        raise HTTPException(404, f"Champ d'extraction inconnu : {field_id}")
+
+    with session_scope() as s:
+        result = get_extraction_result_by_field(s, dossier_id, field_id)
+        if result is None:
+            raise HTTPException(404, "Dossier ou champ introuvable")
+
+    try:
+        await deepen_field(dossier_id, field_id)
+    except Exception as exc:
+        logger.exception("Échec de l'approfondissement du champ %s pour %s", field_id, dossier_id)
+        raise HTTPException(500, f"Échec de l'approfondissement : {exc}") from exc
+
+    with session_scope() as s:
+        result = get_extraction_result_by_field(s, dossier_id, field_id)
+        assert result is not None
         return _entry_to_out(result)
 
 

@@ -8,6 +8,9 @@ from app.extraction.engine import (
     absent_outcome,
     analyze_document,
     generate_synthesis,
+    layer2_candidates,
+    plan_layer2_calls,
+    plan_manual_calls,
     plan_reference_document_calls,
     reference_candidates,
     resolve_field,
@@ -173,6 +176,67 @@ def test_plan_reference_document_calls_includes_document_with_pending_ocr():
     doc, fields_for_doc = calls[0]
     assert doc.document_id == "rc-1"
     assert {f.id for f in fields_for_doc} == {"f1"}
+
+
+# --- plan_manual_calls : sélection manuelle de documents ----------------------------------------
+
+def test_plan_manual_calls_requests_all_fields_regardless_of_category():
+    """Sélection manuelle : pas de filtrage par catégorie — chaque document sélectionné est
+    interrogé pour TOUS les champs du schéma."""
+    doc = _doc(document_id="d1", final_category="TECH/PLANNING", content_excerpt="contenu")
+    fields = [_field(id="f1", reference_categories=["ASS/RC"]), _field(id="f2", reference_categories=["ASS/CCAP"])]
+
+    calls = plan_manual_calls(fields, [doc])
+
+    assert len(calls) == 1
+    called_doc, fields_for_doc = calls[0]
+    assert called_doc.document_id == "d1"
+    assert {f.id for f in fields_for_doc} == {"f1", "f2"}
+
+
+def test_plan_manual_calls_skips_documents_without_content():
+    doc_empty = _doc(document_id="d1", content_excerpt="")
+    doc_full = _doc(document_id="d2", content_excerpt="contenu")
+
+    calls = plan_manual_calls([_field()], [doc_empty, doc_full])
+
+    assert [doc.document_id for doc, _ in calls] == ["d2"]
+
+
+# --- layer2_candidates / plan_layer2_calls : approfondissement ponctuel -------------------------
+
+def test_layer2_candidates_scores_by_number_of_distinct_patterns_matched():
+    """`_score_candidate` compte le nombre de motifs DISTINCTS qui matchent (pas le nombre
+    d'occurrences) — un document qui matche 2 motifs sur 2 doit passer avant un qui n'en
+    matche qu'un seul."""
+    doc_strong = _doc(document_id="strong", content_excerpt="mission G2 PRO réalisée")
+    doc_weak = _doc(document_id="weak", content_excerpt="G2 PRO uniquement")
+    field = _field(indices=[re.compile("G2 PRO", re.IGNORECASE), re.compile("mission", re.IGNORECASE)])
+
+    candidates = layer2_candidates(field, [doc_weak, doc_strong])
+
+    assert [d.document_id for d in candidates] == ["strong", "weak"]
+
+
+def test_layer2_candidates_capped_at_max_llm_candidates():
+    field = _field(indices=[re.compile("G2 PRO", re.IGNORECASE)])
+    docs = [_doc(document_id=f"d{i}", content_excerpt="G2 PRO") for i in range(5)]
+
+    candidates = layer2_candidates(field, docs)
+
+    assert len(candidates) == engine.MAX_LLM_CANDIDATES
+
+
+def test_plan_layer2_calls_groups_missing_fields_by_scored_candidate():
+    doc = _doc(document_id="d1", content_excerpt="mission G2 PRO réalisée")
+    field = _field(id="etude_de_sol", indices=[re.compile("G2 PRO", re.IGNORECASE)])
+
+    calls = plan_layer2_calls([field], [doc])
+
+    assert len(calls) == 1
+    called_doc, fields_for_doc = calls[0]
+    assert called_doc.document_id == "d1"
+    assert fields_for_doc == [field]
 
 
 # --- resolve_field : dérivation à partir des appels déjà passés --------------------------------
