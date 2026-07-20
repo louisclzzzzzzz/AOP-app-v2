@@ -150,7 +150,14 @@ async def run_extraction_pipeline(dossier_id: str) -> None:
     async def _run_calls(
         calls: list[tuple[DocumentSignal, list[ExtractionField]]]
     ) -> dict[str, DocumentExtractionResult]:
+        # `resolve_field` (couche 1) ne tranche qu'une fois TOUS les documents de référence
+        # analysés (recoupement multi-sources possible), donc `fields_extracted` en base ne
+        # bouge pas pendant cette boucle — potentiellement la phase la plus longue du pipeline.
+        # On diffuse une estimation optimiste (champs déjà couverts par au moins un appel
+        # terminé) pour que la barre de progression avance document par document au lieu de
+        # rester bloquée puis sauter d'un coup à la fin ; jamais écrite en base.
         results: dict[str, DocumentExtractionResult] = {}
+        touched_field_ids: set[str] = set()
         for doc, fields_for_doc in calls:
             # OCR à la demande (§5 OPTIMISATION.md, phase 4) : no-op si le texte est déjà
             # définitif (option désactivée, ou document déjà OCRisé/natif) ; sinon ré-extrait ce
@@ -159,7 +166,11 @@ async def run_extraction_pipeline(dossier_id: str) -> None:
             signals_by_id[doc.document_id] = doc
             result = await asyncio.to_thread(analyze_document, doc, fields_for_doc)
             results[doc.document_id] = result
+            touched_field_ids.update(f.id for f in fields_for_doc)
             counters = await asyncio.to_thread(_read_counters)
+            counters["fields_extracted"] = min(
+                counters["fields_extracted"] + len(touched_field_ids), counters["fields_total"]
+            )
             await progress_manager.broadcast(
                 dossier_id,
                 stage="extraction",

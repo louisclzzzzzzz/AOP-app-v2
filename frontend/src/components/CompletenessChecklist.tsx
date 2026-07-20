@@ -60,6 +60,21 @@ function certaintyTone(certainty: string | null): string {
   return 'text-slate-400'
 }
 
+// Mêmes couleurs que les badges en lecture seule, appliquées au <select> lui-même pendant la
+// correction manuelle pour que le statut reste lisible d'un coup d'œil sans avoir à lire le texte.
+function presenceSelectClasses(presence: string): string {
+  if (presence === 'present') return 'border-green-300 bg-green-50 text-green-800'
+  if (presence === 'partial') return 'border-amber-300 bg-amber-50 text-amber-800'
+  return 'border-red-300 bg-red-50 text-red-800'
+}
+
+function certaintySelectClasses(certainty: string): string {
+  if (certainty === 'certain') return 'border-green-300 bg-green-50 text-green-800'
+  if (certainty === 'probable') return 'border-amber-300 bg-amber-50 text-amber-800'
+  if (certainty === 'a_verifier') return 'border-red-300 bg-red-50 text-red-800'
+  return 'border-slate-200 bg-white text-slate-500'
+}
+
 function LocalisationCell({
   dossierId,
   items,
@@ -202,6 +217,22 @@ export function CompletenessChecklist({ dossierId, status, documents, onApplied 
     onApplied()
   }, [dossierId, onApplied])
 
+  const allSelected = (entries ?? []).length > 0 && (entries ?? []).every((e) => e.is_selected)
+
+  const handleToggleAll = useCallback(async () => {
+    if (!entries || entries.length === 0) return
+    const nextSelected = !allSelected
+    setEntries((prev) => prev?.map((e) => ({ ...e, is_selected: nextSelected })) ?? prev)
+    try {
+      await updateCompletenessSelection(
+        dossierId,
+        entries.map((e) => ({ piece_id: e.piece_id, is_selected: nextSelected })),
+      )
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Échec de la mise à jour de la sélection')
+    }
+  }, [dossierId, entries, allSelected])
+
   if (!isAtOrAfter(status, 'reorganized')) {
     return null
   }
@@ -264,9 +295,18 @@ export function CompletenessChecklist({ dossierId, status, documents, onApplied 
       </div>
 
       {isSelectionPhase && (
-        <p className="text-sm text-slate-500">
-          Cochez les pièces recherchées pour ce dossier. Les pièces obligatoires sont pré-cochées.
-        </p>
+        <div className="flex items-center justify-between gap-3">
+          <p className="text-sm text-slate-500">
+            Cochez les pièces recherchées pour ce dossier. Les pièces obligatoires sont pré-cochées.
+          </p>
+          <button
+            type="button"
+            onClick={handleToggleAll}
+            className="shrink-0 rounded border border-slate-200 bg-white px-2 py-1 text-[11px] font-medium text-slate-600 hover:bg-slate-100"
+          >
+            {allSelected ? 'Tout décocher' : 'Tout cocher'}
+          </button>
+        </div>
       )}
       {error && <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p>}
 
@@ -321,7 +361,7 @@ export function CompletenessChecklist({ dossierId, status, documents, onApplied 
                       <select
                         value={entry.final_presence ?? 'absent'}
                         onChange={(e) => handleCorrection(entry, { presence: e.target.value })}
-                        className="rounded border border-slate-200 bg-white px-1.5 py-1"
+                        className={`rounded border px-1.5 py-1 font-medium ${presenceSelectClasses(entry.final_presence ?? 'absent')}`}
                       >
                         <option value="present">Présente</option>
                         <option value="partial">Partielle</option>
@@ -340,7 +380,7 @@ export function CompletenessChecklist({ dossierId, status, documents, onApplied 
                       <select
                         value={entry.final_certainty ?? ''}
                         onChange={(e) => handleCorrection(entry, { certainty: e.target.value || null })}
-                        className="rounded border border-slate-200 bg-white px-1.5 py-1"
+                        className={`rounded border px-1.5 py-1 font-medium ${certaintySelectClasses(entry.final_certainty ?? '')}`}
                       >
                         <option value="">—</option>
                         <option value="certain">Certain</option>
