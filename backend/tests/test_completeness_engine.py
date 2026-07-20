@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 
 import app.completeness.engine as engine
-from app.completeness.engine import DocumentSignal, analyze_piece
+from app.completeness.engine import DocumentSignal, analyze_pieces
 from app.completeness.pieces_checklist import Piece
 
 
@@ -37,6 +37,13 @@ def _doc(**overrides) -> DocumentSignal:
     return DocumentSignal(**defaults)
 
 
+def _analyze_one(piece: Piece, documents: list[DocumentSignal], all_lots: list[str] | None = None):
+    """La complétude ne s'analyse plus pièce par pièce (les appels LLM sont désormais groupés
+    par document candidat, §4 AUDIT_BACKEND.md) — ce petit adaptateur garde les tests existants
+    lisibles pour le cas à une seule pièce."""
+    return analyze_pieces(pieces=[piece], documents=documents, all_lots=all_lots)[piece.id]
+
+
 def test_file_direct_match_does_not_call_llm(monkeypatch):
     def _boom(**kwargs):
         raise AssertionError("le LLM ne doit jamais être appelé pour une correspondance fichier directe")
@@ -46,7 +53,7 @@ def test_file_direct_match_does_not_call_llm(monkeypatch):
     piece = _piece(categorie_attendue="TECH/ETUDE DE SOL", peut_etre_inclus_dans_autre=False)
     doc = _doc(document_id="d1", final_category="TECH/ETUDE DE SOL", classification_confidence=0.95)
 
-    outcome = analyze_piece(piece=piece, documents=[doc])
+    outcome = _analyze_one(piece, [doc])
 
     assert outcome.match_layer == "file"
     assert outcome.presence == "present"
@@ -64,7 +71,7 @@ def test_absent_without_llm_when_not_included_elsewhere(monkeypatch):
     piece = _piece(categorie_attendue="TECH/RICT", peut_etre_inclus_dans_autre=False)
     doc = _doc(final_category="ADMIN/RC")
 
-    outcome = analyze_piece(piece=piece, documents=[doc])
+    outcome = _analyze_one(piece, [doc])
 
     assert outcome.match_layer == "none"
     assert outcome.presence == "absent"
@@ -85,7 +92,7 @@ def test_absent_when_no_keyword_candidates_no_llm_call(monkeypatch):
     )
     doc = _doc(content_excerpt="Ce document ne parle pas du tout du sujet recherché.")
 
-    outcome = analyze_piece(piece=piece, documents=[doc])
+    outcome = _analyze_one(piece, [doc])
 
     assert outcome.match_layer == "none"
     assert outcome.presence == "absent"
@@ -103,10 +110,15 @@ def test_piece_noyee_dans_un_autre_document_calls_llm_and_confirms(monkeypatch):
     def _fake_call(*, system_prompt, user_prompt, response_model, what):
         captured["user_prompt"] = user_prompt
         decision = response_model(
-            presence="present",
-            confidence=0.85,
-            justification="Le marché signé mentionne explicitement la garantie décennale.",
-            citation="l'entreprise justifie d'une assurance responsabilité civile décennale en cours",
+            items=[
+                {
+                    "piece_id": "attestation_decennale_par_lot",
+                    "presence": "present",
+                    "confidence": 0.85,
+                    "justification": "Le marché signé mentionne explicitement la garantie décennale.",
+                    "citation": "l'entreprise justifie d'une assurance responsabilité civile décennale en cours",
+                }
+            ]
         )
         return decision, "mistral-large-test"
 
@@ -126,7 +138,7 @@ def test_piece_noyee_dans_un_autre_document_calls_llm_and_confirms(monkeypatch):
         ocr_confidence=0.92,
     )
 
-    outcome = analyze_piece(piece=piece, documents=[marche_signe_doc])
+    outcome = _analyze_one(piece, [marche_signe_doc])
 
     assert outcome.match_layer == "llm"
     assert outcome.presence == "present"
@@ -141,13 +153,18 @@ def test_llm_tries_next_candidate_when_first_says_absent(monkeypatch):
 
     def _fake_call(*, system_prompt, user_prompt, response_model, what):
         calls.append(what)
+        piece_id = re.search(r'piece_id="([^"]+)"', user_prompt).group(1)
         if "doc-a" in user_prompt:
-            decision = response_model(presence="absent", confidence=0.8, justification="Hors sujet.", citation="")
+            item = {"piece_id": piece_id, "presence": "absent", "confidence": 0.8, "justification": "Hors sujet.", "citation": ""}
         else:
-            decision = response_model(
-                presence="present", confidence=0.9, justification="Confirmé.", citation="preuve trouvée"
-            )
-        return decision, "mistral-large-test"
+            item = {
+                "piece_id": piece_id,
+                "presence": "present",
+                "confidence": 0.9,
+                "justification": "Confirmé.",
+                "citation": "preuve trouvée",
+            }
+        return response_model(items=[item]), "mistral-large-test"
 
     monkeypatch.setattr(engine, "call_structured_chat", _fake_call)
 
@@ -160,11 +177,48 @@ def test_llm_tries_next_candidate_when_first_says_absent(monkeypatch):
     doc_a = _doc(document_id="doc-a", filename="doc-a.pdf", content_excerpt="mot cle et autre mot")
     doc_b = _doc(document_id="doc-b", filename="doc-b.pdf", content_excerpt="mot cle uniquement")
 
-    outcome = analyze_piece(piece=piece, documents=[doc_a, doc_b])
+    outcome = _analyze_one(piece, [doc_a, doc_b])
 
     assert len(calls) == 2
     assert outcome.presence == "present"
     assert outcome.matched_document_ids == ["doc-b"]
+
+
+def test_shared_candidate_document_is_analyzed_in_a_single_llm_call(monkeypatch):
+    """Le point central de la bascule vers le batching (§4 AUDIT_BACKEND.md) : deux pièces
+    candidates sur le MÊME document ne doivent déclencher qu'UN SEUL appel LLM, pas deux."""
+    calls = []
+
+    def _fake_call(*, system_prompt, user_prompt, response_model, what):
+        calls.append(what)
+        piece_ids = re.findall(r'piece_id="([^"]+)"', user_prompt)
+        items = [
+            {"piece_id": pid, "presence": "present", "confidence": 0.9, "justification": "Confirmé.", "citation": "preuve"}
+            for pid in piece_ids
+        ]
+        return response_model(items=items), "mistral-large-test"
+
+    monkeypatch.setattr(engine, "call_structured_chat", _fake_call)
+
+    piece_a = _piece(
+        id="piece_a",
+        peut_etre_inclus_dans_autre=True,
+        indices=[re.compile("mot cle", re.IGNORECASE)],
+    )
+    piece_b = _piece(
+        id="piece_b",
+        peut_etre_inclus_dans_autre=True,
+        indices=[re.compile("mot cle", re.IGNORECASE)],
+    )
+    doc = _doc(document_id="doc-shared", filename="doc-shared.pdf", content_excerpt="mot cle présent ici")
+
+    outcomes = analyze_pieces(pieces=[piece_a, piece_b], documents=[doc])
+
+    assert len(calls) == 1
+    assert outcomes["piece_a"].presence == "present"
+    assert outcomes["piece_b"].presence == "present"
+    assert outcomes["piece_a"].matched_document_ids == ["doc-shared"]
+    assert outcomes["piece_b"].matched_document_ids == ["doc-shared"]
 
 
 def test_par_lot_coverage_reports_missing_lots(monkeypatch):
@@ -180,7 +234,7 @@ def test_par_lot_coverage_reports_missing_lots(monkeypatch):
     )
     doc_lot1 = _doc(document_id="d1", final_category="ASS/ATT ASS/ENT", final_lot="1")
 
-    outcome = analyze_piece(piece=piece, documents=[doc_lot1], all_lots=["1", "2"])
+    outcome = _analyze_one(piece, [doc_lot1], all_lots=["1", "2"])
 
     assert outcome.match_layer == "file"
     assert outcome.presence == "partial"
@@ -197,7 +251,7 @@ def test_par_lot_full_coverage_is_present(monkeypatch):
     doc_lot1 = _doc(document_id="d1", final_category="ASS/ATT ASS/ENT", final_lot="1")
     doc_lot2 = _doc(document_id="d2", final_category="ASS/ATT ASS/ENT", final_lot="2")
 
-    outcome = analyze_piece(piece=piece, documents=[doc_lot1, doc_lot2], all_lots=["1", "2"])
+    outcome = _analyze_one(piece, [doc_lot1, doc_lot2], all_lots=["1", "2"])
 
     assert outcome.presence == "present"
     assert outcome.matched_lots == {"covered": ["1", "2"], "missing": []}
@@ -212,7 +266,7 @@ def test_low_classification_confidence_downgrades_certainty_to_probable(monkeypa
     piece = _piece(categorie_attendue="TECH/PLANNING", peut_etre_inclus_dans_autre=False)
     doc = _doc(final_category="TECH/PLANNING", classification_confidence=0.4)
 
-    outcome = analyze_piece(piece=piece, documents=[doc])
+    outcome = _analyze_one(piece, [doc])
 
     assert outcome.presence == "present"
     assert outcome.certainty == "probable"
@@ -231,8 +285,30 @@ def test_llm_failure_on_only_candidate_surfaces_error(monkeypatch):
     )
     doc = _doc(content_excerpt="mot cle présent ici")
 
-    outcome = analyze_piece(piece=piece, documents=[doc])
+    outcome = _analyze_one(piece, [doc])
 
     assert outcome.error == "API indisponible"
     assert outcome.presence == "absent"
     assert outcome.certainty == "a_verifier"
+
+
+def test_confidence_out_of_range_is_clamped(monkeypatch):
+    """AUDIT_BACKEND.md §9 : une confiance hors [0, 1] renvoyée par le LLM doit être bornée,
+    pas rejetée (ce qui ferait échouer tout l'appel groupé)."""
+
+    def _fake_call(*, system_prompt, user_prompt, response_model, what):
+        item = {"piece_id": "test_piece", "presence": "present", "confidence": 95, "justification": "x", "citation": "x"}
+        return response_model(items=[item]), "mistral-large-test"
+
+    monkeypatch.setattr(engine, "call_structured_chat", _fake_call)
+
+    piece = _piece(
+        categorie_attendue=None,
+        peut_etre_inclus_dans_autre=True,
+        indices=[re.compile("mot cle", re.IGNORECASE)],
+    )
+    doc = _doc(content_excerpt="mot cle présent ici")
+
+    outcome = _analyze_one(piece, [doc])
+
+    assert outcome.confidence == 1.0

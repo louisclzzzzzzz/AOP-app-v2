@@ -40,3 +40,12 @@ def write_text_cache_files(
 def read_text_cache(text_path_relative: str) -> str:
     settings = get_settings()
     return (settings.workspace_dir / text_path_relative).read_text(encoding="utf-8")
+
+
+def delete_text_cache_files(content_hash: str) -> None:
+    """Supprime le(s) fichier(s) de cache d'un hash de contenu devenu orphelin (plus
+    référencé par aucun document, cf. `repository.delete_dossier`)."""
+    settings = get_settings()
+    d = settings.workspace_dir / "cache" / "text" / content_hash[:2]
+    for suffix in (".md", ".ocr.json"):
+        (d / f"{content_hash}{suffix}").unlink(missing_ok=True)

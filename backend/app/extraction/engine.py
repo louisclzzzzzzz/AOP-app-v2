@@ -28,6 +28,7 @@ from pydantic import BaseModel, create_model
 from app.extraction.extraction_schema import ExtractionField
 from app.ingestion.document_signal import DocumentSignal
 from app.mistral.client import call_structured_chat
+from app.mistral.validation import confidence_validator
 from app.settings import get_models_config
 from app.store.models import CrossCheckStatus, MatchLayer
 
@@ -192,6 +193,7 @@ def _document_item_model(field_ids: tuple[str, ...]) -> type[BaseModel]:
         confidence=(float, ...),
         justification=(str, ...),
         citation=(str, ...),
+        __validators__={"_clamp_confidence": confidence_validator()},
     )
 
 

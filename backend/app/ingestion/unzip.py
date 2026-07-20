@@ -60,6 +60,26 @@ def _decode_member_name(info: zipfile.ZipInfo) -> str:
     return best_effort if best_effort is not None else info.filename
 
 
+class _SizeBudget:
+    """Compteur mutable partagé sur toute une extraction récursive (racine + zips imbriqués) :
+    la limite doit porter sur le CUMUL décompressé de TOUTE l'arborescence, pas seulement par
+    archive individuelle (AUDIT_BACKEND.md §7) — sinon des zips imbriqués sur plusieurs
+    niveaux, chacun juste sous le seuil, peuvent au total écrire bien plus que la limite sur
+    disque."""
+
+    def __init__(self, remaining: int) -> None:
+        self.remaining = remaining
+
+    def charge(self, n: int, *, archive_name: str) -> None:
+        if n > self.remaining:
+            raise ValueError(
+                f"Taille décompressée cumulée dépassée en traitant {archive_name} "
+                f"(limite {MAX_TOTAL_UNCOMPRESSED_BYTES} octets pour toute l'arborescence "
+                "de zips imbriqués)"
+            )
+        self.remaining -= n
+
+
 def _safe_target(dest_dir: Path, member_name: str) -> Path | None:
     """Résout le chemin cible et rejette toute tentative de zip slip (../)."""
     target = (dest_dir / member_name).resolve()
@@ -70,17 +90,23 @@ def _safe_target(dest_dir: Path, member_name: str) -> Path | None:
     return target
 
 
-def extract_zip_flat(zip_path: Path, dest_dir: Path) -> None:
+def extract_zip_flat(zip_path: Path, dest_dir: Path, *, budget: _SizeBudget | None = None) -> None:
     """Extrait un zip dans dest_dir en corrigeant l'encodage des noms et en bloquant
     le zip slip. Lève zipfile.BadZipFile / RuntimeError si l'archive est corrompue ou
     protégée par mot de passe (laissé à l'appelant : l'archive reste alors non extraite).
+
+    `budget`, si fourni, impute la taille décompressée de CETTE archive à un compteur cumulé
+    partagé sur toute une extraction récursive (voir `_SizeBudget`) — sinon (appel autonome,
+    ex. tests) la taille de cette seule archive est bornée par `MAX_TOTAL_UNCOMPRESSED_BYTES`.
 
     Extraction atomique : on écrit dans un dossier de staging, renommé vers dest_dir
     seulement en cas de succès complet. Ainsi un `__extrait` qui EXISTE veut toujours dire
     « extraction complète et réussie » — jamais un état partiel pris à tort pour un succès."""
     with zipfile.ZipFile(zip_path) as zf:
         total_uncompressed = sum(i.file_size for i in zf.infolist())
-        if total_uncompressed > MAX_TOTAL_UNCOMPRESSED_BYTES:
+        if budget is not None:
+            budget.charge(total_uncompressed, archive_name=zip_path.name)
+        elif total_uncompressed > MAX_TOTAL_UNCOMPRESSED_BYTES:
             raise ValueError(
                 f"Archive {zip_path.name} dépasse la taille décompressée maximale autorisée"
             )
@@ -109,12 +135,14 @@ def extract_zip_flat(zip_path: Path, dest_dir: Path) -> None:
 
 def extract_zip_recursive(zip_path: Path, dest_dir: Path) -> None:
     """Point d'entrée : extrait le zip racine uploadé dans dest_dir (= source/ du dossier),
-    puis décompresse récursivement tout zip imbriqué trouvé à l'intérieur."""
-    extract_zip_flat(zip_path, dest_dir)
-    _extract_nested(dest_dir, depth=1)
+    puis décompresse récursivement tout zip imbriqué trouvé à l'intérieur, en cumulant la
+    taille décompressée sur TOUTE l'arborescence (voir `_SizeBudget`)."""
+    budget = _SizeBudget(MAX_TOTAL_UNCOMPRESSED_BYTES)
+    extract_zip_flat(zip_path, dest_dir, budget=budget)
+    _extract_nested(dest_dir, depth=1, budget=budget)
 
 
-def _extract_nested(root: Path, depth: int) -> None:
+def _extract_nested(root: Path, depth: int, budget: _SizeBudget) -> None:
     if depth > MAX_NESTED_DEPTH:
         return
     nested_zips = sorted(p for p in root.rglob("*.zip") if p.is_file())
@@ -124,11 +152,11 @@ def _extract_nested(root: Path, depth: int) -> None:
         if extrait_dir.exists():
             continue  # déjà traité (idempotence en cas de reprise)
         try:
-            extract_zip_flat(zpath, extrait_dir)
+            extract_zip_flat(zpath, extrait_dir, budget=budget)
             new_dirs.append(extrait_dir)
         except (zipfile.BadZipFile, RuntimeError, OSError, ValueError):
-            # Archive protégée par mot de passe / corrompue : elle reste telle quelle,
-            # inventoriée comme archive non analysable (rien n'est perdu).
+            # Archive protégée par mot de passe / corrompue / budget cumulé dépassé : elle
+            # reste telle quelle, inventoriée comme archive non analysable (rien n'est perdu).
             continue
     for d in new_dirs:
-        _extract_nested(d, depth + 1)
+        _extract_nested(d, depth + 1, budget)

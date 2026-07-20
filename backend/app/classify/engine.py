@@ -27,6 +27,7 @@ from pydantic import BaseModel, create_model
 from app.classify.naming import build_normalized_filename
 from app.classify.taxonomy import Taxonomy, TaxonomyCategory, load_taxonomy
 from app.mistral.client import call_structured_chat
+from app.mistral.validation import confidence_validator
 from app.settings import get_models_config
 from app.store.models import FileCategory
 
@@ -293,6 +294,7 @@ def _batch_item_model_for_categories(category_paths: tuple[str, ...]) -> type[Ba
         normalized_label=(str, ...),
         confidence=(float, ...),
         justification=(str, ...),
+        __validators__={"_clamp_confidence": confidence_validator()},
     )
 
 

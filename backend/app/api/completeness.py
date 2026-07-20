@@ -7,7 +7,7 @@ import logging
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException
 
-from app.api.dossiers import dossier_to_out
+from app.api.dossiers import dossier_to_out, reopen_stage
 from app.api.schemas import (
     CompletenessApplyOut,
     CompletenessCorrectionIn,
@@ -19,6 +19,7 @@ from app.api.schemas import (
 from app.completeness.pieces_checklist import load_pieces_checklist
 from app.completeness.pipeline import ensure_checks_initialized, run_completeness_pipeline
 from app.completeness.report import REPORT_JSON_FILENAME, validate_completeness
+from app.pipeline_support import run_pipeline_safely
 from app.progress import progress_manager
 from app.settings import get_settings
 from app.store.db import session_scope
@@ -79,18 +80,9 @@ def _entry_to_out(check: CompletenessCheck) -> CompletenessEntryOut:
 
 
 async def _run_completeness_safely(dossier_id: str) -> None:
-    """Filet de sécurité, miroir de `app/api/dossiers.py::_run_pipeline_safely`."""
-    try:
-        await run_completeness_pipeline(dossier_id)
-    except Exception as exc:  # pragma: no cover - filet de sécurité générique
-        logger.exception("Erreur non gérée dans le pipeline de complétude pour %s", dossier_id)
-        with session_scope() as s:
-            dossier = get_dossier(s, dossier_id)
-            if dossier is not None:
-                set_dossier_status(s, dossier, DossierStatus.ERROR, error_message=str(exc))
-        await progress_manager.broadcast(
-            dossier_id, stage="error", status=DossierStatus.ERROR.value, message=str(exc)
-        )
+    await run_pipeline_safely(
+        dossier_id, lambda: run_completeness_pipeline(dossier_id), what="le pipeline de complétude"
+    )
 
 
 @pieces_checklist_router.get("", response_model=list[PieceOut])
@@ -223,26 +215,15 @@ _REOPENABLE_COMPLETENESS_STATUSES = (
 
 @router.post("/{dossier_id}/completeness/reopen", response_model=DossierOut)
 async def reopen_completeness_endpoint(dossier_id: str) -> DossierOut:
-    with session_scope() as s:
-        dossier = get_dossier(s, dossier_id)
-        if dossier is None:
-            raise HTTPException(404, "Dossier introuvable")
-        if dossier.status not in _REOPENABLE_COMPLETENESS_STATUSES:
-            raise HTTPException(
-                409,
-                f"Ce dossier ne peut pas être rouvert pour correction de la complétude "
-                f"(statut actuel : {dossier.status}).",
-            )
-        reopen_completeness(s, dossier)
-        dossier_out = dossier_to_out(dossier)
-
-    await progress_manager.broadcast(
+    return await reopen_stage(
         dossier_id,
+        allowed_statuses=_REOPENABLE_COMPLETENESS_STATUSES,
+        reopen_fn=reopen_completeness,
+        not_ready_message="Ce dossier ne peut pas être rouvert pour correction de la complétude (statut actuel : {status}).",
         stage="completeness",
-        status=DossierStatus.COMPLETENESS_REVIEW.value,
-        message="Complétude rouverte pour correction",
+        target_status=DossierStatus.COMPLETENESS_REVIEW,
+        broadcast_message="Complétude rouverte pour correction",
     )
-    return dossier_out
 
 
 @router.get("/{dossier_id}/completeness/report")

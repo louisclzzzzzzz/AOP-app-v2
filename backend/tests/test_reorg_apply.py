@@ -107,6 +107,43 @@ def test_apply_reorganization_deduplicates_name_collisions(tmp_path, isolated_wo
     assert names == ["MEME_NOM-2.pdf", "MEME_NOM.pdf"]
 
 
+def test_apply_reorganization_survives_a_missing_source_file(tmp_path, isolated_workspace):
+    """AUDIT_BACKEND.md §9 : un fichier source manquant sur disque (incohérence DB/FS) ne doit
+    pas faire planter toute l'opération à mi-parcours — les autres documents doivent quand
+    même être copiés, et l'échec doit être consigné dans le rapport plutôt que masqué."""
+    source_dir = tmp_path / "source"
+    organized_root = tmp_path / "organized"
+    _make_source_file(source_dir, "ADMIN/RC 2024.pdf", "contenu RC")
+    # ASS/CCAP.pdf n'est volontairement PAS créé sur disque, malgré son entrée DB.
+
+    with session_scope() as s:
+        dossier = create_dossier(s, "root.zip")
+        dossier_id = dossier.id
+        _create_doc(s, dossier_id, relative_path="ADMIN/RC 2024.pdf", final_category="ADMIN/RC")
+        _create_doc(s, dossier_id, relative_path="ASS/CCAP.pdf", final_category="ASS/CCAP")
+
+    with session_scope() as s:
+        dossier = get_dossier(s, dossier_id)
+        report = apply_reorganization(s, dossier, source_dir=source_dir, organized_root=organized_root)
+
+    # Le document dont le fichier source existe est bien copié...
+    assert report["total_files"] == 1
+    assert (organized_root / "ADMIN" / "RC").exists()
+
+    # ...et l'échec de l'autre est consigné, pas masqué.
+    assert report["files_failed"] == 1
+    assert report["failures"][0]["source"] == "ASS/CCAP.pdf"
+
+    # L'opération se termine normalement (pas d'exception, rapport généré, statut appliqué) :
+    # le dossier n'est pas bloqué dans un état intermédiaire.
+    with session_scope() as s:
+        dossier = get_dossier(s, dossier_id)
+        assert dossier.reorg_applied_at is not None
+
+    md_report = (tmp_path / REPORT_MD_FILENAME).read_text(encoding="utf-8")
+    assert "ASS/CCAP.pdf" in md_report
+
+
 def test_apply_reorganization_is_idempotent_on_rerun(tmp_path, isolated_workspace):
     """Une seconde application (résumabilité) reconstruit organized/ proprement, sans
     accumuler d'anciennes copies."""
