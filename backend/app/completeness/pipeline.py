@@ -161,11 +161,23 @@ async def run_completeness_pipeline(dossier_id: str) -> None:
     # --- Couche 3 (LLM) : un appel par document candidat, regroupant plusieurs pièces à la fois
     # (§4 AUDIT_BACKEND.md) — diffuse une progression après chaque appel, potentiellement la
     # phase la plus longue, avant de persister le résultat détaillé par pièce.
+    #
+    # Le résultat détaillé par pièce n'est reconstitué qu'à la toute fin (`finalize_completeness`,
+    # une pièce pouvant avoir plusieurs documents candidats à recouper) : le compteur
+    # `pieces_checked` en base ne bouge donc pas pendant cette boucle. Pour éviter que la barre
+    # de progression reste bloquée puis saute d'un coup à la fin, on diffuse une estimation
+    # optimiste (pièces déjà couvertes par au moins un appel terminé), sans jamais l'écrire en
+    # base — seul `finalize_completeness` + la boucle de persistance ci-dessous font foi.
     results_by_doc_id: dict[str, DocumentCompletenessResult] = {}
+    touched_piece_ids: set[str] = set()
     for doc, pieces_for_doc in plan.doc_calls:
         result = await asyncio.to_thread(analyze_document_for_pieces, doc, pieces_for_doc)
         results_by_doc_id[doc.document_id] = result
+        touched_piece_ids.update(p.id for p in pieces_for_doc)
         counters = await asyncio.to_thread(_read_counters)
+        counters["pieces_checked"] = min(
+            counters["pieces_checked"] + len(touched_piece_ids), counters["pieces_selected"]
+        )
         await progress_manager.broadcast(
             dossier_id,
             stage="completeness",

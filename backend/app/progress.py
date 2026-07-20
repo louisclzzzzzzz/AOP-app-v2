@@ -14,20 +14,26 @@ from typing import Any
 from fastapi import WebSocket
 
 
+_HISTORY_LIMIT = 200
+
+
 class ProgressManager:
     def __init__(self) -> None:
         self._connections: dict[str, set[WebSocket]] = defaultdict(set)
         self._lock = asyncio.Lock()
-        # Dernier évènement connu par dossier, pour rattraper un client qui se connecte tard.
-        self._last_event: dict[str, dict[str, Any]] = {}
+        # Historique borné des derniers évènements par dossier, pour rattraper un client qui se
+        # connecte tard (ex. pipeline auto-enchaîné déjà bien avancé au moment où l'écran de
+        # progression s'ouvre) — sans quoi il ne recevait que le tout dernier évènement et voyait
+        # la barre de progression sauter directement à sa valeur finale.
+        self._history: dict[str, list[dict[str, Any]]] = defaultdict(list)
 
     async def connect(self, dossier_id: str, websocket: WebSocket) -> None:
         await websocket.accept()
         async with self._lock:
             self._connections[dossier_id].add(websocket)
-        last = self._last_event.get(dossier_id)
-        if last is not None:
-            await websocket.send_json(last)
+            history = list(self._history.get(dossier_id, ()))
+        for event in history:
+            await websocket.send_json(event)
 
     async def disconnect(self, dossier_id: str, websocket: WebSocket) -> None:
         async with self._lock:
@@ -42,12 +48,11 @@ class ProgressManager:
                 del self._connections[dossier_id]
 
     async def forget(self, dossier_id: str) -> None:
-        """Purge tout état résiduel d'un dossier (connexions + dernier évènement) — à appeler
-        à la suppression du dossier, sans quoi `_last_event` grossit indéfiniment
-        (AUDIT_BACKEND.md §5)."""
+        """Purge tout état résiduel d'un dossier (connexions + historique) — à appeler à la
+        suppression du dossier, sans quoi `_history` grossit indéfiniment (AUDIT_BACKEND.md §5)."""
         async with self._lock:
             self._connections.pop(dossier_id, None)
-            self._last_event.pop(dossier_id, None)
+            self._history.pop(dossier_id, None)
 
     async def broadcast(
         self,
@@ -68,8 +73,10 @@ class ProgressManager:
             "message": message,
             "timestamp": dt.datetime.now(dt.timezone.utc).isoformat(),
         }
-        self._last_event[dossier_id] = event
         async with self._lock:
+            history = self._history[dossier_id]
+            history.append(event)
+            del history[:-_HISTORY_LIMIT]
             targets = list(self._connections.get(dossier_id, ()))
         for ws in targets:
             try:
