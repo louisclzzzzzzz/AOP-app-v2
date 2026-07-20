@@ -62,7 +62,9 @@ Objectif : concentrer le budget LLM et la profondeur ici. On optimise le **nombr
 
 ### Ordonnancement dans la file LLM séquentielle
 - Priorité : **extraction des documents de référence > vérification pièces ambiguës > classification ambiguë**.
-- Traiter les documents de référence en premier ; les champs encore manquants déclenchent un élargissement ciblé seulement ensuite.
+- Un champ introuvable dans ses documents de référence est déclaré absent directement, sans
+  recherche élargie sur le reste du dossier (pas d'appel LLM supplémentaire au-delà des
+  documents de référence).
 
 ---
 
