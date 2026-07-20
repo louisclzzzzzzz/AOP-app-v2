@@ -6,10 +6,10 @@ Le lancement reste néanmoins déclenché explicitement par l'utilisateur (`POST
 depuis `completeness_validated`, jamais enchaîné automatiquement — même principe que les 2
 étapes précédentes.
 
-Un appel LLM par DOCUMENT de référence (pas par champ, §3 OPTIMISATION.md) : la couche 1 appelle
-chaque document de référence distinct une fois, couvrant tous les champs qu'il concerne ; les
-champs encore sans valeur passent en couche 2 (recherche élargie, un appel par document
-candidat) ; ce qui reste est déclaré absent sans appel LLM.
+Un appel LLM par DOCUMENT de référence (pas par champ, §3 OPTIMISATION.md) : on appelle chaque
+document de référence distinct une fois, couvrant tous les champs qu'il concerne. Un champ
+introuvable dans ses documents de référence (absents du dossier, ou présents mais sans la
+valeur) est déclaré absent directement, sans recherche élargie sur le reste du dossier.
 """
 from __future__ import annotations
 
@@ -25,8 +25,6 @@ from app.extraction.engine import (
     absent_outcome,
     analyze_document,
     generate_synthesis,
-    layer2_candidates,
-    plan_layer2_calls,
     plan_reference_document_calls,
     reference_candidates,
     resolve_field,
@@ -88,7 +86,7 @@ async def run_extraction_pipeline(dossier_id: str) -> None:
         dossier_id,
         status=DossierStatus.EXTRACTING,
         stage="extraction",
-        message="Extraction des données (un appel par document de référence, recoupement, recherche élargie)…",
+        message="Extraction des données (un appel par document de référence, recoupement)…",
     )
 
     def _prepare() -> list[DocumentSignal]:
@@ -179,7 +177,7 @@ async def run_extraction_pipeline(dossier_id: str) -> None:
     layer1_calls = plan_reference_document_calls(schema.fields, signals)
     layer1_results = await _run_calls(layer1_calls)
     # Les documents OCRisés à la demande pendant la couche 1 doivent être vus à jour par le
-    # recoupement ci-dessous et par la sélection de candidats de la couche 2.
+    # recoupement ci-dessous.
     signals = list(signals_by_id.values())
 
     layer1_outcomes: dict[str, ExtractionOutcome] = {}
@@ -196,33 +194,14 @@ async def run_extraction_pipeline(dossier_id: str) -> None:
             layer1_outcomes[f.id] = outcome
     await asyncio.to_thread(_persist, layer1_outcomes)
 
-    # --- Couche 2 : recherche élargie sur les champs encore manquants -----------------------
+    # --- Couche 2 : absent, aucun appel LLM (pas de recherche élargie) ----------------------
     missing_fields = [f for f in schema.fields if f.id not in layer1_outcomes]
-    layer2_outcomes: dict[str, ExtractionOutcome] = {}
     if missing_fields:
-        layer2_calls = plan_layer2_calls(missing_fields, signals)
-        layer2_results = await _run_calls(layer2_calls)
-        for f in missing_fields:
-            outcome = resolve_field(
-                f,
-                candidates=layer2_candidates(f, signals),
-                results_by_document=layer2_results,
-                match_layer=MatchLayer.CONTENT.value,
-                cross_check_required=False,
-            )
-            if outcome is not None:
-                layer2_outcomes[f.id] = outcome
-        await asyncio.to_thread(_persist, layer2_outcomes)
-
-    # --- Couche 3 : absent, aucun appel LLM --------------------------------------------------
-    resolved_ids = set(layer1_outcomes) | set(layer2_outcomes)
-    absent_fields = [f for f in schema.fields if f.id not in resolved_ids]
-    if absent_fields:
         absent_outcomes = {
             f.id: absent_outcome(
-                "Aucune valeur trouvée : ni dans les documents de référence, ni par recherche de mots-clés."
+                "Aucune valeur trouvée dans les documents de référence attendus pour ce champ."
             )
-            for f in absent_fields
+            for f in missing_fields
         }
         await asyncio.to_thread(_persist, absent_outcomes)
 
