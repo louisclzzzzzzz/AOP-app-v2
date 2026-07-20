@@ -10,11 +10,9 @@ plutôt que sur le nombre d'appels (§3 OPTIMISATION.md) :
 2. **Recoupement dérivé, pas appelé** : pour les champs critiques (montants, dates, garanties),
    les valeurs obtenues via plusieurs documents de référence lors de l'étape 1 sont comparées
    programmatiquement après coup (`resolve_field`) — aucun appel LLM dédié au recoupement.
-3. **Recherche intra-document élargie** (si un champ reste sans valeur après l'étape 1) : même
-   principe par document candidat (mots-clés, plafond `MAX_LLM_CANDIDATES`), mais un seul appel
-   par document candidat pour tous les champs encore manquants qui le concernent.
-4. **Absent** : aucune valeur trouvée nulle part → `value=None`, justification explicite,
-   aucun appel LLM.
+3. **Absent** : un champ introuvable dans ses documents de référence (absents du dossier, ou
+   présents mais sans la valeur) est déclaré absent directement → `value=None`, justification
+   explicite, aucun appel LLM supplémentaire (pas de recherche élargie sur le reste du dossier).
 """
 from __future__ import annotations
 
@@ -38,7 +36,6 @@ logger = logging.getLogger(__name__)
 # donc plus généreux que l'ancien budget par champ) — sélectionné par pertinence, pas par
 # troncature aveugle en tête de document (voir `_select_relevant_excerpt`).
 DOCUMENT_EXCERPT_MAX_CHARS = 6000
-MAX_LLM_CANDIDATES = 3
 _MIN_RELEVANT_WORD_LEN = 4
 
 
@@ -67,10 +64,6 @@ class DocumentExtractionResult:
     error: str | None = None
 
 
-def _score_candidate(doc: DocumentSignal, extraction_field: ExtractionField) -> int:
-    return sum(1 for p in extraction_field.indices if p.search(doc.content_excerpt))
-
-
 def reference_candidates(extraction_field: ExtractionField, documents: list[DocumentSignal]) -> list[DocumentSignal]:
     """Documents de référence pour ce champ, dans l'ordre de priorité de `reference_categories`."""
     candidates: list[DocumentSignal] = []
@@ -79,19 +72,11 @@ def reference_candidates(extraction_field: ExtractionField, documents: list[Docu
     return candidates
 
 
-def layer2_candidates(extraction_field: ExtractionField, documents: list[DocumentSignal]) -> list[DocumentSignal]:
-    return sorted(
-        (d for d in documents if d.content_excerpt and _score_candidate(d, extraction_field) > 0),
-        key=lambda d: _score_candidate(d, extraction_field),
-        reverse=True,
-    )[:MAX_LLM_CANDIDATES]
-
-
 def plan_reference_document_calls(
     schema_fields: list[ExtractionField], documents: list[DocumentSignal]
 ) -> list[tuple[DocumentSignal, list[ExtractionField]]]:
-    """Couche 1 : un appel par document de référence distinct, regroupant tous les champs dont
-    ce document couvre la catégorie."""
+    """Un appel par document de référence distinct, regroupant tous les champs dont ce document
+    couvre la catégorie."""
     calls: list[tuple[DocumentSignal, list[ExtractionField]]] = []
     for doc in documents:
         if not doc.final_category:
@@ -103,23 +88,6 @@ def plan_reference_document_calls(
         if fields_for_doc:
             calls.append((doc, fields_for_doc))
     return calls
-
-
-def plan_layer2_calls(
-    missing_fields: list[ExtractionField], documents: list[DocumentSignal]
-) -> list[tuple[DocumentSignal, list[ExtractionField]]]:
-    """Couche 2 : un appel par document candidat (scoré par mots-clés), regroupant les champs
-    encore manquants pertinents pour ce candidat."""
-    doc_to_fields: dict[str, list[ExtractionField]] = {}
-    doc_by_id = {d.document_id: d for d in documents}
-    order: list[str] = []
-    for extraction_field in missing_fields:
-        for d in layer2_candidates(extraction_field, documents):
-            if d.document_id not in doc_to_fields:
-                doc_to_fields[d.document_id] = []
-                order.append(d.document_id)
-            doc_to_fields[d.document_id].append(extraction_field)
-    return [(doc_by_id[doc_id], doc_to_fields[doc_id]) for doc_id in order]
 
 
 # --- Sélection de contexte par pertinence (§3 OPTIMISATION.md, sans embeddings) -----------------
@@ -337,7 +305,7 @@ def resolve_field(
 ) -> ExtractionOutcome | None:
     """Dérive la décision finale d'un champ à partir des appels par document déjà effectués
     (`results_by_document`), en respectant l'ordre de priorité de `candidates`. Retourne None si
-    rien n'est confirmé et qu'aucune erreur n'est survenue (couche suivante à essayer)."""
+    rien n'est confirmé et qu'aucune erreur n'est survenue (le champ sera déclaré absent)."""
     found: list[tuple[DocumentSignal, Any, str | None]] = []
     any_error = False
 
