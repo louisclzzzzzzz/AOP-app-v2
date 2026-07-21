@@ -105,9 +105,13 @@ interface SelectionProps {
   onToggleFolder?: (documentIds: string[], checked: boolean) => void
 }
 
+function TreeConnector() {
+  return <span aria-hidden="true" className="absolute -left-4 top-1/2 h-px w-4 -translate-y-1/2 bg-slate-300" />
+}
+
 function FolderRow({
   node,
-  depth,
+  isRoot,
   collapsed,
   onToggle,
   showFiles,
@@ -117,7 +121,7 @@ function FolderRow({
   onToggleFolder,
 }: {
   node: TreeNode
-  depth: number
+  isRoot?: boolean
   collapsed: Set<string>
   onToggle: (path: string) => void
   showFiles: boolean
@@ -126,6 +130,7 @@ function FolderRow({
   const childFolders = [...node.children.values()].sort((a, b) => a.name.localeCompare(b.name))
   const files = [...node.files].sort((a, b) => a.name.localeCompare(b.name))
   const total = countFiles(node)
+  const hasVisibleChildren = childFolders.length > 0 || (showFiles && files.length > 0)
 
   const folderDocumentIds = selectable ? collectDocumentIds(node) : []
   const folderSelectedCount = selectable
@@ -135,10 +140,8 @@ function FolderRow({
 
   return (
     <div>
-      <div
-        className="flex w-full items-center gap-2 rounded px-1.5 py-1.5 hover:bg-blue-50"
-        style={{ paddingLeft: `${depth * 16 + 6}px` }}
-      >
+      <div className="relative flex w-full items-center gap-2 rounded px-1.5 py-1.5 hover:bg-blue-50">
+        {!isRoot && <TreeConnector />}
         {selectable && folderDocumentIds.length > 0 && (
           <input
             type="checkbox"
@@ -165,13 +168,12 @@ function FolderRow({
           </span>
         </button>
       </div>
-      {expanded && (
-        <div>
+      {expanded && hasVisibleChildren && (
+        <div className="ml-2 border-l border-slate-200 pl-4">
           {childFolders.map((child) => (
             <FolderRow
               key={child.path}
               node={child}
-              depth={depth + 1}
               collapsed={collapsed}
               onToggle={onToggle}
               showFiles={showFiles}
@@ -185,10 +187,10 @@ function FolderRow({
             files.map((file, i) => (
               <div
                 key={i}
-                className="flex items-center gap-1.5 px-1.5 py-1 text-xs text-slate-500"
-                style={{ paddingLeft: `${(depth + 1) * 16 + 21}px` }}
+                className="relative flex items-center gap-1.5 px-1.5 py-1 text-xs text-slate-500"
                 title={file.name}
               >
+                <TreeConnector />
                 {selectable && file.documentId ? (
                   <input
                     type="checkbox"
@@ -292,7 +294,7 @@ export function OrganizedTree({
           <FolderRow
             key={node.path}
             node={node}
-            depth={0}
+            isRoot
             collapsed={collapsed}
             onToggle={handleToggle}
             showFiles={effectiveShowFiles}
