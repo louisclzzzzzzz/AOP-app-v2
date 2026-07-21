@@ -2,7 +2,6 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { dossierWebSocketUrl, getDossier, getDossierDocuments } from '../api'
 import type { Counters, Dossier, DossierStatus, DocumentItem, ProgressEvent } from '../types'
 import { isAtOrAfter } from '../statusFlow'
-import { CollapsiblePanel } from './CollapsiblePanel'
 import { CompletenessChecklist } from './CompletenessChecklist'
 import { DossierSummary } from './DossierSummary'
 import { ExtractionSheet } from './ExtractionSheet'
@@ -225,24 +224,9 @@ export function DossierProgress({ dossierId, onBack, onSelectDossier }: Props) {
         </div>
       </div>
 
-      <div className="grid grid-cols-4 gap-3 text-center">
+      <div className="grid grid-cols-3 gap-3 text-center">
         <Stat label="Total" value={counters.total_files} />
         <Stat label="Texte extrait" value={counters.text_extracted} tone="text-green-700" />
-        <Stat
-          label="Non analysables"
-          value={counters.non_analyzable}
-          tone="text-slate-500"
-          hint={
-            counters.non_analyzable_at_risk > 0 ? (
-              <span
-                className="mt-1 inline-block rounded-full bg-red-100 px-2 py-0.5 text-[10px] font-medium text-red-700"
-                title="Archives protégées/corrompues ou extensions non supportées : contenu potentiellement pertinent mais inaccessible — voir le détail dans l'inventaire ci-dessous."
-              >
-                {counters.non_analyzable_at_risk} à vérifier
-              </span>
-            ) : undefined
-          }
-        />
         <Stat label="Erreurs" value={counters.error} tone="text-red-700" />
       </div>
 
@@ -303,47 +287,6 @@ export function DossierProgress({ dossierId, onBack, onSelectDossier }: Props) {
             )}
           </div>
         </div>
-      )}
-
-      {documents && (
-        <CollapsiblePanel title="Inventaire" subtitle={`${documents.length} fichiers`}>
-          <div className="max-h-96 overflow-y-auto">
-            <table className="w-full text-left text-xs">
-              <thead className="sticky top-0 bg-slate-100 text-slate-500">
-                <tr>
-                  <th className="px-3 py-2">Chemin</th>
-                  <th className="px-3 py-2">Catégorie</th>
-                  <th className="px-3 py-2">Statut</th>
-                  <th className="px-3 py-2">Méthode</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100">
-                {documents.map((doc) => (
-                  <tr
-                    key={doc.id}
-                    className={doc.non_analyzable_at_risk ? 'bg-red-50' : doc.is_analyzable ? '' : 'text-slate-400'}
-                  >
-                    <td className="px-3 py-1.5">{doc.relative_path}</td>
-                    <td className="px-3 py-1.5">{doc.category}</td>
-                    <td className="px-3 py-1.5">
-                      {doc.stage === 'error' ? (
-                        <span className="text-red-600">{doc.stage_error ?? 'erreur'}</span>
-                      ) : doc.non_analyzable_at_risk ? (
-                        <span className="text-red-700">
-                          <span className="mr-1 rounded bg-red-100 px-1 text-[10px] font-medium">à vérifier</span>
-                          {doc.non_analyzable_reason}
-                        </span>
-                      ) : (
-                        doc.non_analyzable_reason ?? doc.stage
-                      )}
-                    </td>
-                    <td className="px-3 py-1.5">{doc.text_extraction_method ?? '—'}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </CollapsiblePanel>
       )}
     </div>
   )
