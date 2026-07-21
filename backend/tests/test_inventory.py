@@ -168,6 +168,47 @@ def test_non_analyzable_at_risk_distinguishes_real_risk_from_harmless(tmp_path, 
     assert by_path["ADMIN/RC.pdf"]["non_analyzable_at_risk"] is False
 
 
+def test_macos_resource_forks_and_ds_store_marked_non_analyzable(tmp_path, isolated_workspace, make_zip):
+    """Fichiers de métadonnées macOS (jamais du contenu réel) : ressources AppleDouble
+    `._nom` — y compris sous `__MACOSX/`, où macOS les place systématiquement lors d'une
+    compression — et `.DS_Store`. Régression : ces fichiers étaient auparavant classés selon
+    leur extension apparente (ex. `._CCAP.pdf` envoyé à l'OCR comme un vrai PDF, rejeté par
+    l'API Mistral en 400 "Document type not supported")."""
+    docs = _build(
+        tmp_path,
+        make_zip,
+        {
+            "ASS/._CCAP CONSERVATOIRE.pdf": "pas un vrai PDF",
+            "__MACOSX/ASS/._CCAP CONSERVATOIRE.pdf": "pas un vrai PDF non plus",
+            "ASS/.DS_Store": "noise",
+            "ASS/CCAP CONSERVATOIRE.pdf": "contenu réel",
+        },
+    )
+    by_path = {d["relative_path"]: d for d in docs}
+
+    assert by_path["ASS/._CCAP CONSERVATOIRE.pdf"]["is_analyzable"] is False
+    assert by_path["ASS/._CCAP CONSERVATOIRE.pdf"]["non_analyzable_at_risk"] is False
+    assert by_path["__MACOSX/ASS/._CCAP CONSERVATOIRE.pdf"]["is_analyzable"] is False
+    assert by_path["ASS/.DS_Store"]["is_analyzable"] is False
+    assert by_path["ASS/.DS_Store"]["non_analyzable_at_risk"] is False
+
+    # Le vrai fichier, lui, reste analysable normalement
+    assert by_path["ASS/CCAP CONSERVATOIRE.pdf"]["is_analyzable"] is True
+
+
+def test_macos_junk_zip_lookalike_not_treated_as_archive(tmp_path, isolated_workspace, make_zip):
+    """`._nom.zip` (ressource AppleDouble d'un zip) n'est pas une archive — elle ne doit ni
+    déclencher une tentative de décompression, ni être signalée comme « archive protégée/
+    corrompue » (ce qui la flaguerait à tort `at_risk=True`)."""
+    docs = _build(tmp_path, make_zip, {"ASS/._ASSURANCES.zip": "pas un vrai zip"})
+    by_path = {d["relative_path"]: d for d in docs}
+
+    doc = by_path["ASS/._ASSURANCES.zip"]
+    assert doc["category"] != "archive"
+    assert doc["is_analyzable"] is False
+    assert doc["non_analyzable_at_risk"] is False
+
+
 def test_hash_file_matches_sha256(tmp_path):
     f = tmp_path / "sample.txt"
     f.write_bytes(b"hello world")
