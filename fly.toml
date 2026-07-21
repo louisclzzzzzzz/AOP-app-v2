@@ -1,0 +1,29 @@
+# Config Fly.io pour AOP v2 (backend FastAPI + frontend statique, un seul conteneur).
+# Avant le premier déploiement :
+#   fly apps create aop-v2                      # ou laissez `fly launch` choisir un nom unique
+#   fly volumes create aop_data --region cdg -n 1   # 1 Go, stocke workspace/ (SQLite + docs + cache OCR)
+#   fly secrets set MISTRAL_API_KEY=...
+# Puis : fly deploy
+
+app = "aop-v2"
+primary_region = "cdg"
+
+[build]
+
+[env]
+  AOP_WORKSPACE_DIR = "/data"
+
+[[mounts]]
+  source = "aop_data"
+  destination = "/data"
+
+[http_service]
+  internal_port = 8000
+  force_https = true
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 0
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "1gb"

@@ -1,0 +1,29 @@
+.git
+.claude
+.github
+
+# Frontend
+frontend/node_modules
+frontend/dist
+frontend/.vite
+
+# Backend
+backend/.venv
+backend/__pycache__
+backend/**/__pycache__
+backend/.pytest_cache
+backend/tests
+backend/workspace
+
+# App data / secrets
+workspace
+.env
+.env.local
+
+# Misc project docs, not needed at runtime
+dossier_test
+notes.md
+plan
+refs
+tests
+README.md
