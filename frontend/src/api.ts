@@ -177,9 +177,19 @@ export async function getExtraction(dossierId: string): Promise<ExtractionEntry[
   return handle<ExtractionEntry[]>(res)
 }
 
-export async function runExtractionAnalysis(dossierId: string): Promise<Dossier> {
-  const res = await fetch(`/api/dossiers/${dossierId}/extraction/run`, { method: 'POST' })
+export async function runExtractionAnalysis(dossierId: string, documentIds?: string[]): Promise<Dossier> {
+  const res = await fetch(`/api/dossiers/${dossierId}/extraction/run`, {
+    method: 'POST',
+    ...(documentIds && documentIds.length > 0
+      ? { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ document_ids: documentIds }) }
+      : {}),
+  })
   return handle<Dossier>(res)
+}
+
+export async function deepenExtraction(dossierId: string, fieldId: string): Promise<ExtractionEntry> {
+  const res = await fetch(`/api/dossiers/${dossierId}/extraction/${fieldId}/deepen`, { method: 'POST' })
+  return handle<ExtractionEntry>(res)
 }
 
 export async function correctExtraction(

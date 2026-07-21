@@ -222,3 +222,11 @@ class ExtractionCorrectionIn(BaseModel):
 class ExtractionApplyOut(BaseModel):
     dossier: DossierOut
     report: dict
+
+
+class ExtractionRunIn(BaseModel):
+    """Corps optionnel de `POST .../extraction/run`. `document_ids` non vide = sélection
+    manuelle de documents (l'expert restreint tout le run à cette liste, choisie dans
+    l'arborescence organisée) ; absent/vide = run standard (comportement inchangé)."""
+
+    document_ids: list[str] | None = None

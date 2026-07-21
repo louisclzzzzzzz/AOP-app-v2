@@ -10,9 +10,17 @@ plutôt que sur le nombre d'appels (§3 OPTIMISATION.md) :
 2. **Recoupement dérivé, pas appelé** : pour les champs critiques (montants, dates, garanties),
    les valeurs obtenues via plusieurs documents de référence lors de l'étape 1 sont comparées
    programmatiquement après coup (`resolve_field`) — aucun appel LLM dédié au recoupement.
-3. **Absent** : un champ introuvable dans ses documents de référence (absents du dossier, ou
-   présents mais sans la valeur) est déclaré absent directement → `value=None`, justification
-   explicite, aucun appel LLM supplémentaire (pas de recherche élargie sur le reste du dossier).
+3. **Absent par défaut** : un champ introuvable dans ses documents de référence (absents du
+   dossier, ou présents mais sans la valeur) est déclaré absent directement → `value=None`,
+   justification explicite, aucun appel LLM supplémentaire dans le run standard.
+4. **Approfondissement à la demande** (`layer2_candidates`/`plan_layer2_calls`) : sur un champ
+   resté absent, l'expert peut déclencher une recherche élargie ponctuelle (mots-clés sur tout
+   le dossier, plafond `MAX_LLM_CANDIDATES`) — ce n'est plus une couche automatique du run
+   standard, mais une action explicite par champ (endpoint `.../extraction/{field_id}/deepen`).
+5. **Sélection manuelle de documents** (`plan_manual_calls`) : alternative au run standard,
+   déclenchée en amont — l'expert restreint tout le run à une liste de documents choisis dans
+   l'arborescence organisée ; chaque document sélectionné est alors interrogé pour l'ensemble
+   des champs du schéma, sans filtrage par catégorie de référence.
 """
 from __future__ import annotations
 
@@ -37,6 +45,9 @@ logger = logging.getLogger(__name__)
 # troncature aveugle en tête de document (voir `_select_relevant_excerpt`).
 DOCUMENT_EXCERPT_MAX_CHARS = 6000
 _MIN_RELEVANT_WORD_LEN = 4
+# Nombre max de documents candidats interrogés lors d'un approfondissement ponctuel (§ci-dessus,
+# point 4) — évite qu'un champ très générique ne déclenche un balayage de tout le dossier.
+MAX_LLM_CANDIDATES = 3
 
 
 @dataclass
@@ -88,6 +99,48 @@ def plan_reference_document_calls(
         if fields_for_doc:
             calls.append((doc, fields_for_doc))
     return calls
+
+
+def plan_manual_calls(
+    schema_fields: list[ExtractionField], documents: list[DocumentSignal]
+) -> list[tuple[DocumentSignal, list[ExtractionField]]]:
+    """Sélection manuelle de documents (l'expert restreint tout le run à une liste choisie dans
+    l'arborescence organisée) : chaque document sélectionné est interrogé pour TOUS les champs
+    du schéma, sans filtrage par catégorie de référence — le périmètre a déjà été choisi par
+    l'utilisateur, inutile de le re-filtrer par `reference_categories`."""
+    return [(doc, schema_fields) for doc in documents if doc.content_excerpt]
+
+
+def _score_candidate(doc: DocumentSignal, extraction_field: ExtractionField) -> int:
+    return sum(1 for p in extraction_field.indices if p.search(doc.content_excerpt))
+
+
+def layer2_candidates(extraction_field: ExtractionField, documents: list[DocumentSignal]) -> list[DocumentSignal]:
+    """Documents candidats pour un approfondissement ponctuel (§ point 4 ci-dessus) : scorés par
+    mots-clés (`indices` du champ) sur tout le dossier, plafonnés à `MAX_LLM_CANDIDATES`."""
+    return sorted(
+        (d for d in documents if d.content_excerpt and _score_candidate(d, extraction_field) > 0),
+        key=lambda d: _score_candidate(d, extraction_field),
+        reverse=True,
+    )[:MAX_LLM_CANDIDATES]
+
+
+def plan_layer2_calls(
+    missing_fields: list[ExtractionField], documents: list[DocumentSignal]
+) -> list[tuple[DocumentSignal, list[ExtractionField]]]:
+    """Un appel par document candidat (scoré par mots-clés), regroupant les champs demandés
+    pertinents pour ce candidat — utilisé par l'approfondissement ponctuel, un ou plusieurs
+    champs à la fois."""
+    doc_to_fields: dict[str, list[ExtractionField]] = {}
+    doc_by_id = {d.document_id: d for d in documents}
+    order: list[str] = []
+    for extraction_field in missing_fields:
+        for d in layer2_candidates(extraction_field, documents):
+            if d.document_id not in doc_to_fields:
+                doc_to_fields[d.document_id] = []
+                order.append(d.document_id)
+            doc_to_fields[d.document_id].append(extraction_field)
+    return [(doc_by_id[doc_id], doc_to_fields[doc_id]) for doc_id in order]
 
 
 # --- Sélection de contexte par pertinence (§3 OPTIMISATION.md, sans embeddings) -----------------

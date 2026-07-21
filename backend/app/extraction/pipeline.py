@@ -9,7 +9,11 @@ depuis `completeness_validated`, jamais enchaîné automatiquement — même pri
 Un appel LLM par DOCUMENT de référence (pas par champ, §3 OPTIMISATION.md) : on appelle chaque
 document de référence distinct une fois, couvrant tous les champs qu'il concerne. Un champ
 introuvable dans ses documents de référence (absents du dossier, ou présents mais sans la
-valeur) est déclaré absent directement, sans recherche élargie sur le reste du dossier.
+valeur) est déclaré absent directement, sans recherche élargie automatique sur le reste du
+dossier. Deux mécanismes complémentaires, tous deux déclenchés explicitement par l'expert :
+`run_extraction_pipeline(document_ids=...)` restreint tout le run à une sélection manuelle de
+documents (couche 1 sans filtrage par catégorie), et `deepen_field` relance la recherche élargie
+(mots-clés) pour un seul champ resté absent, sans toucher aux autres champs.
 """
 from __future__ import annotations
 
@@ -25,6 +29,8 @@ from app.extraction.engine import (
     absent_outcome,
     analyze_document,
     generate_synthesis,
+    plan_layer2_calls,
+    plan_manual_calls,
     plan_reference_document_calls,
     reference_candidates,
     resolve_field,
@@ -81,12 +87,20 @@ def _counters(dossier: Dossier) -> dict[str, int]:
     }
 
 
-async def run_extraction_pipeline(dossier_id: str) -> None:
+async def run_extraction_pipeline(dossier_id: str, *, document_ids: list[str] | None = None) -> None:
+    """`document_ids` : sélection manuelle de documents (l'expert restreint tout le run à une
+    liste choisie dans l'arborescence organisée, §engine.py point 5) — `None`/liste vide = run
+    standard (couche 1 filtrée par catégorie de référence, comme d'habitude)."""
+    manual_scope = bool(document_ids)
     await start_stage(
         dossier_id,
         status=DossierStatus.EXTRACTING,
         stage="extraction",
-        message="Extraction des données (un appel par document de référence, recoupement)…",
+        message=(
+            f"Extraction ciblée sur {len(document_ids)} document(s) sélectionné(s) manuellement…"
+            if manual_scope
+            else "Extraction des données (un appel par document de référence, recoupement)…"
+        ),
     )
 
     def _prepare() -> list[DocumentSignal]:
@@ -96,6 +110,9 @@ async def run_extraction_pipeline(dossier_id: str) -> None:
             assert dossier is not None
             recompute_extraction_counters(s, dossier)
             documents = list_documents(s, dossier_id)
+            if manual_scope:
+                allowed_ids = set(document_ids)
+                documents = [d for d in documents if d.id in allowed_ids]
             doc_snapshots = [
                 {
                     "id": d.id,
@@ -184,8 +201,12 @@ async def run_extraction_pipeline(dossier_id: str) -> None:
             )
         return results
 
-    # --- Couche 1 : un appel par document de référence --------------------------------------
-    layer1_calls = plan_reference_document_calls(schema.fields, signals)
+    # --- Couche 1 : un appel par document de référence (ou par document sélectionné) --------
+    layer1_calls = (
+        plan_manual_calls(schema.fields, signals)
+        if manual_scope
+        else plan_reference_document_calls(schema.fields, signals)
+    )
     layer1_results = await _run_calls(layer1_calls)
     # Les documents OCRisés à la demande pendant la couche 1 doivent être vus à jour par le
     # recoupement ci-dessous.
@@ -193,11 +214,12 @@ async def run_extraction_pipeline(dossier_id: str) -> None:
 
     layer1_outcomes: dict[str, ExtractionOutcome] = {}
     for f in schema.fields:
+        candidates = signals if manual_scope else reference_candidates(f, signals)
         outcome = resolve_field(
             f,
-            candidates=reference_candidates(f, signals),
+            candidates=candidates,
             results_by_document=layer1_results,
-            match_layer=MatchLayer.FILE.value,
+            match_layer=MatchLayer.CONTENT.value if manual_scope else MatchLayer.FILE.value,
             cross_check_required=f.id in cross_check_required_fields,
             max_cross_check_sources=max_cross_check_sources,
         )
@@ -205,15 +227,16 @@ async def run_extraction_pipeline(dossier_id: str) -> None:
             layer1_outcomes[f.id] = outcome
     await asyncio.to_thread(_persist, layer1_outcomes)
 
-    # --- Couche 2 : absent, aucun appel LLM (pas de recherche élargie) ----------------------
+    # --- Couche 2 : absent, aucun appel LLM (pas de recherche élargie automatique — voir
+    # `deepen_field` pour un approfondissement ponctuel à la demande) -----------------------
     missing_fields = [f for f in schema.fields if f.id not in layer1_outcomes]
     if missing_fields:
-        absent_outcomes = {
-            f.id: absent_outcome(
-                "Aucune valeur trouvée dans les documents de référence attendus pour ce champ."
-            )
-            for f in missing_fields
-        }
+        absent_message = (
+            "Aucune valeur trouvée dans les documents sélectionnés manuellement pour ce champ."
+            if manual_scope
+            else "Aucune valeur trouvée dans les documents de référence attendus pour ce champ."
+        )
+        absent_outcomes = {f.id: absent_outcome(absent_message) for f in missing_fields}
         await asyncio.to_thread(_persist, absent_outcomes)
 
     # --- Synthèse textuelle : un appel unique à partir des valeurs déjà résolues ------------
@@ -247,3 +270,77 @@ async def run_extraction_pipeline(dossier_id: str) -> None:
         counters=_counters,
         recompute=lambda s, dossier: recompute_extraction_counters(s, dossier),
     )
+
+
+def _document_signals(dossier_id: str) -> list[DocumentSignal]:
+    with session_scope() as s:
+        documents = list_documents(s, dossier_id)
+        doc_snapshots = [
+            {
+                "id": d.id,
+                "filename": d.filename,
+                "final_category": d.final_category,
+                "final_lot": d.final_lot,
+                "classification_confidence": d.classification_confidence,
+                "text_cache_id": d.text_cache_id,
+            }
+            for d in documents
+        ]
+    return [build_document_signal(snap) for snap in doc_snapshots]
+
+
+async def deepen_field(dossier_id: str, field_id: str) -> None:
+    """Approfondissement ponctuel d'un seul champ (§ docstring module, point 2) : recherche
+    élargie par mots-clés sur tout le dossier (`layer2_candidates`/`MAX_LLM_CANDIDATES`),
+    déclenchée explicitement par l'expert depuis l'écran de validation de l'étape 3 — jamais
+    automatique, jamais pour les autres champs. Écrase la proposition existante de ce champ
+    (même sémantique qu'un nouveau run standard sur ce champ)."""
+    schema = load_extraction_schema()
+    extraction_field = schema.by_id(field_id)
+    if extraction_field is None:
+        raise ValueError(f"Champ d'extraction inconnu : {field_id}")
+
+    signals = await asyncio.to_thread(_document_signals, dossier_id)
+    calls = plan_layer2_calls([extraction_field], signals)
+    candidates = [doc for doc, _ in calls]
+
+    results_by_document: dict[str, DocumentExtractionResult] = {}
+    for doc, fields_for_doc in calls:
+        doc = await asyncio.to_thread(ensure_document_ocr, dossier_id, doc)
+        result = await asyncio.to_thread(analyze_document, doc, fields_for_doc)
+        results_by_document[doc.document_id] = result
+
+    outcome = resolve_field(
+        extraction_field,
+        candidates=candidates,
+        results_by_document=results_by_document,
+        match_layer=MatchLayer.CONTENT.value,
+        cross_check_required=False,
+    ) or absent_outcome(
+        "Recherche élargie effectuée sur les documents les plus proches par mots-clés : "
+        "aucune valeur trouvée."
+    )
+
+    def _persist() -> None:
+        with session_scope() as s:
+            result = get_extraction_result_by_field(s, dossier_id, field_id)
+            assert result is not None
+            set_extraction_result(
+                s,
+                result,
+                match_layer=outcome.match_layer,
+                value=outcome.value,
+                confidence=outcome.confidence,
+                justification=outcome.justification,
+                citation=outcome.citation,
+                sources=outcome.sources,
+                cross_check_status=outcome.cross_check_status,
+                model_name=outcome.model_name,
+                model_version=outcome.model_version,
+                error=outcome.error,
+            )
+            dossier = get_dossier(s, dossier_id)
+            assert dossier is not None
+            recompute_extraction_counters(s, dossier)
+
+    await asyncio.to_thread(_persist)

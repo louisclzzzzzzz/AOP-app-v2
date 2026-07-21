@@ -40,7 +40,10 @@ def _build_test_zip() -> bytes:
         )
         zf.writestr(
             "ASS/CCAP.pdf",
-            _dense_pdf_bytes("CCAP assurance. Montant total HT : 950 000 EUR."),
+            _dense_pdf_bytes(
+                "CCAP assurance. Montant total HT : 950 000 EUR. "
+                "Annexe stratigraphie du sous-sol : Marne argileuse à 2m."
+            ),
         )
     return buf.getvalue()
 
@@ -290,3 +293,139 @@ def test_full_extraction_flow_with_cross_check_incoherence(isolated_workspace, m
     _wait_for_status(client, fresh_id, {"classified", "error"})
     refused = client.post(f"/api/dossiers/{fresh_id}/extraction/reopen")
     assert refused.status_code == 409
+
+
+def _fake_extraction_call_with_stratigraphie_in_ccap(monkeypatch):
+    """Variante du fake d'extraction : `stratigraphie` (absente des documents de référence
+    directs de ce dossier de test, donc introuvable en couche 1) a une valeur cachée dans le
+    CCAP — récupérable seulement par une recherche élargie (approfondissement ponctuel) ou par
+    une sélection manuelle qui inclut ce document."""
+    import re
+
+    import app.extraction.engine as engine
+
+    def _decision_kwargs_for(field_id: str, filename: str) -> dict:
+        if field_id == "montants_totaux_ht" and "RC.pdf" in filename:
+            return dict(found=True, value="1 000 000 EUR", confidence=0.9, justification="j", citation="c")
+        if field_id == "nom_moa" and "RC.pdf" in filename:
+            return dict(found=True, value="Commune de Marly", confidence=0.9, justification="j", citation="c")
+        if field_id == "stratigraphie" and "CCAP.pdf" in filename:
+            return dict(found=True, value="Marne argileuse", confidence=0.7, justification="Mentionnée en annexe du CCAP.", citation="Marne argileuse à 2m")
+        return dict(found=False, value="", confidence=0.1, justification="Absent.", citation="")
+
+    def _fake(*, system_prompt, user_prompt, response_model, what):
+        if "synthese" in response_model.model_fields:
+            return response_model(synthese="Synthèse de test."), "mistral-large-test-fake"
+        filename_match = re.search(r"Document analysé : (.+)", user_prompt)
+        filename = filename_match.group(1).strip() if filename_match else ""
+        field_ids = re.findall(r'field_id="([^"]+)"', user_prompt)
+        item_model = response_model.model_fields["items"].annotation.__args__[0]
+        items = [item_model(field_id=fid, **_decision_kwargs_for(fid, filename)) for fid in field_ids]
+        return response_model(items=items), "mistral-large-test-fake"
+
+    monkeypatch.setattr(engine, "call_structured_chat", _fake)
+
+
+def _run_completeness_and_reach_extraction_review(client: TestClient, dossier_id: str) -> None:
+    client.post(f"/api/dossiers/{dossier_id}/reorganize/apply")
+    client.post(f"/api/dossiers/{dossier_id}/completeness/run")
+    _wait_for_status(client, dossier_id, {"completeness_review", "error"})
+    client.post(f"/api/dossiers/{dossier_id}/completeness/validate")
+
+
+def test_deepen_field_finds_value_via_widened_keyword_search(isolated_workspace, monkeypatch):
+    """`stratigraphie` n'a aucune catégorie de référence dans ce dossier de test (absente du
+    schéma normal pour ces docs) : après un run standard elle doit être absente, puis
+    l'approfondissement ponctuel (recherche élargie par mots-clés) doit la retrouver dans le
+    CCAP sans toucher aux autres champs déjà résolus."""
+    _fake_classification_call(monkeypatch)
+    _fake_completeness_call(monkeypatch)
+    _fake_extraction_call_with_stratigraphie_in_ccap(monkeypatch)
+
+    from app.main import app
+
+    client = TestClient(app)
+    response = client.post("/api/dossiers", files={"file": ("root.zip", _build_test_zip(), "application/zip")})
+    dossier_id = response.json()["id"]
+    _wait_for_status(client, dossier_id, {"classified", "error"})
+    _run_completeness_and_reach_extraction_review(client, dossier_id)
+
+    client.post(f"/api/dossiers/{dossier_id}/extraction/run")
+    _wait_for_status(client, dossier_id, {"extraction_review", "error"})
+
+    before = {e["field_id"]: e for e in client.get(f"/api/dossiers/{dossier_id}/extraction").json()}
+    assert before["stratigraphie"]["final_value"] is None
+    assert before["nom_moa"]["final_value"] == "Commune de Marly"  # référence, ne doit pas bouger
+
+    # Le mot-clé "argileuse" doit être dans les `indices` du champ stratigraphie du schéma réel
+    # (config/extraction_schema.yaml) pour que la couche 2 le trouve dans le CCAP de test.
+    deepen_resp = client.post(f"/api/dossiers/{dossier_id}/extraction/stratigraphie/deepen")
+    assert deepen_resp.status_code == 200, deepen_resp.text
+    deepened = deepen_resp.json()
+    assert deepened["field_id"] == "stratigraphie"
+    assert deepened["match_layer"] == "content"
+    assert deepened["final_value"] == "Marne argileuse"
+
+    after = {e["field_id"]: e for e in client.get(f"/api/dossiers/{dossier_id}/extraction").json()}
+    assert after["stratigraphie"]["final_value"] == "Marne argileuse"
+    # Les autres champs restent inchangés
+    assert after["nom_moa"]["final_value"] == "Commune de Marly"
+    assert after["montants_totaux_ht"]["final_value"] == "1 000 000 EUR"
+
+
+def test_deepen_unknown_field_returns_404(isolated_workspace, monkeypatch):
+    _fake_classification_call(monkeypatch)
+    _fake_completeness_call(monkeypatch)
+    _fake_extraction_call(monkeypatch)
+
+    from app.main import app
+
+    client = TestClient(app)
+    response = client.post("/api/dossiers", files={"file": ("root.zip", _build_test_zip(), "application/zip")})
+    dossier_id = response.json()["id"]
+    _wait_for_status(client, dossier_id, {"classified", "error"})
+    _run_completeness_and_reach_extraction_review(client, dossier_id)
+    client.post(f"/api/dossiers/{dossier_id}/extraction/run")
+    _wait_for_status(client, dossier_id, {"extraction_review", "error"})
+
+    resp = client.post(f"/api/dossiers/{dossier_id}/extraction/champ_inexistant/deepen")
+    assert resp.status_code == 404
+
+
+def test_run_extraction_with_manual_document_selection_ignores_reference_categories(isolated_workspace, monkeypatch):
+    """Sélection manuelle : en limitant le run au seul CCAP (qui n'est catégorie de référence
+    d'aucun champ dans ce dossier de test), `montants_totaux_ht` doit être trouvé UNIQUEMENT
+    via le CCAP (950 000 EUR), pas via le RC — la restriction manuelle prime sur le filtrage
+    standard par catégorie."""
+    _fake_classification_call(monkeypatch)
+    _fake_completeness_call(monkeypatch)
+    _fake_extraction_call(monkeypatch)
+
+    from app.main import app
+
+    client = TestClient(app)
+    response = client.post("/api/dossiers", files={"file": ("root.zip", _build_test_zip(), "application/zip")})
+    dossier_id = response.json()["id"]
+    _wait_for_status(client, dossier_id, {"classified", "error"})
+    _run_completeness_and_reach_extraction_review(client, dossier_id)
+
+    documents = client.get(f"/api/dossiers/{dossier_id}/documents").json()
+    ccap_doc = next(d for d in documents if "CCAP" in d["filename"])
+
+    run_resp = client.post(
+        f"/api/dossiers/{dossier_id}/extraction/run", json={"document_ids": [ccap_doc["id"]]}
+    )
+    assert run_resp.status_code == 200, run_resp.text
+
+    _wait_for_status(client, dossier_id, {"extraction_review", "error"})
+    results = {e["field_id"]: e for e in client.get(f"/api/dossiers/{dossier_id}/extraction").json()}
+
+    montant = results["montants_totaux_ht"]
+    assert montant["final_value"] == "950 000 EUR"
+    # `montants_totaux_ht` est soumis au recoupement (cross_check_required_fields) : la
+    # réconciliation programmatique force match_layer="file" quel que soit le mode (pré-existant,
+    # cf. `_reconcile_cross_check`) — seule la restriction aux sources compte ici.
+    assert {s["document_id"] for s in montant["sources"]} == {ccap_doc["id"]}
+
+    # nom_moa n'est trouvé que dans le RC, exclu de la sélection manuelle -> absent ici
+    assert results["nom_moa"]["final_value"] is None
