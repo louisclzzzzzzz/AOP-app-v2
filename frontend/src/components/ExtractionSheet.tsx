@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   correctExtraction,
-  deepenExtraction,
+  deepenMissingExtractionFields,
   documentFileUrl,
   getCompleteness,
   getExtraction,
@@ -86,7 +86,7 @@ export function ExtractionSheet({ dossierId, dossier, documents, onApplied }: Pr
   const [validating, setValidating] = useState(false)
   const [downloadingReport, setDownloadingReport] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [deepeningId, setDeepeningId] = useState<string | null>(null)
+  const [deepening, setDeepening] = useState(false)
 
   // --- Sélection manuelle de documents avant lancement (arborescence de l'étape 1) -----------
   const [showManualPicker, setShowManualPicker] = useState(false)
@@ -178,17 +178,17 @@ export function ExtractionSheet({ dossierId, dossier, documents, onApplied }: Pr
     }
   }, [dossierId, onApplied, selectedDocIds])
 
-  const handleDeepen = useCallback(
-    async (fieldId: string) => {
-      setDeepeningId(fieldId)
+  const handleDeepenMissing = useCallback(
+    async () => {
+      setDeepening(true)
       setError(null)
       try {
-        const updated = await deepenExtraction(dossierId, fieldId)
-        setEntries((prev) => prev?.map((e) => (e.field_id === fieldId ? updated : e)) ?? prev)
+        const updated = await deepenMissingExtractionFields(dossierId)
+        setEntries(updated)
       } catch (e) {
         setError(e instanceof Error ? e.message : "Échec de l'approfondissement")
       } finally {
-        setDeepeningId(null)
+        setDeepening(false)
       }
     },
     [dossierId],
@@ -410,6 +410,7 @@ ${extractionMd}
 
   const isReview = status === 'extraction_review'
   const foundCount = entries.filter((e) => e.final_value).length
+  const missingCount = entries.length - foundCount
 
   return (
     <div className="flex flex-col gap-4">
@@ -423,6 +424,16 @@ ${extractionMd}
           </span>
         </div>
         <div className="flex items-center gap-2">
+          {isReview && missingCount > 0 && (
+            <button
+              onClick={handleDeepenMissing}
+              disabled={deepening}
+              title="Recherche élargie par mots-clés sur tout le dossier pour tous les champs restés absents"
+              className="rounded-md border border-blue-200 bg-blue-50 px-3 py-2 text-sm font-medium text-blue-700 hover:bg-blue-100 disabled:opacity-50"
+            >
+              {deepening ? 'Recherche en cours…' : `Approfondir les ${missingCount} champ${missingCount > 1 ? 's' : ''} manquant${missingCount > 1 ? 's' : ''}`}
+            </button>
+          )}
           <button
             onClick={handleDownloadReport}
             disabled={downloadingReport}
@@ -473,38 +484,25 @@ ${extractionMd}
                     <tr key={entry.field_id} className={savingId === entry.field_id ? 'opacity-50' : ''}>
                       <td className="px-3 py-1.5">{entry.libelle}</td>
                       <td className="px-3 py-1.5">
-                        <div className="flex items-center gap-1.5">
-                          {isReview ? (
-                            <input
-                              type="text"
-                              defaultValue={entry.final_value ?? ''}
-                              onBlur={(e) => {
-                                if (e.target.value !== (entry.final_value ?? '')) {
-                                  handleCorrection(entry, e.target.value)
-                                }
-                              }}
-                              className="w-full rounded border border-slate-200 bg-white px-1.5 py-1"
-                            />
-                          ) : entry.final_value ? (
-                            <span className="inline-flex items-center gap-1.5">
-                              <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-green-500" />
-                              <span className="font-semibold text-slate-800">{entry.final_value}</span>
-                            </span>
-                          ) : (
-                            <span className="italic text-slate-400">Non trouvée</span>
-                          )}
-                          {isReview && !entry.final_value && (
-                            <button
-                              type="button"
-                              onClick={() => handleDeepen(entry.field_id)}
-                              disabled={deepeningId === entry.field_id}
-                              title="Recherche élargie par mots-clés sur tout le dossier pour ce champ"
-                              className="shrink-0 rounded border border-blue-200 bg-blue-50 px-1.5 py-0.5 text-[10px] font-medium text-blue-700 hover:bg-blue-100 disabled:opacity-50"
-                            >
-                              {deepeningId === entry.field_id ? 'Recherche…' : 'Approfondir'}
-                            </button>
-                          )}
-                        </div>
+                        {isReview ? (
+                          <input
+                            type="text"
+                            defaultValue={entry.final_value ?? ''}
+                            onBlur={(e) => {
+                              if (e.target.value !== (entry.final_value ?? '')) {
+                                handleCorrection(entry, e.target.value)
+                              }
+                            }}
+                            className="w-full rounded border border-slate-200 bg-white px-1.5 py-1"
+                          />
+                        ) : entry.final_value ? (
+                          <span className="inline-flex items-center gap-1.5">
+                            <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-green-500" />
+                            <span className="font-semibold text-slate-800">{entry.final_value}</span>
+                          </span>
+                        ) : (
+                          <span className="italic text-slate-400">Non trouvée</span>
+                        )}
                         {entry.is_manually_corrected && (
                           <span className="ml-1 rounded bg-slate-100 px-1 text-[10px] text-slate-500">corrigé</span>
                         )}
