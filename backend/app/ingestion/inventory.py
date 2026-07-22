@@ -25,6 +25,21 @@ _OCR_SKIPPABLE_CATEGORIES = {FileCategory.PDF, FileCategory.IMAGE}
 _PLAN_FILENAME_REASON = (
     "Plan identifié par nom de fichier — OCR non nécessaire, classification par nom uniquement"
 )
+_MACOS_METADATA_REASON = (
+    "Métadonnées macOS (AppleDouble/__MACOSX) — jamais un vrai document, aucun contenu "
+    "propre à analyser"
+)
+
+
+def _is_macos_metadata_file(relative_path: Path) -> bool:
+    """Un zip constitué sur macOS (Finder, `zip` en ligne de commande sans `-X`) embarque pour
+    chaque fichier un double AppleDouble `._<nom original>` (même extension, ex. `._CCAP.pdf`)
+    portant les attributs étendus/resource fork — un flux binaire propriétaire, jamais un vrai
+    PDF malgré l'extension. Le classement par extension seul (`classify_extension`) ne peut pas
+    les distinguer du fichier réel : envoyés tels quels à l'OCR, ils font échouer l'upload
+    Mistral (content-type non reconnu). Regroupés par macOS sous `__MACOSX/` à la racine du zip,
+    mais leur nom `._*` seul suffit à les identifier partout où ils apparaissent."""
+    return relative_path.name.startswith("._") or "__MACOSX" in relative_path.parts
 
 
 def _looks_like_plan(filename: str) -> bool:
@@ -108,14 +123,19 @@ def build_inventory(session: Session, dossier: Dossier, source_dir: Path) -> lis
 
         ext = p.suffix.lower()
         category, is_analyzable, reason, at_risk = classify_extension(ext)
-        if is_analyzable and category in _OCR_SKIPPABLE_CATEGORIES and _looks_like_plan(p.name):
+        relative_path = p.relative_to(source_dir)
+        if is_analyzable and _is_macos_metadata_file(relative_path):
+            is_analyzable = False
+            reason = _MACOS_METADATA_REASON
+            at_risk = False
+        elif is_analyzable and category in _OCR_SKIPPABLE_CATEGORIES and _looks_like_plan(p.name):
             is_analyzable = False
             reason = _PLAN_FILENAME_REASON
             at_risk = False
         doc = create_document(
             session,
             dossier_id=dossier.id,
-            relative_path=p.relative_to(source_dir).as_posix(),
+            relative_path=relative_path.as_posix(),
             filename=p.name,
             extension=ext,
             size_bytes=p.stat().st_size,

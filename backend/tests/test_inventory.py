@@ -168,6 +168,31 @@ def test_non_analyzable_at_risk_distinguishes_real_risk_from_harmless(tmp_path, 
     assert by_path["ADMIN/RC.pdf"]["non_analyzable_at_risk"] is False
 
 
+def test_macos_metadata_files_marked_non_analyzable_and_not_at_risk(tmp_path, isolated_workspace, make_zip):
+    """Un zip constitué sur macOS embarque des doubles AppleDouble `._<nom>` (même extension
+    que l'original, ex. `._CCAP.pdf`) et un dossier `__MACOSX/` : ni l'un ni l'autre n'est un
+    vrai document — les envoyer tels quels à l'OCR fait échouer l'upload Mistral (content-type
+    non reconnu, cas réel rencontré en test manuel). Ils doivent être exclus de l'analyse sans
+    être comptés comme "à risque" (contenu bien réel connu, jamais pertinent)."""
+    docs = _build(
+        tmp_path,
+        make_zip,
+        {
+            "ASS/CCAP.pdf": "contenu CCAP",
+            "ASS/._CCAP.pdf": b"\x00\x05\x16\x07 blob applesingle",
+            "__MACOSX/ASS/._CCAP.pdf": b"\x00\x05\x16\x07 blob applesingle",
+        },
+    )
+    by_path = {d["relative_path"]: d for d in docs}
+
+    assert by_path["ASS/CCAP.pdf"]["is_analyzable"] is True
+
+    for junk_path in ["ASS/._CCAP.pdf", "__MACOSX/ASS/._CCAP.pdf"]:
+        assert by_path[junk_path]["is_analyzable"] is False
+        assert by_path[junk_path]["non_analyzable_at_risk"] is False
+        assert "macOS" in by_path[junk_path]["non_analyzable_reason"]
+
+
 def test_hash_file_matches_sha256(tmp_path):
     f = tmp_path / "sample.txt"
     f.write_bytes(b"hello world")
