@@ -25,6 +25,17 @@ _OCR_SKIPPABLE_CATEGORIES = {FileCategory.PDF, FileCategory.IMAGE}
 _PLAN_FILENAME_REASON = (
     "Plan identifié par nom de fichier — OCR non nécessaire, classification par nom uniquement"
 )
+_MACOS_JUNK_REASON = "Fichier de métadonnées macOS (non analysable)"
+
+
+def _is_macos_junk(filename: str) -> bool:
+    """Métadonnées macOS jamais issues d'un vrai document, à exclure de l'analyse quelle que
+    soit leur extension apparente : ressources AppleDouble (`._nom`, y compris sous
+    `__MACOSX/` où macOS les place systématiquement lors d'une compression) et `.DS_Store`
+    (dont le nom n'a PAS de suffixe au sens de `Path.suffix` — un nom commençant par un point
+    sans autre point ensuite n'est pas traité comme une extension par pathlib, d'où un
+    contrôle par nom plutôt que par `classify_extension`, qui ne verrait jamais ce cas)."""
+    return filename.startswith("._") or filename.lower() == ".ds_store"
 
 
 def _looks_like_plan(filename: str) -> bool:
@@ -66,8 +77,9 @@ def build_inventory(session: Session, dossier: Dossier, source_dir: Path) -> lis
     documents: list[Document] = []
     zip_doc_id_by_path: dict[Path, str] = {}
 
-    # 1) Archives d'abord, pour que leurs enfants puissent référencer parent_archive_id
-    zip_files = [p for p in all_files if p.suffix.lower() == ".zip"]
+    # 1) Archives d'abord, pour que leurs enfants puissent référencer parent_archive_id — une
+    # ressource AppleDouble d'archive (`._nom.zip`) n'est pas une archive, cf. `_is_macos_junk`.
+    zip_files = [p for p in all_files if p.suffix.lower() == ".zip" and not _is_macos_junk(p.name)]
     for zpath in zip_files:
         extrait_dir = zpath.parent / f"{zpath.stem}{EXTRACTED_SUFFIX}"
         if zpath in extracted_zip_paths:
@@ -96,9 +108,11 @@ def build_inventory(session: Session, dossier: Dossier, source_dir: Path) -> lis
         documents.append(doc)
         zip_doc_id_by_path[zpath] = doc.id
 
-    # 2) Tous les autres fichiers
+    # 2) Tous les autres fichiers (y compris les métadonnées macOS, tracées mais jamais
+    # analysées, et les ressources AppleDouble d'archive `._nom.zip` exclues de `zip_files`
+    # ci-dessus)
     for p in all_files:
-        if p.suffix.lower() == ".zip":
+        if p.suffix.lower() == ".zip" and not _is_macos_junk(p.name):
             continue
         parent_archive_id = None
         for extrait_dir, owner_zip in extrait_owners.items():
@@ -107,11 +121,14 @@ def build_inventory(session: Session, dossier: Dossier, source_dir: Path) -> lis
                 break
 
         ext = p.suffix.lower()
-        category, is_analyzable, reason, at_risk = classify_extension(ext)
-        if is_analyzable and category in _OCR_SKIPPABLE_CATEGORIES and _looks_like_plan(p.name):
-            is_analyzable = False
-            reason = _PLAN_FILENAME_REASON
-            at_risk = False
+        if _is_macos_junk(p.name):
+            category, is_analyzable, reason, at_risk = FileCategory.OTHER, False, _MACOS_JUNK_REASON, False
+        else:
+            category, is_analyzable, reason, at_risk = classify_extension(ext)
+            if is_analyzable and category in _OCR_SKIPPABLE_CATEGORIES and _looks_like_plan(p.name):
+                is_analyzable = False
+                reason = _PLAN_FILENAME_REASON
+                at_risk = False
         doc = create_document(
             session,
             dossier_id=dossier.id,

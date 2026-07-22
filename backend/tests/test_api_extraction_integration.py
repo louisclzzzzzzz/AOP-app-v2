@@ -333,11 +333,11 @@ def _run_completeness_and_reach_extraction_review(client: TestClient, dossier_id
     client.post(f"/api/dossiers/{dossier_id}/completeness/validate")
 
 
-def test_deepen_field_finds_value_via_widened_keyword_search(isolated_workspace, monkeypatch):
+def test_deepen_missing_fields_finds_value_via_widened_keyword_search(isolated_workspace, monkeypatch):
     """`stratigraphie` n'a aucune catégorie de référence dans ce dossier de test (absente du
     schéma normal pour ces docs) : après un run standard elle doit être absente, puis
-    l'approfondissement ponctuel (recherche élargie par mots-clés) doit la retrouver dans le
-    CCAP sans toucher aux autres champs déjà résolus."""
+    l'approfondissement de TOUS les champs manquants (un seul bouton, un seul appel) doit la
+    retrouver dans le CCAP sans toucher aux champs déjà résolus."""
     _fake_classification_call(monkeypatch)
     _fake_completeness_call(monkeypatch)
     _fake_extraction_call_with_stratigraphie_in_ccap(monkeypatch)
@@ -356,27 +356,39 @@ def test_deepen_field_finds_value_via_widened_keyword_search(isolated_workspace,
     before = {e["field_id"]: e for e in client.get(f"/api/dossiers/{dossier_id}/extraction").json()}
     assert before["stratigraphie"]["final_value"] is None
     assert before["nom_moa"]["final_value"] == "Commune de Marly"  # référence, ne doit pas bouger
+    missing_before = {e["field_id"] for e in before.values() if not e["final_value"]}
+    assert len(missing_before) > 1  # plusieurs champs manquants, traités en un seul passage
 
     # Le mot-clé "argileuse" doit être dans les `indices` du champ stratigraphie du schéma réel
     # (config/extraction_schema.yaml) pour que la couche 2 le trouve dans le CCAP de test.
-    deepen_resp = client.post(f"/api/dossiers/{dossier_id}/extraction/stratigraphie/deepen")
+    deepen_resp = client.post(f"/api/dossiers/{dossier_id}/extraction/deepen")
     assert deepen_resp.status_code == 200, deepen_resp.text
-    deepened = deepen_resp.json()
-    assert deepened["field_id"] == "stratigraphie"
-    assert deepened["match_layer"] == "content"
-    assert deepened["final_value"] == "Marne argileuse"
+    deepened = {e["field_id"]: e for e in deepen_resp.json()}
+    assert deepened["stratigraphie"]["match_layer"] == "content"
+    assert deepened["stratigraphie"]["final_value"] == "Marne argileuse"
 
     after = {e["field_id"]: e for e in client.get(f"/api/dossiers/{dossier_id}/extraction").json()}
     assert after["stratigraphie"]["final_value"] == "Marne argileuse"
-    # Les autres champs restent inchangés
+    # Un champ resté introuvable même après la recherche élargie est mis à jour avec une
+    # justification explicite plutôt que laissé dans son état d'origine.
+    still_absent = [fid for fid in missing_before if fid != "stratigraphie"]
+    assert still_absent  # au moins un champ reste absent dans ce dossier de test
+    for fid in still_absent:
+        assert after[fid]["final_value"] is None
+        assert "élargie" in (after[fid]["justification"] or "")
+    # Les champs déjà trouvés restent inchangés
     assert after["nom_moa"]["final_value"] == "Commune de Marly"
     assert after["montants_totaux_ht"]["final_value"] == "1 000 000 EUR"
 
 
-def test_deepen_unknown_field_returns_404(isolated_workspace, monkeypatch):
+def test_deepen_missing_fields_is_noop_when_nothing_missing(isolated_workspace, monkeypatch):
+    """Si tous les champs sont déjà trouvés (aucun absent), l'approfondissement ne doit
+    déclencher aucun appel LLM ni modifier quoi que ce soit."""
+    import app.extraction.engine as engine
+
     _fake_classification_call(monkeypatch)
     _fake_completeness_call(monkeypatch)
-    _fake_extraction_call(monkeypatch)
+    _fake_extraction_call_with_stratigraphie_in_ccap(monkeypatch)
 
     from app.main import app
 
@@ -388,7 +400,31 @@ def test_deepen_unknown_field_returns_404(isolated_workspace, monkeypatch):
     client.post(f"/api/dossiers/{dossier_id}/extraction/run")
     _wait_for_status(client, dossier_id, {"extraction_review", "error"})
 
-    resp = client.post(f"/api/dossiers/{dossier_id}/extraction/champ_inexistant/deepen")
+    # Comble artificiellement tous les champs encore absents (correction manuelle) pour isoler
+    # le cas "plus rien à approfondir", sans dépendre du contenu réel du dossier de test.
+    entries = client.get(f"/api/dossiers/{dossier_id}/extraction").json()
+    for entry in entries:
+        if not entry["final_value"]:
+            correction = client.patch(
+                f"/api/dossiers/{dossier_id}/extraction/{entry['field_id']}",
+                json={"final_value": "valeur de test"},
+            )
+            assert correction.status_code == 200, correction.text
+
+    def _boom(**kwargs):
+        raise AssertionError("aucun appel LLM ne doit être déclenché sans champ manquant")
+
+    monkeypatch.setattr(engine, "call_structured_chat", _boom)
+    resp = client.post(f"/api/dossiers/{dossier_id}/extraction/deepen")
+    assert resp.status_code == 200, resp.text
+    assert all(e["final_value"] for e in resp.json())
+
+
+def test_deepen_unknown_dossier_returns_404(isolated_workspace, monkeypatch):
+    from app.main import app
+
+    client = TestClient(app)
+    resp = client.post("/api/dossiers/dossier-inexistant/extraction/deepen")
     assert resp.status_code == 404
 
 
