@@ -51,10 +51,8 @@ export default function App() {
     <div className="min-h-screen bg-slate-50">
       <header className="border-b border-slate-200 bg-white">
         <div className="mx-auto max-w-4xl px-6 py-4">
-          <h1 className="text-xl font-semibold text-slate-800">AOP v2</h1>
-          <p className="text-sm text-slate-400">
-            Analyse de DCE — underwriting assurance construction
-          </p>
+          <h1 className="text-xl font-semibold text-slate-800">AOP</h1>
+          <p className="text-sm text-slate-400">Analyse de DCE</p>
         </div>
       </header>
 
