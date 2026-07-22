@@ -38,6 +38,7 @@ class DossierOut(BaseModel):
     extraction_validated_at: dt.datetime | None = None
     synthese_ia: str | None = None
     synthese_projet_md: str | None = None
+    synthese_projet_model: str | None = None
     synthese_projet_status: str = "not_generated"
     synthese_projet_error: str | None = None
     synthese_projet_generated_at: dt.datetime | None = None

@@ -48,6 +48,7 @@ export interface Dossier {
   extraction_validated_at: string | null
   synthese_ia: string | null
   synthese_projet_md: string | null
+  synthese_projet_model: string | null
   synthese_projet_status: 'not_generated' | 'generating' | 'done' | 'error'
   synthese_projet_error: string | null
   synthese_projet_generated_at: string | null

@@ -177,6 +177,7 @@ def test_generate_project_synthesis_end_to_end(isolated_workspace, monkeypatch):
     final = _wait_for_synthesis_status(client, dossier_id, {"done", "error"})
     assert final["synthese_projet_status"] == "done", final.get("synthese_projet_error")
     assert final["synthese_projet_generated_at"] is not None
+    assert final["synthese_projet_model"] == "mistral-large-test-fake"
 
     report = final["synthese_projet_md"]
     # Thème reformaté sans appel LLM (source=extraction_fields), à partir des valeurs de l'étape 3

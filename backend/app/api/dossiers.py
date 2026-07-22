@@ -67,6 +67,7 @@ def dossier_to_out(d: Dossier) -> DossierOut:
         extraction_validated_at=d.extraction_validated_at,
         synthese_ia=d.synthese_ia,
         synthese_projet_md=d.synthese_projet_md,
+        synthese_projet_model=d.synthese_projet_model,
         synthese_projet_status=d.synthese_projet_status,
         synthese_projet_error=d.synthese_projet_error,
         synthese_projet_generated_at=d.synthese_projet_generated_at,
