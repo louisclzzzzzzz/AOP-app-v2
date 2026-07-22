@@ -1,0 +1,189 @@
+# Schéma de la synthèse projet — Phase 1 du protocole d'analyse
+# (refs/PHASE ANALYSE/00_PROTOCOLE.md, section "INSTRUCTIONS POUR LA PHASE 1 - SYNTHÈSE PROJET").
+#
+# Contrairement à `extraction_schema.yaml` (champs atomiques, une valeur courte par champ), ce
+# fichier modélise le rapport en THÈMES narratifs : chacun correspond à un point de la "LISTE
+# DÉTAILLÉE DES POINTS À DÉVELOPPER" du protocole, avec son propre format de sortie (prose,
+# tableau, liste à puces) et ses documents pivots prioritaires (app/synthesis/).
+#
+# Champs par thème :
+#   id                 : identifiant stable (ordre du fichier = ordre du rapport final)
+#   titre              : titre de section (## dans le rapport assemblé)
+#   format             : indication de forme donnée au LLM (lignes/prose/tableau/liste/mixte)
+#   source             : "extraction_fields" (aucun appel LLM, reformatage déterministe de
+#                        valeurs déjà résolues à l'étape 3) ou "documents" (relecture directe
+#                        des documents pivots de ce thème, un appel LLM dédié)
+#   extraction_field_ids: pour source=extraction_fields, champs de `extraction_schema.yaml` à
+#                        reformater tels quels
+#   pivot_categories   : pour source=documents, chemins `taxonomy.yaml` dont les documents
+#                        classifiés sont fournis en contexte au LLM, par ordre de priorité
+#   grounding_field_ids: champs déjà résolus à l'étape 3 (extraction_schema.yaml) injectés dans
+#                        le prompt comme "données déjà validées" — garantit la cohérence avec
+#                        l'étape 3 sans réextraction, et permet de recouper CCTP/notice/RICT
+#   cross_document     : true si le thème exige explicitement de croiser plusieurs documents
+#                        (ex. RICT vs étude de sol) — purement documentaire ici, le
+#                        regroupement multi-catégories est déjà géré par `pivot_categories`
+#   instructions       : consigne de rédaction transmise telle quelle au LLM pour ce thème
+
+topics:
+  - id: identite_operation
+    titre: "Identité de l'opération, destination et économie"
+    format: lignes
+    source: extraction_fields
+    extraction_field_ids: [nom_moa, adresse_moa, nom_chantier, adresse_chantier]
+
+  - id: destination_ambition
+    titre: "Destination et ambition de l'ouvrage"
+    format: prose
+    source: documents
+    pivot_categories: ["TECH/NOTICE", "ASS/CCTP", "TECH/ARRETE PC", "ASS/RC"]
+    grounding_field_ids: [destination_batiment]
+    cross_document: false
+    instructions: >
+      Décris précisément la nature du bâtiment et sa fonction principale. Détaille le standing,
+      les capacités d'accueil (ex. classement ERP et catégorie) et les objectifs spécifiques
+      (environnementaux, sociaux ou commerciaux). Rédige des paragraphes argumentés qui
+      expliquent le contexte et le "pourquoi", pas de simples constats bruts. Cite
+      systématiquement le document et le passage qui justifient chaque donnée.
+
+  - id: qualification_operation
+    titre: "Qualification de l'opération et contraintes de travaux"
+    format: prose
+    source: documents
+    pivot_categories: ["ASS/CCTP", "TECH/NOTICE", "TECH/CCTP TRAVAUX", "ASS/CCAP"]
+    grounding_field_ids:
+      - travaux_neufs_ou_existant
+      - nombre_batiments_neufs
+      - nombre_batiments_existants
+      - nombre_niveaux_par_batiment
+    cross_document: true
+    instructions: >
+      Qualifie l'opération (Neuf, Réhabilitation lourde, Extension). Y a-t-il des bâtiments
+      existants ? Quel est le nombre de niveaux par bâtiment existant et neuf ? Y a-t-il une
+      démolition ? Développe la nature de tous les travaux et les contraintes majeures
+      mentionnées (accès exigu, maintien d'activité, phasage complexe, conservation de
+      structures anciennes). Donne les surfaces caractéristiques. Si les documents fournis se
+      contredisent (ex. nombre de niveaux différent entre deux sources), signale-le
+      explicitement plutôt que de trancher en silence.
+
+  - id: economie_projet
+    titre: "Économie du projet"
+    format: prose
+    source: documents
+    pivot_categories: ["ASS/CCAP", "ASS/CCTP", "ASS/RC"]
+    grounding_field_ids: [montants_totaux_ht, montants_totaux_ttc, montants_honoraires, montants_existants]
+    instructions: >
+      Indique le montant total des travaux et des honoraires. Si possible, décompose les
+      différents lots pour donner une idée de la répartition du budget. Base-toi en priorité sur
+      les montants déjà validés à l'étape 3 (fournis ci-dessous) et complète-les avec toute
+      décomposition par lot trouvée dans les documents fournis.
+
+  - id: equipe_projet
+    titre: "Équipe projet (MOE & Études)"
+    format: tableau
+    source: documents
+    pivot_categories: ["ASS/CCAP", "ASS/CCTP", "ASS/RC"]
+    grounding_field_ids: [equipe_moe]
+    instructions: >
+      Présente les acteurs clés (Architecte, bureaux d'études (BET), Géotechnicien, Bureau de
+      contrôle) sous la forme d'un tableau Markdown à 2 colonnes : "Rôle" et "Société". Une ligne
+      par acteur identifié. N'invente aucun acteur non cité dans les documents.
+
+  - id: missions_bureau_controle
+    titre: "Le cadre de contrôle (missions du Bureau de Contrôle)"
+    format: liste
+    source: documents
+    pivot_categories: ["TECH/RICT", "ASS/CCAP"]
+    grounding_field_ids: [existence_controle_technique, missions_bureau_controle]
+    instructions: >
+      Détaille les missions du Bureau de Contrôle citées dans le RICT, sous forme de liste à
+      puces (une puce par mission, avec son code — L, LE, PS, SH, SEI, PHhab, TH, HAND, etc. —
+      et son intitulé complet).
+
+  - id: synthese_rict
+    titre: "La voix du contrôleur (synthèse RICT)"
+    format: mixte
+    source: documents
+    pivot_categories: ["TECH/RICT"]
+    grounding_field_ids: [existence_rict]
+    instructions: >
+      Résume la position générale du Bureau de Contrôle. Puis liste TOUS les avis suspendus (un
+      par ligne, avec son numéro s'il existe, le lot/thème concerné, et une explication concise
+      du point bloquant) sous forme de liste à puces. Enfin, développe chaque avis défavorable
+      (s'il y en a) en un paragraphe expliquant techniquement le point de blocage — s'il n'y a
+      aucun avis défavorable, dis-le explicitement plutôt que d'omettre la question. Cite
+      systématiquement le numéro d'article/d'avis et le nom du document source.
+
+  - id: justifications_techniques
+    titre: "Justifications techniques attendues pour lever les avis"
+    format: prose
+    source: documents
+    pivot_categories: ["TECH/RICT"]
+    instructions: >
+      Quelles sont les justifications techniques attendues pour lever les avis suspendus ou
+      défavorables identifiés ci-dessus ? Sois précis et actionnable (plans d'exécution demandés,
+      notes de calcul, certificats, mises à jour d'études) plutôt que générique.
+
+  - id: environnement_voisinage
+    titre: "L'environnement et le voisinage (mission AV)"
+    format: prose
+    source: documents
+    pivot_categories: ["TECH/RICT", "TECH/ETUDE DE SOL", "TECH/SOCABAT", "TECH/CCTP TRAVAUX"]
+    grounding_field_ids: [distance_avoisinants, refere_preventif, mission_av]
+    cross_document: true
+    instructions: >
+      Décris précisément les mitoyens (âge, type de structure, usage) s'ils sont mentionnés.
+      Détaille les conclusions du RICT sur la mission AV et explique le niveau de risque lié aux
+      avoisinants (besoin de reprises en sous-œuvre, parois berlinoises, etc.). S'il y a d'autres
+      documents traitant des avoisinants (étude de sol, CCTP, étude de risque type Socabat…),
+      précise-le et analyse ces sources par rapport au RICT — signale toute divergence entre
+      elles.
+
+  - id: diagnostic_existant
+    titre: "Diagnostic de l'existant (focus structure)"
+    format: prose
+    source: documents
+    pivot_categories: ["TECH/NOTICE", "ASS/CCTP", "TECH/CCTP TRAVAUX"]
+    grounding_field_ids: [travaux_neufs_ou_existant]
+    instructions: >
+      S'il s'agit d'une rénovation ou d'une restructuration (bâtiment(s) existant(s) mentionnés
+      dans les données déjà validées ou les documents fournis), fais une synthèse longue sur
+      l'état des lieux : quelles sont les pathologies identifiées ? Quelles sont les limites de
+      capacité portante ? Détaille les renforts prévus. Si l'opération est une construction neuve
+      sans existant, réponds simplement "Sans objet — opération de construction neuve, aucun
+      bâtiment existant à diagnostiquer." sans inventer de diagnostic.
+
+  - id: recit_sol
+    titre: "Le récit du sol (géotechnique)"
+    format: tableau
+    source: documents
+    pivot_categories: ["TECH/ETUDE DE SOL"]
+    grounding_field_ids: [etude_de_sol, stratigraphie]
+    instructions: >
+      Ne donne pas juste les sigles des missions géotechniques. Donne la composition du sol
+      couche par couche sous forme de tableau Markdown avec les colonnes : "Couche", "Profondeur",
+      "Description", "Caractéristiques mécaniques (cohésion, angle de frottement, compacité)".
+      Une ligne par couche identifiée dans l'étude de sol.
+
+  - id: niveaux_hautes_eaux
+    titre: "Niveaux des plus hautes eaux"
+    format: liste
+    source: documents
+    pivot_categories: ["TECH/ETUDE DE SOL"]
+    grounding_field_ids: [niveau_hautes_eaux]
+    instructions: >
+      Donne les niveaux des Eaux Basses (EB), Eaux Exceptionnelles (EE) et Hautes Eaux (EH/PHEC)
+      sous forme de liste à puces (une puce par niveau, avec sa valeur si chiffrée, ou "non défini"
+      si l'étude ne le précise pas). Explique ensuite en un court paragraphe l'incidence de ces
+      niveaux sur la conception du projet (ex. besoin d'un cuvelage, drainage renforcé).
+
+  - id: agressivite_chimique
+    titre: "Agressivité chimique et durabilité"
+    format: prose
+    source: documents
+    pivot_categories: ["TECH/ETUDE DE SOL"]
+    instructions: >
+      Analyse en profondeur les résultats sur les eaux souterraines et la nature du sol
+      (agressivité chimique, sulfates, chlorures…). Explique les conséquences directes sur le
+      choix des ciments et la protection des armatures (classes d'exposition, enrobage,
+      épaisseurs sacrificielles) si ces informations sont disponibles.

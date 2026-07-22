@@ -37,6 +37,10 @@ class DossierOut(BaseModel):
     completeness_validated_at: dt.datetime | None = None
     extraction_validated_at: dt.datetime | None = None
     synthese_ia: str | None = None
+    synthese_projet_md: str | None = None
+    synthese_projet_status: str = "not_generated"
+    synthese_projet_error: str | None = None
+    synthese_projet_generated_at: dt.datetime | None = None
     duplicate_of_dossier_id: str | None = None
     duplicate_of_filename: str | None = None
     duplicate_of_created_at: dt.datetime | None = None
@@ -115,6 +119,7 @@ class TaxonomyCategoryOut(BaseModel):
     label: str
     alt_names: list[str]
     lot_aware: bool
+    is_pivot: bool = False
 
 
 class ReorgApplyOut(BaseModel):

@@ -19,6 +19,7 @@ class TaxonomyCategory:
     content_patterns: list[re.Pattern[str]] = field(default_factory=list)
     lot_aware: bool = False
     doc_type_hint: str = "AUTRES"
+    is_pivot: bool = False
 
 
 @dataclass(frozen=True)
@@ -34,6 +35,9 @@ class Taxonomy:
             if c.path == path:
                 return c
         return None
+
+    def pivot_paths(self) -> tuple[str, ...]:
+        return tuple(c.path for c in self.categories if c.is_pivot)
 
 
 def fix_word_boundary(pattern: str) -> str:
@@ -69,6 +73,7 @@ def load_taxonomy() -> Taxonomy:
             content_patterns=_compile(c.get("content_indices", [])),
             lot_aware=bool(c.get("lot_aware", False)),
             doc_type_hint=c.get("doc_type_hint", "AUTRES"),
+            is_pivot=bool(c.get("is_pivot", False)),
         )
         for c in raw["categories"]
     ]

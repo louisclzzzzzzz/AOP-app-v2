@@ -18,6 +18,13 @@
 #   lot_aware        : si vrai, un sous-dossier "LOT <n>" est créé quand un numéro de lot est
 #                       détecté pour le document (nom de fichier, contenu, ou décision LLM)
 #   doc_type_hint    : code court utilisé dans la convention de renommage [TYPE]
+#   is_pivot         : "document pivot" au sens de la Phase 0 du protocole d'analyse
+#                       (refs/PHASE ANALYSE/00_PROTOCOLE.md) — document de référence prioritaire
+#                       pour l'audit technique (RICT, étude de sol, CCTP/CCAP, notice
+#                       architecturale, PC…), par opposition aux pièces graphiques/économiques
+#                       ou purement administratives. Sert à la fois de signal pour la Phase 1
+#                       (synthèse projet, app/synthesis/) et de colonne dans la cartographie
+#                       documentaire — jamais utilisé par le moteur de classification lui-même.
 
 categories:
   - path: "1.ETUDE BD"
@@ -28,6 +35,7 @@ categories:
     content_indices: ["acte d'engagement", "mémoire de gestion", "déclaration sur l'honneur"]
     lot_aware: true
     doc_type_hint: "AE"
+    is_pivot: false
 
   - path: "ADMIN/AAPC"
     label: "Avis d'appel public à la concurrence"
@@ -36,6 +44,7 @@ categories:
     content_indices: ["avis d'appel public à la concurrence", "aapc"]
     lot_aware: false
     doc_type_hint: "AAPC"
+    is_pivot: false
 
   - path: "ADMIN/GAN"
     label: "Guide / fiche d'accompagnement (missionnement AOP)"
@@ -44,6 +53,7 @@ categories:
     content_indices: ["fiche de missionnement", "missionnement pour étude aop"]
     lot_aware: false
     doc_type_hint: "GAN"
+    is_pivot: false
 
   - path: "ADMIN/PF"
     label: "Pièces financières / captures achat public (consultation)"
@@ -52,6 +62,7 @@ categories:
     content_indices: ["marches-publics.gouv.fr", "achat public"]
     lot_aware: false
     doc_type_hint: "PF"
+    is_pivot: false
 
   - path: "ADMIN/RC"
     label: "Règlement de consultation (DCE)"
@@ -60,6 +71,7 @@ categories:
     content_indices: ["règlement de consultation"]
     lot_aware: false
     doc_type_hint: "RC-DCE"
+    is_pivot: true
 
   - path: "ASS/CCAP"
     label: "CCAP assurance"
@@ -68,6 +80,7 @@ categories:
     content_indices: ["cahier des clauses administratives particulières", "assurance construction"]
     lot_aware: true
     doc_type_hint: "CCAP"
+    is_pivot: true
 
   - path: "ASS/CCTP"
     label: "CCTP / CCP assurance"
@@ -76,6 +89,7 @@ categories:
     content_indices: ["cahier des clauses techniques particulières", "garanties demandées", "trc", "rcmo"]
     lot_aware: true
     doc_type_hint: "CCTP-ASS"
+    is_pivot: true
 
   - path: "ASS/RC"
     label: "RC assurance"
@@ -84,6 +98,7 @@ categories:
     content_indices: ["dommage ouvrage", "responsabilité civile maîtrise d'ouvrage", "trc", "rcmo"]
     lot_aware: false
     doc_type_hint: "RC-ASS"
+    is_pivot: true
 
   - path: "ASS/GAN"
     label: "Guide / fiche d'accompagnement assurance"
@@ -92,6 +107,7 @@ categories:
     content_indices: ["fiche de missionnement"]
     lot_aware: false
     doc_type_hint: "GAN"
+    is_pivot: false
 
   - path: "ASS/PF"
     label: "Pièces financières assurance"
@@ -100,6 +116,7 @@ categories:
     content_indices: []
     lot_aware: false
     doc_type_hint: "PF"
+    is_pivot: false
 
   - path: "ASS/ATT ASS/ENT"
     label: "Attestations d'assurance — entreprises / constructeurs"
@@ -109,6 +126,7 @@ categories:
     content_indices: ["responsabilité civile décennale", "attestation d'assurance", "garantie décennale"]
     lot_aware: true
     doc_type_hint: "ATT-ENT"
+    is_pivot: false
 
   - path: "ASS/ATT ASS/MOE"
     label: "Attestations d'assurance — maîtrise d'œuvre / prestataires intellectuels"
@@ -117,6 +135,7 @@ categories:
     content_indices: ["assurance responsabilité civile professionnelle", "architecte"]
     lot_aware: false
     doc_type_hint: "ATT-MOE"
+    is_pivot: false
 
   - path: "ASS/LISTE INTERVENANTS"
     label: "Liste des intervenants / CRC"
@@ -125,6 +144,7 @@ categories:
     content_indices: ["liste des intervenants"]
     lot_aware: false
     doc_type_hint: "LISTE-INTERV"
+    is_pivot: false
 
   - path: "ASS/DEROG COM"
     label: "Dérogations communales IARD"
@@ -133,6 +153,7 @@ categories:
     content_indices: ["dérogation", "iard"]
     lot_aware: true
     doc_type_hint: "DEROG"
+    is_pivot: false
 
   - path: "ASS/MARCHE SIGNE"
     label: "Actes d'engagement & marchés signés, notifications (assurance)"
@@ -142,6 +163,7 @@ categories:
     content_indices: ["notification du marché", "acte d'engagement", "convention"]
     lot_aware: true
     doc_type_hint: "MARCHE-SIGNE"
+    is_pivot: false
 
   - path: "ENVOI DEMAT/CANDIDATURE"
     label: "Pièces de candidature (dépôt dématérialisé)"
@@ -151,6 +173,7 @@ categories:
     content_indices: ["extrait k-bis", "déclaration du candidat"]
     lot_aware: false
     doc_type_hint: "CANDID"
+    is_pivot: false
 
   - path: "ENVOI DEMAT/OFFRE"
     label: "Pièces d'offre (dépôt dématérialisé)"
@@ -160,6 +183,7 @@ categories:
     content_indices: []
     lot_aware: true
     doc_type_hint: "OFFRE"
+    is_pivot: false
 
   - path: "ENVOI DEMAT/COPIE DEPOT"
     label: "Preuve de dépôt + copie de sauvegarde (dépôt dématérialisé)"
@@ -169,6 +193,7 @@ categories:
     content_indices: ["preuve de dépôt"]
     lot_aware: false
     doc_type_hint: "DEPOT"
+    is_pivot: false
 
   - path: "QR"
     label: "Questions / réponses de la consultation"
@@ -177,6 +202,7 @@ categories:
     content_indices: ["questions et réponses", "questions/réponses"]
     lot_aware: false
     doc_type_hint: "QR"
+    is_pivot: false
 
   - path: "TECH/CCTP TRAVAUX"
     label: "CCTP travaux (par lot)"
@@ -185,6 +211,7 @@ categories:
     content_indices: ["cahier des clauses techniques particulières"]
     lot_aware: true
     doc_type_hint: "CCTP-TRX"
+    is_pivot: true
 
   - path: "TECH/ETUDE DE SOL"
     label: "Étude de sol / géotechnique (G1, G2 AVP, G2 PRO, G4, G5)"
@@ -194,6 +221,7 @@ categories:
     content_indices: ["mission g2", "étude géotechnique", "dtu 13.1", "fondations"]
     lot_aware: false
     doc_type_hint: "SOL"
+    is_pivot: true
 
   - path: "TECH/PLANS"
     label: "Plans (archi, structure, fluides, VRD…)"
@@ -203,6 +231,7 @@ categories:
     content_indices: []
     lot_aware: false
     doc_type_hint: "PLAN"
+    is_pivot: false
 
   - path: "TECH/NOTICE"
     label: "Notice descriptive / notice architecturale"
@@ -211,6 +240,7 @@ categories:
     content_indices: ["notice descriptive"]
     lot_aware: false
     doc_type_hint: "NOTICE"
+    is_pivot: true
 
   - path: "TECH/PLANNING"
     label: "Planning d'exécution / des travaux"
@@ -219,6 +249,7 @@ categories:
     content_indices: ["planning des travaux", "planning d'exécution"]
     lot_aware: false
     doc_type_hint: "PLANNING"
+    is_pivot: false
 
   - path: "TECH/RICT"
     label: "Rapport initial de contrôle technique"
@@ -227,6 +258,7 @@ categories:
     content_indices: ["rapport initial de contrôle technique"]
     lot_aware: false
     doc_type_hint: "RICT"
+    is_pivot: true
 
   - path: "TECH/ARRETE PC"
     label: "Permis de construire & arrêtés"
@@ -235,6 +267,7 @@ categories:
     content_indices: ["permis de construire", "arrêté"]
     lot_aware: false
     doc_type_hint: "PC"
+    is_pivot: true
 
   - path: "TECH/CONTRAT MOE"
     label: "Contrat(s) de maîtrise d'œuvre"
@@ -243,6 +276,7 @@ categories:
     content_indices: ["contrat de maîtrise d'œuvre"]
     lot_aware: false
     doc_type_hint: "CONTRAT-MOE"
+    is_pivot: false
 
   - path: "TECH/CONTRAT CT"
     label: "Contrat(s) de contrôle technique"
@@ -251,6 +285,7 @@ categories:
     content_indices: ["contrat de contrôle technique"]
     lot_aware: false
     doc_type_hint: "CONTRAT-CT"
+    is_pivot: false
 
   - path: "TECH/SOCABAT"
     label: "Études de risque / avis Socabat"
@@ -259,6 +294,7 @@ categories:
     content_indices: ["socabat", "étude de risque"]
     lot_aware: false
     doc_type_hint: "SOCABAT"
+    is_pivot: false
 
   - path: "TECH/AUTRES"
     label: "Pièces techniques non classables ailleurs (DOC/DROC, OS, divers)"
@@ -267,6 +303,7 @@ categories:
     content_indices: ["déclaration d'ouverture de chantier", "ordre de service"]
     lot_aware: true
     doc_type_hint: "AUTRES"
+    is_pivot: false
 
   - path: "AUTRES"
     label: "Non classable — aucune correspondance suffisamment fiable"
@@ -275,6 +312,7 @@ categories:
     content_indices: []
     lot_aware: false
     doc_type_hint: "AUTRES"
+    is_pivot: false
 
 # Catégorie de repli absolue : jamais de perte de fichier (§9 du PLAN). Utilisée quand aucun
 # signal n'atteint le seuil minimal et que le LLM lui-même ne peut pas trancher avec confiance.

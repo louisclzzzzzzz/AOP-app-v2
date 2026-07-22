@@ -3,6 +3,7 @@ import {
   correctExtraction,
   deepenExtraction,
   documentFileUrl,
+  generateProjectSynthesis,
   getCompleteness,
   getExtraction,
   getReorganizationReport,
@@ -14,6 +15,8 @@ import type { Dossier, DocumentItem, DossierStatus, ExtractionEntry } from '../t
 import { isAtOrAfter } from '../statusFlow'
 import { HOVER_HINT_CLASS } from '../ui'
 import { CERTAINTY_LABELS, PRESENCE_LABELS } from './CompletenessChecklist'
+import { CollapsiblePanel } from './CollapsiblePanel'
+import { Markdown } from './Markdown'
 import { collectDocumentIds, OrganizedTree, reorgReportEntriesToTree, treeToMarkdown, type TreeNode } from './OrganizedTree'
 import { ReopenButton } from './ReopenButton'
 
@@ -87,6 +90,7 @@ export function ExtractionSheet({ dossierId, dossier, documents, onApplied }: Pr
   const [downloadingReport, setDownloadingReport] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [deepeningId, setDeepeningId] = useState<string | null>(null)
+  const [generatingSynthesis, setGeneratingSynthesis] = useState(false)
 
   // --- Sélection manuelle de documents avant lancement (arborescence de l'étape 1) -----------
   const [showManualPicker, setShowManualPicker] = useState(false)
@@ -103,6 +107,28 @@ export function ExtractionSheet({ dossierId, dossier, documents, onApplied }: Pr
       refreshEntries()
     }
   }, [status, refreshEntries])
+
+  // Génération de la synthèse projet (Phase 1) : action annexe, en arrière-plan côté serveur —
+  // on relit périodiquement le dossier tant qu'elle est en cours plutôt que d'écouter le
+  // WebSocket de progression (celui-ci réassigne `Dossier.status` en bloc à chaque évènement).
+  useEffect(() => {
+    if (dossier.synthese_projet_status !== 'generating') return
+    const timer = setTimeout(() => onApplied(), 3000)
+    return () => clearTimeout(timer)
+  }, [dossier.synthese_projet_status, onApplied])
+
+  const handleGenerateSynthesis = useCallback(async () => {
+    setGeneratingSynthesis(true)
+    setError(null)
+    try {
+      await generateProjectSynthesis(dossierId)
+      onApplied()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Échec du lancement de la synthèse projet')
+    } finally {
+      setGeneratingSynthesis(false)
+    }
+  }, [dossierId, onApplied])
 
   const documentPathById = useMemo(() => {
     const map = new Map<string, string>()
@@ -424,6 +450,18 @@ ${extractionMd}
         </div>
         <div className="flex items-center gap-2">
           <button
+            onClick={handleGenerateSynthesis}
+            disabled={generatingSynthesis || dossier.synthese_projet_status === 'generating'}
+            title="Rapport narratif exhaustif du projet (identité, RICT, géotechnique…), relisant directement les documents pivots — Phase 1 du protocole d'analyse"
+            className="rounded-md border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50 disabled:opacity-50"
+          >
+            {dossier.synthese_projet_status === 'generating'
+              ? 'Génération en cours…'
+              : dossier.synthese_projet_md
+                ? 'Régénérer la synthèse projet (IA)'
+                : 'Générer la synthèse projet (IA)'}
+          </button>
+          <button
             onClick={handleDownloadReport}
             disabled={downloadingReport}
             className="rounded-md border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50 disabled:opacity-50"
@@ -445,6 +483,23 @@ ${extractionMd}
         </div>
       </div>
       {error && <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p>}
+      {dossier.synthese_projet_status === 'error' && dossier.synthese_projet_error && (
+        <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">
+          Échec de la synthèse projet : {dossier.synthese_projet_error}
+        </p>
+      )}
+
+      {dossier.synthese_projet_md && (
+        <CollapsiblePanel
+          title="Synthèse projet — Phase 1"
+          subtitle="Rapport généré par IA"
+          defaultCollapsed={false}
+        >
+          <div className="max-h-[40rem] overflow-y-auto p-4">
+            <Markdown text={dossier.synthese_projet_md} />
+          </div>
+        </CollapsiblePanel>
+      )}
 
       <div className="max-h-[32rem] overflow-y-auto rounded-lg border border-slate-200">
         <table className="w-full text-left text-xs">
