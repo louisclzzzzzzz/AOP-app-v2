@@ -50,3 +50,16 @@ def test_document_sourced_topics_have_pivot_categories_and_instructions():
 def test_by_id_returns_none_for_unknown_topic():
     schema = load_synthesis_schema()
     assert schema.by_id("inexistant") is None
+
+
+def test_destination_ambition_sees_cctp_travaux_and_flags_contradictions():
+    """Cas réel trouvé sur dce_grand_pic2 (§ANALYSE_ORIGINE_ERREURS.md) : le classement ERP
+    était donné différemment par un CCTP (TECH/CCTP TRAVAUX) et par un rapport SDIS embarqué dans
+    l'arrêté PC — mais destination_ambition ne regardait pas TECH/CCTP TRAVAUX, donc ne pouvait
+    jamais voir la contradiction ni la signaler."""
+    schema = load_synthesis_schema()
+    topic = schema.by_id("destination_ambition")
+    assert topic is not None
+    assert "TECH/CCTP TRAVAUX" in topic.pivot_categories
+    assert topic.cross_document is True
+    assert "contredis" in topic.instructions

@@ -36,15 +36,22 @@ topics:
     titre: "Destination et ambition de l'ouvrage"
     format: prose
     source: documents
-    pivot_categories: ["TECH/NOTICE", "ASS/CCTP", "TECH/ARRETE PC", "ASS/RC"]
+    # TECH/CCTP TRAVAUX ajouté (§rapport ANALYSE_ORIGINE_ERREURS.md, dossier Le Grand Pic) : le
+    # classement ERP/catégorie est parfois donné différemment par le CCTP (ex. "2 ERP isolés de
+    # 5e catégorie") et par un rapport SDIS embarqué dans l'arrêté PC (ex. "catégorie 2, type O").
+    # Sans TECH/CCTP TRAVAUX dans le périmètre, ce thème ne voyait jamais qu'une des deux
+    # versions et la rapportait comme un fait non contesté.
+    pivot_categories: ["TECH/NOTICE", "ASS/CCTP", "TECH/CCTP TRAVAUX", "TECH/ARRETE PC", "ASS/RC"]
     grounding_field_ids: [destination_batiment]
-    cross_document: false
+    cross_document: true
     instructions: >
       Décris précisément la nature du bâtiment et sa fonction principale. Détaille le standing,
       les capacités d'accueil (ex. classement ERP et catégorie) et les objectifs spécifiques
       (environnementaux, sociaux ou commerciaux). Rédige des paragraphes argumentés qui
       expliquent le contexte et le "pourquoi", pas de simples constats bruts. Cite
-      systématiquement le document et le passage qui justifient chaque donnée.
+      systématiquement le document et le passage qui justifient chaque donnée. Si les documents
+      fournis se contredisent (ex. classement ERP ou catégorie différente entre deux sources),
+      signale-le explicitement plutôt que de trancher en silence.
 
   - id: qualification_operation
     titre: "Qualification de l'opération et contraintes de travaux"
