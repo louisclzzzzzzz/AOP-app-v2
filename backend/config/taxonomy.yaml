@@ -264,7 +264,23 @@ categories:
     label: "Permis de construire & arrêtés"
     alt_names: ["ARRETE PC", "PC", "PC initial", "PC mod"]
     filename_keywords: ["arrete pc", "arr[êe]t[ée] pc", "permis de construire", "\\bpc\\b"]
-    content_indices: ["permis de construire", "arrêté"]
+    # "permis de construire" et "arrêté" seuls sont bien trop génériques comme signal de
+    # CONTENU (pas de filename !) : ce sont des mentions de passage dans à peu près n'importe
+    # quel CCTP/notice qui cite une réglementation ou le permis de l'opération auditée, pas un
+    # indice que LE DOCUMENT LUI-MÊME est un arrêté/PC. Bug réel trouvé en testant chu_rouen : 4
+    # fichiers d'une série uniforme "CCTP-CHAP 01" à "22" (même dossier, même convention de nom)
+    # basculaient à tort en TECH/ARRETE PC uniquement parce que leur contenu mentionnait
+    # "arrêté" ou "permis de construire" en passant, alors que leur nom de fichier signalait
+    # clairement CCTP. Resserré sur des tournures propres au document de décision lui-même.
+    content_indices:
+      - "arrêté de permis de construire"
+      - "arrêté portant permis de construire"
+      - "arrêté municipal n°"
+      - "vu le code de l'urbanisme"
+      - "permis de construire modificatif"
+      - "accorde le permis de construire"
+      - "cerfa n°13409"
+      - "cerfa n°13411"
     lot_aware: false
     doc_type_hint: "PC"
     is_pivot: true
