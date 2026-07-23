@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import datetime as dt
 import logging
+import time
 
 from app.classify.taxonomy import load_taxonomy
 from app.extraction.extraction_schema import load_extraction_schema
@@ -81,7 +82,9 @@ async def run_project_synthesis_pipeline(dossier_id: str) -> None:
     field_values = await asyncio.to_thread(_field_values, dossier_id)
 
     outcomes = []
+    pipeline_started_at = time.monotonic()
     for i, topic in enumerate(schema.topics, start=1):
+        topic_started_at = time.monotonic()
         # OCR à la demande (comme l'étape 3) pour les seuls documents pivots de CE thème.
         candidates_ids = {
             d.document_id
@@ -96,7 +99,24 @@ async def run_project_synthesis_pipeline(dossier_id: str) -> None:
             generate_topic, topic, documents=list(signals_by_id.values()), field_values=field_values
         )
         outcomes.append(outcome)
-        logger.info("Synthèse projet %s : thème %r terminé (%d/%d)", dossier_id, topic.id, i, len(schema.topics))
+        elapsed = time.monotonic() - topic_started_at
+        logger.info(
+            "Synthèse projet %s : thème %r terminé (%d/%d) en %.1fs (documents=%d, modele=%s)",
+            dossier_id,
+            topic.id,
+            i,
+            len(schema.topics),
+            elapsed,
+            len(outcome.documents_used),
+            outcome.model_name,
+        )
+    total_elapsed = time.monotonic() - pipeline_started_at
+    logger.info(
+        "Synthèse projet %s : rapport complet généré en %.1fs (%d thèmes)",
+        dossier_id,
+        total_elapsed,
+        len(schema.topics),
+    )
 
     cartography_md = build_documents_cartography(list(signals_by_id.values()), taxonomy)
     report_md = assemble_report(outcomes, schema, cartography_md=cartography_md)

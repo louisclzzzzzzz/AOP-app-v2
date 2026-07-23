@@ -211,7 +211,12 @@ def assemble_report(
         outcome = by_id.get(topic.id)
         if outcome is None:
             continue
-        body = f"_Section non générée (erreur : {outcome.error})._" if outcome.error else (outcome.content_md or "_Aucune donnée disponible._")
+        if outcome.error:
+            body = f"_Section non générée (erreur : {outcome.error})._"
+        else:
+            body = outcome.content_md or "_Aucune donnée disponible._"
+            if outcome.documents_used:
+                body += "\n\n_Sources consultées : " + ", ".join(outcome.documents_used) + "_"
         sections.append(f"## {topic.titre}\n\n{body}")
 
     return "\n\n".join(sections) + "\n"
