@@ -203,6 +203,17 @@ class Dossier(Base):
     synthese_projet_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     synthese_projet_generated_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
+    # Même Phase 1, variante expérimentale Perplexity Deep Research (app/synthesis_perplexity/) —
+    # colonnes dédiées pour comparer les deux rapports côte à côte sur le même dossier, sans
+    # affecter le pipeline Mistral ci-dessus.
+    synthese_projet_perplexity_md: Mapped[str | None] = mapped_column(Text, nullable=True)
+    synthese_projet_perplexity_model: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    synthese_projet_perplexity_status: Mapped[str] = mapped_column(String(16), default="not_generated")
+    synthese_projet_perplexity_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    synthese_projet_perplexity_generated_at: Mapped[dt.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_now)
     updated_at: Mapped[dt.datetime] = mapped_column(
         DateTime(timezone=True), default=_now, onupdate=_now

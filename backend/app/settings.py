@@ -25,8 +25,9 @@ class Settings(BaseSettings):
     backend_port: int = 8000
     frontend_port: int = 5173
 
-    # MISTRAL_API_KEY n'a pas le préfixe AOP_ -> champ dédié
+    # MISTRAL_API_KEY / PERPLEXITY_API_KEY n'ont pas le préfixe AOP_ -> champs dédiés
     mistral_api_key: str = ""
+    perplexity_api_key: str = ""
 
     def model_post_init(self, __context: Any) -> None:
         if not self.database_url:
@@ -44,12 +45,25 @@ class MistralApiKeySettings(BaseSettings):
     mistral_api_key: str = ""
 
 
+class PerplexityApiKeySettings(BaseSettings):
+    """Chargé séparément car la variable n'a pas le préfixe AOP_."""
+
+    model_config = SettingsConfigDict(
+        env_file=str(PROJECT_ROOT / ".env"),
+        extra="ignore",
+    )
+    perplexity_api_key: str = ""
+
+
 @lru_cache
 def get_settings() -> Settings:
     settings = Settings()
     key_settings = MistralApiKeySettings()
     if key_settings.mistral_api_key:
         settings.mistral_api_key = key_settings.mistral_api_key
+    perplexity_key_settings = PerplexityApiKeySettings()
+    if perplexity_key_settings.perplexity_api_key:
+        settings.perplexity_api_key = perplexity_key_settings.perplexity_api_key
     settings.workspace_dir.mkdir(parents=True, exist_ok=True)
     return settings
 

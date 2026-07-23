@@ -52,6 +52,11 @@ export interface Dossier {
   synthese_projet_status: 'not_generated' | 'generating' | 'done' | 'error'
   synthese_projet_error: string | null
   synthese_projet_generated_at: string | null
+  synthese_projet_perplexity_md: string | null
+  synthese_projet_perplexity_model: string | null
+  synthese_projet_perplexity_status: 'not_generated' | 'generating' | 'done' | 'error'
+  synthese_projet_perplexity_error: string | null
+  synthese_projet_perplexity_generated_at: string | null
   duplicate_of_dossier_id: string | null
   duplicate_of_filename: string | null
   duplicate_of_created_at: string | null

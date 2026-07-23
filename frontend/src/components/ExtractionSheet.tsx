@@ -4,6 +4,7 @@ import {
   deepenExtraction,
   documentFileUrl,
   generateProjectSynthesis,
+  generateProjectSynthesisPerplexity,
   getCompleteness,
   getExtraction,
   getReorganizationReport,
@@ -91,6 +92,7 @@ export function ExtractionSheet({ dossierId, dossier, documents, onApplied }: Pr
   const [error, setError] = useState<string | null>(null)
   const [deepeningId, setDeepeningId] = useState<string | null>(null)
   const [generatingSynthesis, setGeneratingSynthesis] = useState(false)
+  const [generatingSynthesisPerplexity, setGeneratingSynthesisPerplexity] = useState(false)
 
   // --- Sélection manuelle de documents avant lancement (arborescence de l'étape 1) -----------
   const [showManualPicker, setShowManualPicker] = useState(false)
@@ -117,6 +119,15 @@ export function ExtractionSheet({ dossierId, dossier, documents, onApplied }: Pr
     return () => clearTimeout(timer)
   }, [dossier.synthese_projet_status, onApplied])
 
+  // Variante expérimentale (Perplexity Deep Research) : même principe de polling, colonnes
+  // dédiées (`synthese_projet_perplexity_*`), un job Deep Research prenant couramment plusieurs
+  // minutes contre quelques dizaines de secondes côté Mistral.
+  useEffect(() => {
+    if (dossier.synthese_projet_perplexity_status !== 'generating') return
+    const timer = setTimeout(() => onApplied(), 5000)
+    return () => clearTimeout(timer)
+  }, [dossier.synthese_projet_perplexity_status, onApplied])
+
   const handleGenerateSynthesis = useCallback(async () => {
     setGeneratingSynthesis(true)
     setError(null)
@@ -127,6 +138,19 @@ export function ExtractionSheet({ dossierId, dossier, documents, onApplied }: Pr
       setError(e instanceof Error ? e.message : 'Échec du lancement de la synthèse projet')
     } finally {
       setGeneratingSynthesis(false)
+    }
+  }, [dossierId, onApplied])
+
+  const handleGenerateSynthesisPerplexity = useCallback(async () => {
+    setGeneratingSynthesisPerplexity(true)
+    setError(null)
+    try {
+      await generateProjectSynthesisPerplexity(dossierId)
+      onApplied()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Échec du lancement de la synthèse projet (Perplexity)')
+    } finally {
+      setGeneratingSynthesisPerplexity(false)
     }
   }, [dossierId, onApplied])
 
@@ -462,6 +486,18 @@ ${extractionMd}
                 : 'Générer la synthèse projet (IA)'}
           </button>
           <button
+            onClick={handleGenerateSynthesisPerplexity}
+            disabled={generatingSynthesisPerplexity || dossier.synthese_projet_perplexity_status === 'generating'}
+            title="Variante expérimentale : même rapport Phase 1, un seul appel Perplexity Deep Research (recherche web + raisonnement multi-étapes), à comparer avec la synthèse Mistral ci-dessus — peut prendre plusieurs minutes"
+            className="rounded-md border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50 disabled:opacity-50"
+          >
+            {dossier.synthese_projet_perplexity_status === 'generating'
+              ? 'Deep Research en cours…'
+              : dossier.synthese_projet_perplexity_md
+                ? 'Régénérer avec Perplexity Deep Research'
+                : 'Générer avec Perplexity Deep Research'}
+          </button>
+          <button
             onClick={handleDownloadReport}
             disabled={downloadingReport}
             className="rounded-md border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50 disabled:opacity-50"
@@ -488,15 +524,32 @@ ${extractionMd}
           Échec de la synthèse projet : {dossier.synthese_projet_error}
         </p>
       )}
+      {dossier.synthese_projet_perplexity_status === 'error' && dossier.synthese_projet_perplexity_error && (
+        <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">
+          Échec de la synthèse projet (Perplexity) : {dossier.synthese_projet_perplexity_error}
+        </p>
+      )}
 
       {dossier.synthese_projet_md && (
         <CollapsiblePanel
           title="Synthèse projet — Phase 1"
-          subtitle="Rapport généré par IA"
+          subtitle="Rapport généré par IA (Mistral)"
           defaultCollapsed={false}
         >
           <div className="max-h-[40rem] overflow-y-auto p-4">
             <Markdown text={dossier.synthese_projet_md} />
+          </div>
+        </CollapsiblePanel>
+      )}
+
+      {dossier.synthese_projet_perplexity_md && (
+        <CollapsiblePanel
+          title="Synthèse projet — Phase 1 (Perplexity Deep Research)"
+          subtitle="Variante expérimentale, à comparer avec le rapport Mistral ci-dessus"
+          defaultCollapsed={false}
+        >
+          <div className="max-h-[40rem] overflow-y-auto p-4">
+            <Markdown text={dossier.synthese_projet_perplexity_md} />
           </div>
         </CollapsiblePanel>
       )}

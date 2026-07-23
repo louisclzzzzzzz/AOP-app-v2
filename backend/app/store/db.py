@@ -50,6 +50,11 @@ _NEW_DOSSIER_COLUMNS = {
     "synthese_projet_status": "VARCHAR(16) DEFAULT 'not_generated'",
     "synthese_projet_error": "TEXT",
     "synthese_projet_generated_at": "DATETIME",
+    "synthese_projet_perplexity_md": "TEXT",
+    "synthese_projet_perplexity_model": "VARCHAR(128)",
+    "synthese_projet_perplexity_status": "VARCHAR(16) DEFAULT 'not_generated'",
+    "synthese_projet_perplexity_error": "TEXT",
+    "synthese_projet_perplexity_generated_at": "DATETIME",
 }
 
 _NEW_DOCUMENT_COLUMNS = {

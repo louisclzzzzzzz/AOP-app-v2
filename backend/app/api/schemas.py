@@ -42,6 +42,11 @@ class DossierOut(BaseModel):
     synthese_projet_status: str = "not_generated"
     synthese_projet_error: str | None = None
     synthese_projet_generated_at: dt.datetime | None = None
+    synthese_projet_perplexity_md: str | None = None
+    synthese_projet_perplexity_model: str | None = None
+    synthese_projet_perplexity_status: str = "not_generated"
+    synthese_projet_perplexity_error: str | None = None
+    synthese_projet_perplexity_generated_at: dt.datetime | None = None
     duplicate_of_dossier_id: str | None = None
     duplicate_of_filename: str | None = None
     duplicate_of_created_at: dt.datetime | None = None

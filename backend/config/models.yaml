@@ -75,3 +75,19 @@ text_extraction:
 feature_flags:
   # Pré-calcul du niveau RCMO/TRC via le tableau Feuil1 de donnees_de_ref.md (§6.3, §12)
   precompute_rcmo_trc: false
+
+perplexity:
+  # Synthèse projet (Phase 1) — variante expérimentale (app/synthesis_perplexity/), en parallèle
+  # du moteur Mistral (app/synthesis/). Un seul appel Deep Research par dossier (pas un par
+  # thème comme côté Mistral) : "sonar-deep-research" fait ses propres recherches web + son
+  # propre raisonnement multi-étapes en plusieurs minutes, donc paralléliser 13 appels par
+  # dossier serait à la fois beaucoup trop lent et hors des limites de débit du plan (5 req/min
+  # au tier 0 — cf. docs.perplexity.ai).
+  model: "sonar-deep-research"
+  # Intervalle de scrutation de /async/chat/completions/{id} et budget total avant abandon —
+  # un rapport Deep Research complet prend couramment plusieurs minutes. 15s d'intervalle reste
+  # sous la limite de débit la plus stricte documentée (5 req/min au tier 0).
+  poll_interval_seconds: 15
+  max_wait_seconds: 1800
+  max_retries: 3
+  temperature: 0.2

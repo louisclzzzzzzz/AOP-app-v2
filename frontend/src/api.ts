@@ -220,6 +220,11 @@ export async function generateProjectSynthesis(dossierId: string): Promise<Dossi
   return handle<Dossier>(res)
 }
 
+export async function generateProjectSynthesisPerplexity(dossierId: string): Promise<Dossier> {
+  const res = await fetch(`/api/dossiers/${dossierId}/synthese-projet/generate-perplexity`, { method: 'POST' })
+  return handle<Dossier>(res)
+}
+
 export function dossierWebSocketUrl(id: string): string {
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
   return `${protocol}//${window.location.host}/ws/dossiers/${id}`
