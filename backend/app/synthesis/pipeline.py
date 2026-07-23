@@ -101,13 +101,14 @@ async def run_project_synthesis_pipeline(dossier_id: str) -> None:
         outcomes.append(outcome)
         elapsed = time.monotonic() - topic_started_at
         logger.info(
-            "Synthèse projet %s : thème %r terminé (%d/%d) en %.1fs (documents=%d, modele=%s)",
+            "Synthèse projet %s : thème %r terminé (%d/%d) en %.1fs (documents=%d/%d candidats, modele=%s)",
             dossier_id,
             topic.id,
             i,
             len(schema.topics),
             elapsed,
             len(outcome.documents_used),
+            outcome.candidates_count,
             outcome.model_name,
         )
     total_elapsed = time.monotonic() - pipeline_started_at

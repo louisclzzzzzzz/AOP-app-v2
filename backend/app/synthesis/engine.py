@@ -39,6 +39,7 @@ class TopicOutcome:
     model_name: str | None
     error: str | None
     documents_used: list[str] = field(default_factory=list)
+    candidates_count: int = 0
 
 
 class _TopicResponse(BaseModel):
@@ -77,8 +78,13 @@ def _build_documents_context(
     *,
     total_budget: int = SYNTHESIS_TOTAL_CONTEXT_MAX_CHARS,
     per_document_budget: int = SYNTHESIS_PER_DOCUMENT_MAX_CHARS,
-) -> str:
+) -> tuple[str, list[str]]:
+    """Retourne le contexte assemblé ET la liste des documents réellement inclus dedans —
+    distincte de la liste des candidats (`select_topic_documents` peut en retourner bien plus
+    que ce que `total_budget` permet d'envoyer ; au-delà, un document candidat est purement et
+    simplement absent du prompt, jamais vu par le LLM, donc jamais une vraie source)."""
     blocks: list[str] = []
+    included: list[str] = []
     remaining = total_budget
     for doc in documents:
         if remaining <= 0:
@@ -86,8 +92,9 @@ def _build_documents_context(
         cap = min(per_document_budget, remaining)
         excerpt = doc.content_excerpt[:cap]
         blocks.append(f"### Document : {doc.filename} (catégorie : {doc.final_category or 'inconnue'})\n{excerpt}")
+        included.append(doc.filename)
         remaining -= len(excerpt)
-    return "\n\n".join(blocks)
+    return "\n\n".join(blocks), included
 
 
 def _format_extraction_fields_topic(topic: SynthesisTopic, field_values: FieldValues) -> str:
@@ -150,9 +157,17 @@ def generate_topic(
     if not candidates:
         return TopicOutcome(topic_id=topic.id, content_md=_no_documents_message(topic), model_name=None, error=None)
 
-    context = _build_documents_context(candidates)
+    context, documents_used = _build_documents_context(candidates)
     grounding = _format_grounding_block(topic, field_values)
-    documents_used = [d.filename for d in candidates]
+    if len(documents_used) < len(candidates):
+        logger.warning(
+            "Synthèse projet — thème %s : %d document(s) pivot(s) candidat(s) mais seuls %d envoyés au LLM "
+            "(budget de contexte atteint) : %s ignoré(s)",
+            topic.id,
+            len(candidates),
+            len(documents_used),
+            [d.filename for d in candidates if d.filename not in documents_used],
+        )
 
     try:
         parsed, api_model_name = call_structured_chat(
@@ -164,7 +179,12 @@ def generate_topic(
     except Exception as exc:
         logger.exception("Échec de la génération du thème %s de la synthèse projet", topic.id)
         return TopicOutcome(
-            topic_id=topic.id, content_md=None, model_name=None, error=str(exc), documents_used=documents_used
+            topic_id=topic.id,
+            content_md=None,
+            model_name=None,
+            error=str(exc),
+            documents_used=documents_used,
+            candidates_count=len(candidates),
         )
 
     return TopicOutcome(
@@ -173,6 +193,7 @@ def generate_topic(
         model_name=api_model_name,
         error=None,
         documents_used=documents_used,
+        candidates_count=len(candidates),
     )
 
 
@@ -217,6 +238,12 @@ def assemble_report(
             body = outcome.content_md or "_Aucune donnée disponible._"
             if outcome.documents_used:
                 body += "\n\n_Sources consultées : " + ", ".join(outcome.documents_used) + "_"
+                skipped = outcome.candidates_count - len(outcome.documents_used)
+                if skipped > 0:
+                    body += (
+                        f" _(+{skipped} document(s) pivot(s) supplémentaire(s) trouvé(s) mais non "
+                        "envoyé(s) au LLM — budget de contexte atteint)_"
+                    )
         sections.append(f"## {topic.titre}\n\n{body}")
 
     return "\n\n".join(sections) + "\n"

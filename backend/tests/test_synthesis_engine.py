@@ -120,6 +120,42 @@ def test_generate_topic_documents_source_calls_llm_with_context(monkeypatch):
     assert "test_topic" in captured["what"]
 
 
+def test_build_documents_context_excludes_documents_beyond_total_budget():
+    doc_a = _doc(document_id="a", filename="a.pdf", content_excerpt="x" * 10)
+    doc_b = _doc(document_id="b", filename="b.pdf", content_excerpt="y" * 10)
+
+    context, included = engine._build_documents_context(
+        [doc_a, doc_b], total_budget=10, per_document_budget=10
+    )
+
+    assert included == ["a.pdf"]
+    assert "b.pdf" not in context
+
+
+def test_generate_topic_documents_used_excludes_candidates_dropped_by_budget(monkeypatch):
+    """documents_used ne doit lister que les documents dont le contenu a réellement été inclus
+    dans le prompt — pas tous les candidats matchés par catégorie (§bug réel trouvé en testant un
+    dossier à 69 candidats CCTP/CCAP dont seuls les 2 premiers tenaient dans le budget)."""
+
+    def _fake_chat(*, system_prompt, user_prompt, response_model, what):
+        return response_model(contenu="Contenu généré."), "mistral-large-test"
+
+    def _fake_context(candidates):
+        return "contexte tronqué", [candidates[0].filename]
+
+    monkeypatch.setattr(engine, "call_structured_chat", _fake_chat)
+    monkeypatch.setattr(engine, "_build_documents_context", _fake_context)
+
+    topic = _topic(pivot_categories=["TECH/RICT"])
+    doc_included = _doc(document_id="a", filename="a.pdf", final_category="TECH/RICT", content_excerpt="x")
+    doc_dropped = _doc(document_id="b", filename="b.pdf", final_category="TECH/RICT", content_excerpt="y")
+
+    outcome = generate_topic(topic, documents=[doc_included, doc_dropped], field_values={})
+
+    assert outcome.documents_used == ["a.pdf"]
+    assert outcome.candidates_count == 2
+
+
 def test_generate_topic_documents_source_no_candidates_skips_llm_call(monkeypatch):
     def _boom(**kwargs):
         raise AssertionError("le LLM ne doit jamais être appelé sans document pivot candidat")
