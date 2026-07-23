@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 
 import app.completeness.engine as engine
+from app.classify.taxonomy import strip_accents
 from app.completeness.engine import DocumentSignal, analyze_pieces
 from app.completeness.pieces_checklist import Piece
 
@@ -128,7 +129,9 @@ def test_piece_noyee_dans_un_autre_document_calls_llm_and_confirms(monkeypatch):
         id="attestation_decennale_par_lot",
         categorie_attendue="ASS/ATT ASS/ENT",
         peut_etre_inclus_dans_autre=True,
-        indices=[re.compile("responsabilité civile décennale", re.IGNORECASE)],
+        # Motif accent-plié comme le fait réellement `pieces_checklist._compile` (§strip_accents :
+        # un texte natif/OCR perd parfois ses accents, cf. app/classify/taxonomy.py).
+        indices=[re.compile(strip_accents("responsabilité civile décennale"), re.IGNORECASE)],
     )
     marche_signe_doc = _doc(
         document_id="marche-1",

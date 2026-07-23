@@ -82,6 +82,38 @@ def test_unambiguous_signal_is_classified_by_rule_without_llm(monkeypatch):
     assert outcome.model_name is None
 
 
+def test_score_content_matches_despite_missing_accents():
+    """Cas réel trouvé en testant un dossier réel (dce_grand_pic2) : le titre d'un vrai RICT
+    extrait d'un PDF était "RAPPORT INITIAL DE CONTROLE TECHNIQUE" (capitales, sans accent sur
+    "CONTROLE") — le content_index de TECH/RICT ("rapport initial de contrôle technique", avec
+    accent) ne matchait donc jamais, faisant perdre tout signal contenu pour ce type de document."""
+    matches = engine.score_content("RAPPORT INITIAL DE CONTROLE TECHNIQUE V2 / N° : CT/12440/0426/0250")
+    assert "TECH/RICT" in [m.category_path for m in matches]
+
+
+def test_rict_with_unaccented_title_is_not_confidently_misrouted_to_arrete_pc():
+    """Reproduction du bug réel : un RICT (nom de fichier net : "rict") dont le corps mentionne
+    aussi "permis de construire"/"arrêté" (référence courante à l'opération auditée, pas au type
+    du document lui-même) faisait gagner TECH/ARRETE PC par les seuls signaux de contenu, tant que
+    l'accent manquant sur "CONTROLE" empêchait TECH/RICT de marquer le moindre point côté contenu.
+    Avec l'accord-pliage des motifs, les deux catégories se retrouvent à égalité : le document
+    redevient ambigu (LLM nécessaire) plutôt que d'être classé à tort avec une fausse confiance."""
+    outcome = classify_document_by_rules(
+        relative_path="Selection de sources/24-04-26 Rapport RICT.pdf",
+        filename="24-04-26 Rapport RICT.pdf",
+        file_category=FileCategory.PDF.value,
+        non_analyzable_reason=None,
+        content_excerpt=(
+            "RAPPORT INITIAL DE CONTROLE TECHNIQUE V2\n"
+            "Construction d'une résidence de tourisme, dans le cadre du permis de construire "
+            "délivré par arrêté municipal."
+        ),
+    )
+    assert outcome is None, (
+        f"attendu : ambigu (None) pour arbitrage LLM, obtenu : classé à tort en {outcome.category if outcome else None!r}"
+    )
+
+
 def test_ambiguous_document_returns_none_for_rules():
     """"RC 2024.pdf" est volontairement ambigu au niveau nom (existe côté ADMIN et ASS) et le
     contenu seul ne suffit pas (score 1, sous le seuil) : doit rester ambigu (LLM nécessaire)."""

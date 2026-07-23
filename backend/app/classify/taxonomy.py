@@ -2,12 +2,25 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 from dataclasses import dataclass, field
 from functools import lru_cache
 
 import yaml
 
 from app.settings import get_config_dir
+
+
+def strip_accents(text: str) -> str:
+    """Neutralise les accents (`contrôle` -> `controle`) pour que les motifs de la taxonomie
+    matchent aussi bien un texte proprement accentué qu'un texte natif/OCR qui les a perdus —
+    fréquent sur les titres en capitales de documents administratifs français (ex. un RICT réel
+    dont le titre extrait était "CONTROLE" sans accent, faisant échouer silencieusement le motif
+    `content_indices: rapport initial de contrôle technique` malgré une correspondance quasi
+    parfaite par ailleurs). Appliqué à la fois aux motifs compilés (`_compile`) et au texte scoré
+    (`app/classify/engine.py::_score_text`) pour rester symétrique dans les deux sens."""
+    normalized = unicodedata.normalize("NFKD", text)
+    return "".join(c for c in normalized if not unicodedata.combining(c))
 
 
 @dataclass(frozen=True)
@@ -55,7 +68,7 @@ def fix_word_boundary(pattern: str) -> str:
 
 
 def _compile(patterns: list[str]) -> list[re.Pattern[str]]:
-    return [re.compile(fix_word_boundary(p), re.IGNORECASE) for p in patterns]
+    return [re.compile(fix_word_boundary(strip_accents(p)), re.IGNORECASE) for p in patterns]
 
 
 @lru_cache

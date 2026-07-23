@@ -7,7 +7,7 @@ from functools import lru_cache
 
 import yaml
 
-from app.classify.taxonomy import fix_word_boundary
+from app.classify.taxonomy import fix_word_boundary, strip_accents
 from app.settings import get_config_dir
 
 
@@ -44,7 +44,7 @@ class PiecesChecklist:
 
 
 def _compile(patterns: list[str]) -> list[re.Pattern[str]]:
-    return [re.compile(fix_word_boundary(p), re.IGNORECASE) for p in patterns]
+    return [re.compile(fix_word_boundary(strip_accents(p)), re.IGNORECASE) for p in patterns]
 
 
 @lru_cache

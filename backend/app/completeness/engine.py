@@ -27,6 +27,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, create_model
 
+from app.classify.taxonomy import strip_accents
 from app.completeness.pieces_checklist import Piece
 from app.ingestion.document_signal import DocumentSignal
 from app.mistral.client import call_structured_chat
@@ -75,7 +76,8 @@ class DocumentCompletenessResult:
 
 
 def _score_candidate(doc: DocumentSignal, piece: Piece) -> int:
-    return sum(1 for p in piece.indices if p.search(doc.content_excerpt))
+    content = strip_accents(doc.content_excerpt)
+    return sum(1 for p in piece.indices if p.search(content))
 
 
 def _certainty_for_file_match(confidences: list[float | None], thresholds: dict[str, float]) -> str:
