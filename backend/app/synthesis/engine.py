@@ -25,8 +25,17 @@ logger = logging.getLogger(__name__)
 # le budget par appel de l'extraction (§extraction/engine.py DOCUMENT_EXCERPT_MAX_CHARS) car un
 # thème comme "récit du sol" ou "synthèse RICT" a besoin du texte complet du document, pas d'un
 # extrait scoré par mots-clés.
-SYNTHESIS_TOTAL_CONTEXT_MAX_CHARS = 40_000
-SYNTHESIS_PER_DOCUMENT_MAX_CHARS = 16_000
+#
+# Calibré sur la fenêtre de contexte réelle de mistral-large-2512 (~128k tokens), pas sur une
+# valeur arbitraire : l'ancien budget (40 000 caractères, ~14k tokens) ne laissait passer que 2-3
+# documents avant de s'arrêter, ignorant silencieusement le reste des candidats sur les gros
+# dossiers multi-lots (cf. rapport technique, §4.1 — jusqu'à 69 documents CCTP candidats pour 3
+# réellement envoyés). ~3 caractères/token en moyenne sur du texte technique français (mesuré sur
+# les dossiers de test) → viser ~100k tokens de documents laisse une marge confortable pour le
+# system prompt, les instructions, le bloc de grounding et jusqu'à ~4000 tokens de sortie avant
+# d'approcher la limite du modèle.
+SYNTHESIS_TOTAL_CONTEXT_MAX_CHARS = 300_000
+SYNTHESIS_PER_DOCUMENT_MAX_CHARS = 60_000
 
 # (libellé, valeur finale) d'un champ déjà résolu à l'étape 3, indexé par field_id.
 FieldValues = dict[str, tuple[str, str]]
