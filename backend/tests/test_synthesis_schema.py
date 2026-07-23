@@ -60,6 +60,14 @@ def test_destination_ambition_sees_cctp_travaux_and_flags_contradictions():
     schema = load_synthesis_schema()
     topic = schema.by_id("destination_ambition")
     assert topic is not None
-    assert "TECH/CCTP TRAVAUX" in topic.pivot_categories
+    categories = topic.pivot_categories
+    assert "TECH/CCTP TRAVAUX" in categories
+
+    # Régression constatée en testant ce changement : TECH/CCTP TRAVAUX compte souvent 15-25
+    # documents (un par lot), assez pour épuiser le budget de contexte à lui seul. Le mettre
+    # avant TECH/ARRETE PC (1 seul document, celui qui porte la version concurrente) fait qu'on
+    # ne voit plus QUE la version CCTP — l'inverse de l'effet recherché. TECH/ARRETE PC doit donc
+    # rester prioritaire (plus tôt dans la liste) sur TECH/CCTP TRAVAUX.
+    assert categories.index("TECH/ARRETE PC") < categories.index("TECH/CCTP TRAVAUX")
     assert topic.cross_document is True
     assert "contredis" in topic.instructions

@@ -41,7 +41,19 @@ topics:
     # 5e catégorie") et par un rapport SDIS embarqué dans l'arrêté PC (ex. "catégorie 2, type O").
     # Sans TECH/CCTP TRAVAUX dans le périmètre, ce thème ne voyait jamais qu'une des deux
     # versions et la rapportait comme un fait non contesté.
-    pivot_categories: ["TECH/NOTICE", "ASS/CCTP", "TECH/CCTP TRAVAUX", "TECH/ARRETE PC", "ASS/RC"]
+    #
+    # ORDRE IMPORTANT : `select_topic_documents` (app/synthesis/engine.py) parcourt les
+    # catégories dans cet ordre, et `_build_documents_context` remplit le budget dans cet ordre
+    # jusqu'à épuisement — donc les catégories placées en tête sont TOUJOURS incluses, celles en
+    # fin de liste seulement si le budget le permet encore. TECH/CCTP TRAVAUX contient souvent
+    # 15-25 documents (un par lot) : le mettre avant TECH/ARRETE PC (1 seul document, mais celui
+    # qui porte justement la version concurrente du classement ERP) épuiserait le budget sur les
+    # lots CCTP avant même d'atteindre l'arrêté PC — exactement l'inverse de l'effet recherché
+    # (bug constaté en testant ce changement : le thème s'est mis à ne voir QUE la version CCTP,
+    # au lieu de voir les deux et signaler la contradiction). TECH/CCTP TRAVAUX reste donc en
+    # dernier, pour ne consommer que le budget restant une fois les catégories peu nombreuses
+    # garanties.
+    pivot_categories: ["TECH/NOTICE", "TECH/ARRETE PC", "ASS/CCTP", "ASS/RC", "TECH/CCTP TRAVAUX"]
     grounding_field_ids: [destination_batiment]
     cross_document: true
     instructions: >
