@@ -12,8 +12,9 @@ introuvable dans ses documents de référence (absents du dossier, ou présents 
 valeur) est déclaré absent directement, sans recherche élargie automatique sur le reste du
 dossier. Deux mécanismes complémentaires, tous deux déclenchés explicitement par l'expert :
 `run_extraction_pipeline(document_ids=...)` restreint tout le run à une sélection manuelle de
-documents (couche 1 sans filtrage par catégorie), et `deepen_field` relance la recherche élargie
-(mots-clés) pour un seul champ resté absent, sans toucher aux autres champs.
+documents (couche 1 sans filtrage par catégorie), et `deepen_missing_fields` relance la
+recherche élargie (mots-clés) pour tous les champs restés absents en un seul passage, sans
+toucher aux champs déjà trouvés.
 """
 from __future__ import annotations
 
@@ -29,6 +30,7 @@ from app.extraction.engine import (
     absent_outcome,
     analyze_document,
     generate_synthesis,
+    layer2_candidates,
     plan_layer2_calls,
     plan_manual_calls,
     plan_reference_document_calls,
@@ -228,7 +230,8 @@ async def run_extraction_pipeline(dossier_id: str, *, document_ids: list[str] | 
     await asyncio.to_thread(_persist, layer1_outcomes)
 
     # --- Couche 2 : absent, aucun appel LLM (pas de recherche élargie automatique — voir
-    # `deepen_field` pour un approfondissement ponctuel à la demande) -----------------------
+    # `deepen_missing_fields` pour un approfondissement à la demande sur tous les champs
+    # restés absents) -------------------------------------------------------------------
     missing_fields = [f for f in schema.fields if f.id not in layer1_outcomes]
     if missing_fields:
         absent_message = (
@@ -289,20 +292,30 @@ def _document_signals(dossier_id: str) -> list[DocumentSignal]:
     return [build_document_signal(snap) for snap in doc_snapshots]
 
 
-async def deepen_field(dossier_id: str, field_id: str) -> None:
-    """Approfondissement ponctuel d'un seul champ (§ docstring module, point 2) : recherche
-    élargie par mots-clés sur tout le dossier (`layer2_candidates`/`MAX_LLM_CANDIDATES`),
-    déclenchée explicitement par l'expert depuis l'écran de validation de l'étape 3 — jamais
-    automatique, jamais pour les autres champs. Écrase la proposition existante de ce champ
-    (même sémantique qu'un nouveau run standard sur ce champ)."""
+async def deepen_missing_fields(dossier_id: str) -> None:
+    """Approfondissement de TOUS les champs restés absents, en un seul passage (§ docstring
+    module, point 2) : recherche élargie par mots-clés sur tout le dossier
+    (`layer2_candidates`/`plan_layer2_calls`/`MAX_LLM_CANDIDATES`), déclenchée explicitement par
+    l'expert depuis l'écran de validation de l'étape 3 — jamais automatique. `plan_layer2_calls`
+    regroupe déjà les champs par document candidat commun (un seul appel LLM peut couvrir
+    plusieurs champs manquants sur un même document), donc traiter tous les champs manquants
+    d'un coup est strictement plus économe que les approfondir un par un. Les champs déjà
+    trouvés ne sont pas touchés ; ceux qui restent introuvables après cette recherche élargie
+    sont mis à jour avec une justification explicite (pas laissés dans leur état d'origine)."""
     schema = load_extraction_schema()
-    extraction_field = schema.by_id(field_id)
-    if extraction_field is None:
-        raise ValueError(f"Champ d'extraction inconnu : {field_id}")
+
+    def _missing_field_ids() -> set[str]:
+        with session_scope() as s:
+            results = list_extraction_results(s, dossier_id)
+            return {r.field_id for r in results if not r.final_value}
+
+    missing_ids = await asyncio.to_thread(_missing_field_ids)
+    missing_fields = [f for f in schema.fields if f.id in missing_ids]
+    if not missing_fields:
+        return
 
     signals = await asyncio.to_thread(_document_signals, dossier_id)
-    calls = plan_layer2_calls([extraction_field], signals)
-    candidates = [doc for doc, _ in calls]
+    calls = plan_layer2_calls(missing_fields, signals)
 
     results_by_document: dict[str, DocumentExtractionResult] = {}
     for doc, fields_for_doc in calls:
@@ -310,35 +323,38 @@ async def deepen_field(dossier_id: str, field_id: str) -> None:
         result = await asyncio.to_thread(analyze_document, doc, fields_for_doc)
         results_by_document[doc.document_id] = result
 
-    outcome = resolve_field(
-        extraction_field,
-        candidates=candidates,
-        results_by_document=results_by_document,
-        match_layer=MatchLayer.CONTENT.value,
-        cross_check_required=False,
-    ) or absent_outcome(
-        "Recherche élargie effectuée sur les documents les plus proches par mots-clés : "
-        "aucune valeur trouvée."
-    )
+    outcomes: dict[str, ExtractionOutcome] = {}
+    for f in missing_fields:
+        outcomes[f.id] = resolve_field(
+            f,
+            candidates=layer2_candidates(f, signals),
+            results_by_document=results_by_document,
+            match_layer=MatchLayer.CONTENT.value,
+            cross_check_required=False,
+        ) or absent_outcome(
+            "Recherche élargie effectuée sur les documents les plus proches par mots-clés : "
+            "aucune valeur trouvée."
+        )
 
     def _persist() -> None:
         with session_scope() as s:
-            result = get_extraction_result_by_field(s, dossier_id, field_id)
-            assert result is not None
-            set_extraction_result(
-                s,
-                result,
-                match_layer=outcome.match_layer,
-                value=outcome.value,
-                confidence=outcome.confidence,
-                justification=outcome.justification,
-                citation=outcome.citation,
-                sources=outcome.sources,
-                cross_check_status=outcome.cross_check_status,
-                model_name=outcome.model_name,
-                model_version=outcome.model_version,
-                error=outcome.error,
-            )
+            for field_id, outcome in outcomes.items():
+                result = get_extraction_result_by_field(s, dossier_id, field_id)
+                assert result is not None
+                set_extraction_result(
+                    s,
+                    result,
+                    match_layer=outcome.match_layer,
+                    value=outcome.value,
+                    confidence=outcome.confidence,
+                    justification=outcome.justification,
+                    citation=outcome.citation,
+                    sources=outcome.sources,
+                    cross_check_status=outcome.cross_check_status,
+                    model_name=outcome.model_name,
+                    model_version=outcome.model_version,
+                    error=outcome.error,
+                )
             dossier = get_dossier(s, dossier_id)
             assert dossier is not None
             recompute_extraction_counters(s, dossier)

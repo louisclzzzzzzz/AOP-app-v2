@@ -168,29 +168,45 @@ def test_non_analyzable_at_risk_distinguishes_real_risk_from_harmless(tmp_path, 
     assert by_path["ADMIN/RC.pdf"]["non_analyzable_at_risk"] is False
 
 
-def test_macos_metadata_files_marked_non_analyzable_and_not_at_risk(tmp_path, isolated_workspace, make_zip):
-    """Un zip constitué sur macOS embarque des doubles AppleDouble `._<nom>` (même extension
-    que l'original, ex. `._CCAP.pdf`) et un dossier `__MACOSX/` : ni l'un ni l'autre n'est un
-    vrai document — les envoyer tels quels à l'OCR fait échouer l'upload Mistral (content-type
-    non reconnu, cas réel rencontré en test manuel). Ils doivent être exclus de l'analyse sans
-    être comptés comme "à risque" (contenu bien réel connu, jamais pertinent)."""
+def test_macos_resource_forks_and_ds_store_marked_non_analyzable(tmp_path, isolated_workspace, make_zip):
+    """Fichiers de métadonnées macOS (jamais du contenu réel) : ressources AppleDouble
+    `._nom` — y compris sous `__MACOSX/`, où macOS les place systématiquement lors d'une
+    compression — et `.DS_Store`. Régression : ces fichiers étaient auparavant classés selon
+    leur extension apparente (ex. `._CCAP.pdf` envoyé à l'OCR comme un vrai PDF, rejeté par
+    l'API Mistral en 400 "Document type not supported")."""
     docs = _build(
         tmp_path,
         make_zip,
         {
-            "ASS/CCAP.pdf": "contenu CCAP",
-            "ASS/._CCAP.pdf": b"\x00\x05\x16\x07 blob applesingle",
-            "__MACOSX/ASS/._CCAP.pdf": b"\x00\x05\x16\x07 blob applesingle",
+            "ASS/._CCAP CONSERVATOIRE.pdf": "pas un vrai PDF",
+            "__MACOSX/ASS/._CCAP CONSERVATOIRE.pdf": "pas un vrai PDF non plus",
+            "ASS/.DS_Store": "noise",
+            "ASS/CCAP CONSERVATOIRE.pdf": "contenu réel",
         },
     )
     by_path = {d["relative_path"]: d for d in docs}
 
-    assert by_path["ASS/CCAP.pdf"]["is_analyzable"] is True
+    assert by_path["ASS/._CCAP CONSERVATOIRE.pdf"]["is_analyzable"] is False
+    assert by_path["ASS/._CCAP CONSERVATOIRE.pdf"]["non_analyzable_at_risk"] is False
+    assert by_path["__MACOSX/ASS/._CCAP CONSERVATOIRE.pdf"]["is_analyzable"] is False
+    assert by_path["ASS/.DS_Store"]["is_analyzable"] is False
+    assert by_path["ASS/.DS_Store"]["non_analyzable_at_risk"] is False
 
-    for junk_path in ["ASS/._CCAP.pdf", "__MACOSX/ASS/._CCAP.pdf"]:
-        assert by_path[junk_path]["is_analyzable"] is False
-        assert by_path[junk_path]["non_analyzable_at_risk"] is False
-        assert "macOS" in by_path[junk_path]["non_analyzable_reason"]
+    # Le vrai fichier, lui, reste analysable normalement
+    assert by_path["ASS/CCAP CONSERVATOIRE.pdf"]["is_analyzable"] is True
+
+
+def test_macos_junk_zip_lookalike_not_treated_as_archive(tmp_path, isolated_workspace, make_zip):
+    """`._nom.zip` (ressource AppleDouble d'un zip) n'est pas une archive — elle ne doit ni
+    déclencher une tentative de décompression, ni être signalée comme « archive protégée/
+    corrompue » (ce qui la flaguerait à tort `at_risk=True`)."""
+    docs = _build(tmp_path, make_zip, {"ASS/._ASSURANCES.zip": "pas un vrai zip"})
+    by_path = {d["relative_path"]: d for d in docs}
+
+    doc = by_path["ASS/._ASSURANCES.zip"]
+    assert doc["category"] != "archive"
+    assert doc["is_analyzable"] is False
+    assert doc["non_analyzable_at_risk"] is False
 
 
 def test_hash_file_matches_sha256(tmp_path):
