@@ -42,6 +42,14 @@ topics:
     # Sans TECH/CCTP TRAVAUX dans le périmètre, ce thème ne voyait jamais qu'une des deux
     # versions et la rapportait comme un fait non contesté.
     #
+    # TECH/RICT ajouté (comparaison avec le rapport de référence validé, dossier Le Grand Pic) :
+    # le RICT contient la formulation qui RÉCONCILIE l'arrêté PC et le CCTP au lieu de se
+    # contenter de les juxtaposer — ex. "Ces trois bâtiments répondent aux réglementations des
+    # bâtiments d'habitation (3ème famille B) et proposent divers services... classés ERP 5".
+    # Sans le RICT dans le périmètre, le thème ne voyait que la version arrêté PC ("ERP type O,
+    # catégorie 2" pour tout l'ensemble) et la rapportait comme classement unique, alors que
+    # c'est la lecture la moins fine des trois sources disponibles.
+    #
     # ORDRE IMPORTANT : `select_topic_documents` (app/synthesis/engine.py) parcourt les
     # catégories dans cet ordre, et `_build_documents_context` remplit le budget dans cet ordre
     # jusqu'à épuisement — donc les catégories placées en tête sont TOUJOURS incluses, celles en
@@ -52,8 +60,9 @@ topics:
     # (bug constaté en testant ce changement : le thème s'est mis à ne voir QUE la version CCTP,
     # au lieu de voir les deux et signaler la contradiction). TECH/CCTP TRAVAUX reste donc en
     # dernier, pour ne consommer que le budget restant une fois les catégories peu nombreuses
-    # garanties.
-    pivot_categories: ["TECH/NOTICE", "TECH/ARRETE PC", "ASS/CCTP", "ASS/RC", "TECH/CCTP TRAVAUX"]
+    # garanties. TECH/RICT est un document unique (comme TECH/ARRETE PC) : il est placé juste
+    # après pour rester garanti quel que soit le budget restant.
+    pivot_categories: ["TECH/NOTICE", "TECH/ARRETE PC", "TECH/RICT", "ASS/CCTP", "ASS/RC", "TECH/CCTP TRAVAUX"]
     grounding_field_ids: [destination_batiment]
     cross_document: true
     instructions: >
@@ -69,7 +78,15 @@ topics:
     titre: "Qualification de l'opération et contraintes de travaux"
     format: prose
     source: documents
-    pivot_categories: ["ASS/CCTP", "TECH/NOTICE", "TECH/CCTP TRAVAUX", "ASS/CCAP"]
+    # TECH/ARRETE PC et TECH/RICT ajoutés (comparaison avec le rapport de référence validé,
+    # dossier Le Grand Pic) : sans eux, ce thème ne voyait le nombre de niveaux que via des
+    # plages de niveaux nommées dans le CCTP/la notice (ex. "du niveau -8 au niveau +3"), que le
+    # LLM a confondu avec un compte total ("8 niveaux" — faux à la fois arithmétiquement, la
+    # plage -8..+3 comptant 12 niveaux, et par rapport à l'arrêté PC qui donne le compte exact
+    # par bâtiment : "Nombre de niveaux : 12" / "13" / "11"). L'arrêté PC est un document unique,
+    # placé en tête pour rester garanti quel que soit le budget restant ; TECH/RICT confirme le
+    # compte de façon indépendante ("Bâtiment A, B et C de 12 niveaux dont 2 niveaux de parking").
+    pivot_categories: ["TECH/ARRETE PC", "TECH/RICT", "ASS/CCTP", "TECH/NOTICE", "TECH/CCTP TRAVAUX", "ASS/CCAP"]
     grounding_field_ids:
       - travaux_neufs_ou_existant
       - nombre_batiments_neufs
@@ -78,30 +95,47 @@ topics:
     cross_document: true
     instructions: >
       Qualifie l'opération (Neuf, Réhabilitation lourde, Extension). Y a-t-il des bâtiments
-      existants ? Quel est le nombre de niveaux par bâtiment existant et neuf ? Y a-t-il une
-      démolition ? Développe la nature de tous les travaux et les contraintes majeures
-      mentionnées (accès exigu, maintien d'activité, phasage complexe, conservation de
-      structures anciennes). Donne les surfaces caractéristiques. Si les documents fournis se
-      contredisent (ex. nombre de niveaux différent entre deux sources), signale-le
-      explicitement plutôt que de trancher en silence.
+      existants ? Quel est le nombre de niveaux par bâtiment existant et neuf ? Donne le compte
+      exact par bâtiment tel qu'indiqué explicitement dans les documents (ex. un tableau ou une
+      mention "Nombre de niveaux : X") plutôt que de le déduire d'une plage de niveaux nommés
+      (ex. "du niveau -8 au niveau +3" désigne 12 niveaux, pas 8 — ne confonds jamais le numéro
+      du niveau le plus bas avec un total). Y a-t-il une démolition ? Développe la nature de
+      tous les travaux et les contraintes majeures mentionnées (accès exigu, maintien d'activité,
+      phasage complexe, conservation de structures anciennes). Donne les surfaces
+      caractéristiques. Si les documents fournis se contredisent (ex. nombre de niveaux différent
+      entre deux sources), signale-le explicitement plutôt que de trancher en silence.
 
   - id: economie_projet
     titre: "Économie du projet"
     format: prose
     source: documents
-    pivot_categories: ["ASS/CCAP", "ASS/CCTP", "ASS/RC"]
+    # TECH/DPGF ajouté (comparaison avec le rapport de référence validé, dossier Le Grand Pic) :
+    # ASS/CCAP, ASS/CCTP et ASS/RC sont des catégories "assurance" qui n'existent que si le
+    # dossier embarque le paquet de pièces d'assurance construction — un DCE brut (comme
+    # dce_grand_pic2) n'en contient aucune, alors que la décomposition du prix global et
+    # forfaitaire (DPGF, par lot) y est bien présente. Sans TECH/DPGF dans le périmètre, ce
+    # thème ne trouvait jamais aucun document pivot pour ce type de dossier.
+    pivot_categories: ["TECH/DPGF", "ASS/CCAP", "ASS/CCTP", "ASS/RC"]
     grounding_field_ids: [montants_totaux_ht, montants_totaux_ttc, montants_honoraires, montants_existants]
     instructions: >
       Indique le montant total des travaux et des honoraires. Si possible, décompose les
       différents lots pour donner une idée de la répartition du budget. Base-toi en priorité sur
       les montants déjà validés à l'étape 3 (fournis ci-dessous) et complète-les avec toute
-      décomposition par lot trouvée dans les documents fournis.
+      décomposition par lot trouvée dans les documents fournis. Si les DPGF fournis sont des
+      trames non chiffrées (montants encore vides), dis-le explicitement plutôt que d'inventer un
+      total.
 
   - id: equipe_projet
     titre: "Équipe projet (MOE & Études)"
     format: tableau
     source: documents
-    pivot_categories: ["ASS/CCAP", "ASS/CCTP", "ASS/RC"]
+    # TECH/NOTICE, TECH/CCTP TRAVAUX et TECH/RICT ajoutés (comparaison avec le rapport de
+    # référence validé, dossier Le Grand Pic) : les noms des acteurs (architecte, BET, bureau de
+    # contrôle) figurent presque toujours en page de garde de la notice, du CCTP et du RICT eux-
+    # mêmes — pas seulement des pièces d'assurance (ASS/CCAP, ASS/CCTP, ASS/RC), qui peuvent
+    # être absentes d'un DCE brut. Sans ces catégories, ce thème ne trouvait jamais aucun
+    # document pivot pour ce type de dossier alors que l'équipe y était identifiable.
+    pivot_categories: ["TECH/NOTICE", "TECH/RICT", "ASS/CCAP", "ASS/CCTP", "ASS/RC", "TECH/CCTP TRAVAUX"]
     grounding_field_ids: [equipe_moe]
     instructions: >
       Présente les acteurs clés (Architecte, bureaux d'études (BET), Géotechnicien, Bureau de

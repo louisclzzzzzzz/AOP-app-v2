@@ -213,6 +213,21 @@ categories:
     doc_type_hint: "CCTP-TRX"
     is_pivot: true
 
+  - path: "TECH/DPGF"
+    label: "Décomposition du prix global et forfaitaire (DPGF, par lot)"
+    # Absent jusqu'ici de la taxonomie : sans catégorie dédiée, la classification (LLM de
+    # secours) forçait ces documents dans TECH/PLANNING au seul motif qu'ils sont "associés à
+    # un lot technique" (constaté sur dce_grand_pic2 : 25006-DPGF-*-DCE.pdf classés à tort en
+    # TECH/PLANNING, confiance 0.95 — cf. ANALYSE_ORIGINE_ERREURS.md). Conséquence : le thème
+    # `economie_projet` de la synthèse (app/synthesis/) ne trouvait jamais aucun document.
+    alt_names: ["DPGF"]
+    filename_keywords: ["dpgf"]
+    content_indices: ["décomposition du prix global et forfaitaire", "montant total h.t.",
+      "montant total t.t.c."]
+    lot_aware: true
+    doc_type_hint: "DPGF"
+    is_pivot: true
+
   - path: "TECH/ETUDE DE SOL"
     label: "Étude de sol / géotechnique (G1, G2 AVP, G2 PRO, G4, G5)"
     alt_names: ["ETUDE DE SOL", "ETUDES SOL", "G2PRO", "Geotechnique", "Géotechnique"]
