@@ -67,7 +67,9 @@ def _entry_to_out(doc: Document) -> ClassificationEntryOut:
 async def get_taxonomy() -> list[TaxonomyCategoryOut]:
     taxonomy = load_taxonomy()
     return [
-        TaxonomyCategoryOut(path=c.path, label=c.label, alt_names=c.alt_names, lot_aware=c.lot_aware)
+        TaxonomyCategoryOut(
+            path=c.path, label=c.label, alt_names=c.alt_names, lot_aware=c.lot_aware, is_pivot=c.is_pivot
+        )
         for c in taxonomy.categories
     ]
 

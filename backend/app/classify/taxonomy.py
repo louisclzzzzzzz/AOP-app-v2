@@ -2,12 +2,25 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 from dataclasses import dataclass, field
 from functools import lru_cache
 
 import yaml
 
 from app.settings import get_config_dir
+
+
+def strip_accents(text: str) -> str:
+    """Neutralise les accents (`contrôle` -> `controle`) pour que les motifs de la taxonomie
+    matchent aussi bien un texte proprement accentué qu'un texte natif/OCR qui les a perdus —
+    fréquent sur les titres en capitales de documents administratifs français (ex. un RICT réel
+    dont le titre extrait était "CONTROLE" sans accent, faisant échouer silencieusement le motif
+    `content_indices: rapport initial de contrôle technique` malgré une correspondance quasi
+    parfaite par ailleurs). Appliqué à la fois aux motifs compilés (`_compile`) et au texte scoré
+    (`app/classify/engine.py::_score_text`) pour rester symétrique dans les deux sens."""
+    normalized = unicodedata.normalize("NFKD", text)
+    return "".join(c for c in normalized if not unicodedata.combining(c))
 
 
 @dataclass(frozen=True)
@@ -19,6 +32,7 @@ class TaxonomyCategory:
     content_patterns: list[re.Pattern[str]] = field(default_factory=list)
     lot_aware: bool = False
     doc_type_hint: str = "AUTRES"
+    is_pivot: bool = False
 
 
 @dataclass(frozen=True)
@@ -34,6 +48,9 @@ class Taxonomy:
             if c.path == path:
                 return c
         return None
+
+    def pivot_paths(self) -> tuple[str, ...]:
+        return tuple(c.path for c in self.categories if c.is_pivot)
 
 
 def fix_word_boundary(pattern: str) -> str:
@@ -51,7 +68,7 @@ def fix_word_boundary(pattern: str) -> str:
 
 
 def _compile(patterns: list[str]) -> list[re.Pattern[str]]:
-    return [re.compile(fix_word_boundary(p), re.IGNORECASE) for p in patterns]
+    return [re.compile(fix_word_boundary(strip_accents(p)), re.IGNORECASE) for p in patterns]
 
 
 @lru_cache
@@ -69,6 +86,7 @@ def load_taxonomy() -> Taxonomy:
             content_patterns=_compile(c.get("content_indices", [])),
             lot_aware=bool(c.get("lot_aware", False)),
             doc_type_hint=c.get("doc_type_hint", "AUTRES"),
+            is_pivot=bool(c.get("is_pivot", False)),
         )
         for c in raw["categories"]
     ]

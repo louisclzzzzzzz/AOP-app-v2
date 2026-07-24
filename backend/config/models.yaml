@@ -25,7 +25,11 @@ llm:
   # Température basse partout : on veut de la reproductibilité, pas de créativité
   temperature: 0.0
   max_retries: 3
-  timeout_seconds: 120
+  # Relevé de 120s : la synthèse projet (app/synthesis/engine.py) envoie désormais jusqu'à ~100k
+  # tokens de contexte par appel (§SYNTHESIS_TOTAL_CONTEXT_MAX_CHARS), un volume qui peut dépasser
+  # 120s de traitement — les autres usages (classification/complétude/extraction) restent sur des
+  # contextes bien plus courts, donc une limite plus haute ne fait qu'élargir la marge de sécurité.
+  timeout_seconds: 300
   # Espacement minimum entre deux appels chat structurés (file LLM mono-worker, §4
   # OPTIMISATION.md) — valeur prudente par défaut, à ajuster selon le palier de rate limit réel.
   min_interval_seconds: 1.0

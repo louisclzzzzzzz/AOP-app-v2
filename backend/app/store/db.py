@@ -45,6 +45,11 @@ _NEW_DOSSIER_COLUMNS = {
     "duplicate_of_dossier_id": "VARCHAR(36)",
     "duplicate_of_filename": "VARCHAR(512)",
     "duplicate_of_created_at": "DATETIME",
+    "synthese_projet_md": "TEXT",
+    "synthese_projet_model": "VARCHAR(128)",
+    "synthese_projet_status": "VARCHAR(16) DEFAULT 'not_generated'",
+    "synthese_projet_error": "TEXT",
+    "synthese_projet_generated_at": "DATETIME",
 }
 
 _NEW_DOCUMENT_COLUMNS = {

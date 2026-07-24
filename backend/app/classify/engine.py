@@ -25,7 +25,7 @@ from typing import Any
 from pydantic import BaseModel, create_model
 
 from app.classify.naming import build_normalized_filename
-from app.classify.taxonomy import Taxonomy, TaxonomyCategory, load_taxonomy
+from app.classify.taxonomy import Taxonomy, TaxonomyCategory, load_taxonomy, strip_accents
 from app.mistral.client import call_structured_chat
 from app.mistral.validation import confidence_validator
 from app.settings import get_models_config
@@ -103,6 +103,7 @@ def extract_lot_signal(text: str) -> str | None:
 def _score_text(text: str, taxonomy: Taxonomy, *, use_content: bool) -> list[SignalMatch]:
     if not text:
         return []
+    text = strip_accents(text)
     matches: list[SignalMatch] = []
     for cat in taxonomy.categories:
         patterns = cat.content_patterns if use_content else cat.filename_patterns

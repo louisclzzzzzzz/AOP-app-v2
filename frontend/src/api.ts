@@ -215,6 +215,11 @@ export async function getExtractionReport(dossierId: string): Promise<Extraction
   return handle<ExtractionReport>(res)
 }
 
+export async function generateProjectSynthesis(dossierId: string): Promise<Dossier> {
+  const res = await fetch(`/api/dossiers/${dossierId}/synthese-projet/generate`, { method: 'POST' })
+  return handle<Dossier>(res)
+}
+
 export function dossierWebSocketUrl(id: string): string {
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
   return `${protocol}//${window.location.host}/ws/dossiers/${id}`

@@ -48,3 +48,14 @@ def test_every_category_has_a_label():
     taxonomy = load_taxonomy()
     for c in taxonomy.categories:
         assert c.label.strip()
+
+
+def test_dpgf_category_exists_and_matches_filename():
+    """Cas réel trouvé sur dce_grand_pic2 : sans catégorie TECH/DPGF, la classification (LLM de
+    secours) forçait les DPGF (décomposition du prix, par lot) dans TECH/PLANNING au seul motif
+    qu'ils sont "associés à un lot technique" — ex. 25006-DPGF-ELCF-DCE.pdf, confiance 0.95."""
+    taxonomy = load_taxonomy()
+    dpgf = taxonomy.by_path("TECH/DPGF")
+    assert dpgf is not None
+    assert dpgf.is_pivot is True
+    assert any(p.search("25006-DPGF-ELCF-DCE.pdf") for p in dpgf.filename_patterns)

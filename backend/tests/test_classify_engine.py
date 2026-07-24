@@ -82,6 +82,85 @@ def test_unambiguous_signal_is_classified_by_rule_without_llm(monkeypatch):
     assert outcome.model_name is None
 
 
+def test_score_content_matches_despite_missing_accents():
+    """Cas réel trouvé en testant un dossier réel (dce_grand_pic2) : le titre d'un vrai RICT
+    extrait d'un PDF était "RAPPORT INITIAL DE CONTROLE TECHNIQUE" (capitales, sans accent sur
+    "CONTROLE") — le content_index de TECH/RICT ("rapport initial de contrôle technique", avec
+    accent) ne matchait donc jamais, faisant perdre tout signal contenu pour ce type de document."""
+    matches = engine.score_content("RAPPORT INITIAL DE CONTROLE TECHNIQUE V2 / N° : CT/12440/0426/0250")
+    assert "TECH/RICT" in [m.category_path for m in matches]
+
+
+def test_rict_with_unaccented_title_is_no_longer_misrouted_to_arrete_pc():
+    """Reproduction du bug réel : un RICT (nom de fichier net : "rict") dont le corps mentionne
+    aussi "permis de construire"/"arrêté" (référence courante à l'opération auditée, pas au type
+    du document lui-même) faisait gagner TECH/ARRETE PC par les seuls signaux de contenu, tant que
+    l'accent manquant sur "CONTROLE" empêchait TECH/RICT de marquer le moindre point côté contenu.
+    Avec l'accord-pliage des motifs ET le resserrement des content_indices d'ARRETE PC (qui exige
+    désormais une tournure propre à un arrêté/PC, pas une simple mention de passage), TECH/RICT
+    l'emporte nettement — classé correctement par règle, sans même avoir besoin d'arbitrage LLM."""
+    outcome = classify_document_by_rules(
+        relative_path="Selection de sources/24-04-26 Rapport RICT.pdf",
+        filename="24-04-26 Rapport RICT.pdf",
+        file_category=FileCategory.PDF.value,
+        non_analyzable_reason=None,
+        content_excerpt=(
+            "RAPPORT INITIAL DE CONTROLE TECHNIQUE V2\n"
+            "Construction d'une résidence de tourisme, dans le cadre du permis de construire "
+            "délivré par arrêté municipal."
+        ),
+    )
+    assert outcome is not None
+    assert outcome.category == "TECH/RICT"
+
+
+def test_cctp_chapter_mentioning_arrete_in_passing_no_longer_scores_arrete_pc():
+    """Reproduction du bug réel trouvé sur dce_chu_rouen : une série uniforme de 24 fichiers
+    "CCTP-CHAP 01" à "22" (même dossier, même convention de nom, dont 20 correctement classés
+    TECH/CCTP TRAVAUX) voyait 4 de ses fichiers basculer à tort en TECH/ARRETE PC — leur contenu
+    mentionnait "arrêté"/"permis de construire" en passant (une CCTP cite couramment la
+    réglementation applicable), suffisant à l'ancien score générique pour battre un nom de fichier
+    pourtant net et cohérent avec les 20 autres fichiers de la même série."""
+    content = (
+        "Cahier des clauses techniques particulières — Lot étanchéité.\n"
+        "Les travaux sont réalisés conformément à l'arrêté en vigueur et dans le respect du "
+        "permis de construire délivré pour l'opération."
+    )
+    matches = engine.score_content(content)
+    assert "TECH/ARRETE PC" not in [m.category_path for m in matches]
+
+    # classify_document_by_rules peut rester ambigu (None, arbitrage LLM) à cause d'une tout
+    # autre ambiguïté préexistante ASS/CCTP vs TECH/CCTP TRAVAUX (les deux partagent le même
+    # content_index "cahier des clauses techniques particulières") — hors sujet ici. Ce qui
+    # compte : TECH/ARRETE PC ne doit plus jamais gagner sur ce texte.
+    outcome = classify_document_by_rules(
+        relative_path="CONFIDENTIEL CHU ROUEN/SOURCES/CCTP-CHAP 02 Ind C ETANCHEITE.pdf",
+        filename="CCTP-CHAP 02 Ind C ETANCHEITE.pdf",
+        file_category=FileCategory.PDF.value,
+        non_analyzable_reason=None,
+        content_excerpt=content,
+    )
+    assert outcome is None or outcome.category != "TECH/ARRETE PC"
+
+
+def test_real_arrete_pc_document_is_still_correctly_classified():
+    """Le resserrement des content_indices (§test ci-dessus) ne doit pas faire perdre la
+    détection d'un vrai arrêté de permis de construire — seulement les mentions de passage."""
+    outcome = classify_document_by_rules(
+        relative_path="ADMIN/Arrete PC.pdf",
+        filename="Arrete PC.pdf",
+        file_category=FileCategory.PDF.value,
+        non_analyzable_reason=None,
+        content_excerpt=(
+            "Vu le code de l'urbanisme,\n"
+            "ARRETE DE PERMIS DE CONSTRUIRE N° PC 076 540 16 R0084\n"
+            "Article 1er : le permis de construire est accordé."
+        ),
+    )
+    assert outcome is not None
+    assert outcome.category == "TECH/ARRETE PC"
+
+
 def test_ambiguous_document_returns_none_for_rules():
     """"RC 2024.pdf" est volontairement ambigu au niveau nom (existe côté ADMIN et ASS) et le
     contenu seul ne suffit pas (score 1, sous le seuil) : doit rester ambigu (LLM nécessaire)."""

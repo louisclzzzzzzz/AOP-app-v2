@@ -193,6 +193,16 @@ class Dossier(Base):
     synthese_ia_model: Mapped[str | None] = mapped_column(String(128), nullable=True)
     synthese_ia_generated_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
+    # Synthèse projet — Phase 1 du protocole d'analyse (refs/PHASE ANALYSE/00_PROTOCOLE.md),
+    # rapport narratif exhaustif (identité, économie, équipe, RICT, géotechnique…) relisant
+    # directement les documents pivots (app/synthesis/) — distincte de `synthese_ia` ci-dessus.
+    # Générée à la demande de l'expert, jamais automatiquement enchaînée à l'étape 3.
+    synthese_projet_md: Mapped[str | None] = mapped_column(Text, nullable=True)
+    synthese_projet_model: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    synthese_projet_status: Mapped[str] = mapped_column(String(16), default="not_generated")
+    synthese_projet_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    synthese_projet_generated_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_now)
     updated_at: Mapped[dt.datetime] = mapped_column(
         DateTime(timezone=True), default=_now, onupdate=_now
