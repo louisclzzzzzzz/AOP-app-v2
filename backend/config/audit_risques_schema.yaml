@@ -1,0 +1,187 @@
+# Schéma de l'audit des risques — Phase 2 du protocole d'analyse
+# (refs/PHASE ANALYSE/00_PROTOCOLE.md, section "INSTRUCTIONS POUR LA PHASE 2 - ÉVALUATION DES
+# RISQUES", plan de l'audit A→G + [GRILLE DE RÉFÉRENCE MÉTIER]).
+#
+# Contrairement à `synthese_projet_schema.yaml` (Phase 1, un THÈME = une section narrative), ce
+# fichier modélise l'audit critique en SECTIONS d'ouvrage : chacune correspond à une (ou deux)
+# sections A→G du protocole, avec ses documents pivots, ses points de vérification (→) et sa
+# grille d'aléas. Chaque section produit, via un unique appel LLM, une LISTE de risques
+# structurés (statut 🔴/🟠/🟢 + exposé/analyse expert/impact assurabilité/recommandation/source),
+# assemblés ensuite en (1) un tableau récapitulatif synoptique et (2) une analyse détaillée
+# section par section (app/audit/).
+#
+# Champs par section :
+#   id                 : identifiant stable (ordre du fichier = ordre du rapport final)
+#   titre              : titre de section (### dans le rapport assemblé)
+#   pivot_categories   : chemins `taxonomy.yaml` dont les documents classifiés sont fournis en
+#                        contexte au LLM, par ordre de priorité
+#   cctp_keywords      : mots-clés (insensibles à la casse/aux accents) qui restreignent les
+#                        catégories "par lot" (TECH/CCTP TRAVAUX, TECH/DPGF) aux seuls lots
+#                        pertinents pour cette section — sans quoi les ~25 CCTP d'un gros dossier
+#                        satureraient le budget de contexte et dilueraient l'analyse. Les autres
+#                        catégories pivots (RICT, étude de sol, notice) ne sont jamais filtrées.
+#   georisques_aspects : aspects de données publiques Géorisques (app/audit/georisques.py) injectés
+#                        dans le prompt comme référentiel officiel à confronter aux documents :
+#                        seisme, rga (retrait-gonflement argile), inondation, radon, cavites, mvt.
+#   points_verification: les points de vérification (→) du protocole pour cette section, transmis
+#                        tels quels au LLM comme grille de contrôle.
+#   instructions       : consigne de rédaction/périmètre transmise telle quelle au LLM.
+
+sections:
+  - id: infrastructure_fondations
+    titre: "Sections A & B — Fondations, parties enterrées et dallage"
+    pivot_categories: ["TECH/ETUDE DE SOL", "TECH/RICT", "TECH/CCTP TRAVAUX"]
+    cctp_keywords:
+      ["fondation", "gros oeuvre", "gros-oeuvre", "gros œuvre", "terrassement", "vrd",
+       "reseau", "assainissement", "soutenement", "demolition", "dallage", "beton"]
+    georisques_aspects: ["seisme", "rga", "inondation", "cavites", "mvt"]
+    points_verification: >
+      → Tassement : cohérence des contraintes admissibles entre l'étude de sol (G2) et le CCTP,
+      type de fondation, compressibilité du sol, Eurocodes 2 et 7.
+      → Retrait-gonflement d'argile (RGA) : profondeurs d'ancrage conformes à la G2 et au DTU
+      13.1, cohérence avec la carte RGA de Géorisques.
+      → Cavité / dissolution : étude de sol G2, PPRN, historique du site, dispositions CCTP.
+      → Conception : adaptation structurelle aux cavités ou à l'hétérogénéité du sol.
+      → Étanchéité verticale : type de protection (cuvelage DTU 14.1 ou étanchéité DTU 20.1) vs
+      niveau d'eau EH / plus hautes eaux.
+      → Drainage : présence, exutoire, compatibilité avec le type de sol et les fondations.
+      → Poussée hydrostatique : calcul du lestage ou du radier vs sous-pression.
+      → Risques sanitaires : sols pollués (diagnostic, compatibilité membranes/bétons), radon
+      (département en catégorie 3, mise en dépression du vide sanitaire).
+    instructions: >
+      Audite les fondations, l'infrastructure enterrée (parties en contact avec le sol et l'eau)
+      et le dallage. Confronte systématiquement le couple sol/structure : traque tout risque de
+      tassement différentiel, de rupture de continuité structurelle, et confronte le niveau des
+      plus hautes eaux (NPHE/EH) au complexe de protection (cuvelage ou étanchéité + drainage).
+      Analyse l'agressivité chimique de l'eau souterraine et ses conséquences sur le choix des
+      ciments et la protection des armatures (classes d'exposition XA). Statue explicitement sur
+      les risques naturels du site (séisme, RGA, inondation, cavités) en confrontant les données
+      Géorisques officielles fournies aux prescriptions de l'étude de sol et du CCTP.
+
+  - id: superstructure
+    titre: "Section C — Superstructure (structure, gros œuvre, charpente)"
+    pivot_categories: ["TECH/CCTP TRAVAUX", "TECH/RICT"]
+    cctp_keywords:
+      ["gros oeuvre", "gros-oeuvre", "gros œuvre", "structure", "charpente", "couverture",
+       "beton", "bois", "metal", "ossature"]
+    georisques_aspects: ["seisme"]
+    points_verification: >
+      → Stabilité & contreventement : continuité des voiles de contreventement, cheminement des
+      efforts, descentes de charges.
+      → Joints de dilatation : emplacement, largeur, respect des longueurs maximales (DTU 20.1),
+      martèlement sismique entre blocs.
+      → Séisme : catégorie d'importance, transparence des niveaux, respect des règles PS, mission
+      de contrôle PS.
+      → Charpente : assemblages et fixations (Eurocode 5 / EC3), altération du matériau (classe
+      d'emploi bois, traitement, corrosion métal), contreventement / anti-flambement.
+      → Stabilité au feu : réglementation ERP / code du travail, conception compartimentée,
+      calculs à chaud, cohérence des degrés CF/SF.
+    instructions: >
+      Audite la superstructure (structure béton armé / gros œuvre, charpente bois ou métallique,
+      contreventement, joints de dilatation, stabilité au feu). Analyse la continuité des
+      descentes de charges et le comportement d'ensemble sous séisme (zone et catégorie
+      d'importance fournies par Géorisques). Signale toute incohérence entre les attentes
+      structurelles du BET, les prescriptions CCTP et les avis du bureau de contrôle (ex. degrés
+      coupe-feu, densité de contreventement). Traque les conceptions non courantes (planchers
+      suspendus, porte-à-faux importants, éléments préfabriqués).
+
+  - id: couverture_etancheite
+    titre: "Section D — Étanchéité / Couverture / Toiture-terrasse"
+    pivot_categories: ["TECH/CCTP TRAVAUX", "TECH/RICT"]
+    cctp_keywords:
+      ["etancheite", "couverture", "toiture", "terrasse", "zinguerie", "bac acier",
+       "charpente couverture"]
+    georisques_aspects: []
+    points_verification: >
+      → Points singuliers : relevés d'étanchéité, noues, chéneaux, traversées de toiture,
+      émergences, conformité DTU série 43 / 40.
+      → Conception toiture-terrasse : protection (gravillons, dalles, végétalisation), pentes
+      minimales (DTU 43.1), adaptation au climat (montagne, fonte des neiges).
+      → Évacuation EP : nombre et section des descentes, trop-pleins, cheminement (intérieur
+      hors gel en montagne), calculs hydrauliques.
+      → Condensation : ventilation sous-toiture, position de l'écran, perméance, pare-vapeur,
+      procédé sarking le cas échéant.
+    instructions: >
+      Audite l'étanchéité et la couverture. Applique une tolérance zéro sur l'imprécision des
+      relevés, des pentes et de la localisation des évacuations d'eaux pluviales. Analyse les
+      points singuliers (émergences, noues, traversées) et la gestion de la condensation. Prends
+      en compte le climat du site (en montagne : gel des descentes extérieures, surcharges de
+      neige, mise en charge des terrasses). Signale toute prescription laissée à la charge de
+      l'entreprise sans localisation ni note de calcul, et tout avis suspendu du RICT sur ces
+      points.
+
+  - id: facades
+    titre: "Section E — Façades et menuiseries extérieures"
+    pivot_categories: ["TECH/CCTP TRAVAUX", "TECH/RICT"]
+    cctp_keywords:
+      ["facade", "menuiserie exterieure", "menuiseries exterieures", "bardage", "revetement de facade",
+       "revetements de facades", "ite", "isolation thermique exterieure", "veture", "pierre", "enduit"]
+    georisques_aspects: ["seisme"]
+    points_verification: >
+      → Stabilité des revêtements : mode de fixation (collé/vissé/agrafé), avis techniques ITE,
+      Qualibat, densité d'attaches (façade lourde en pierre agrafée, zone sismique).
+      → ITE : mode de fixation et arrêts, densité de fixation vs règle technique, isolant non en
+      contact du sol, tête de complexe protégée.
+      → Ossature bois / bardage ventilé : audit complet du complexe (pare-vapeur, lame d'air,
+      isolation), coupe-feu de la lame d'air.
+      → Menuiseries : liaison menuiserie/gros œuvre, classement AEV selon l'exposition,
+      calfeutrement, appuis et rejingots.
+    instructions: >
+      Audite les façades et menuiseries extérieures. Détecte et analyse le mode de fixation des
+      revêtements (ITE collée/vissée, pierre agrafée, bardage bois ventilé, vêture) et vérifie la
+      présence des avis techniques / ATEx pour tout procédé non courant. Confronte le classement
+      AEV des menuiseries à l'exposition du site. Analyse la continuité de l'étanchéité à l'eau et
+      à l'air aux points singuliers (liaisons, appuis, joints de dilatation traversant la façade).
+      En zone sismique, vérifie la tenue des parements lourds.
+
+  - id: equipements_enr
+    titre: "Section F — Équipements techniques / ENR / Fluides"
+    pivot_categories: ["TECH/CCTP TRAVAUX", "TECH/NOTICE", "TECH/RICT"]
+    cctp_keywords:
+      ["cvc", "chauffage", "ventilation", "climatisation", "plomberie", "sanitaire", "fluide",
+       "electricite", "electrique", "courants", "photovolt", "geothermie", "pac", "pompe a chaleur",
+       "chaufferie", "ascenseur", "cuisine", "desenfumage", "ssi", "reseau de chaleur", "aquatique",
+       "piscine", "traitement d'eau", "traitement d eau"]
+    georisques_aspects: []
+    points_verification: >
+      → TNC : identification des procédés innovants (géothermie / forages, photovoltaïque intégré
+      ou rapporté, PAC spécifiques, réseau de chaleur) — ATEC / ATEx / Pass'Innovation.
+      → Défaillance hydraulique : schémas hydrauliques, vases d'expansion, soupapes, ballons
+      tampon, clapets anti-retour, surpression.
+      → Dégradation physico-chimique : couples galvaniques, raccords diélectriques, pots à boues,
+      analyse d'eau, corrosion.
+      → Défaut électrique : NF C15-100, disjoncteurs, parafoudres, câbles Euroclasses en ERP, CEM.
+      → Défaillance acoustique / vibratoire : ancrages anti-vibratiles, pièges à son, propagation
+      solidienne des équipements lourds.
+      → Maintenabilité : trappes de visite, vannes d'isolement, chemins de manutention, accès pour
+      remplacement des équipements lourds.
+    instructions: >
+      Audite les équipements techniques, ENR et fluides. Détecte automatiquement et analyse toute
+      géothermie / forage, tout photovoltaïque (intégré vs rapporté, incidence sur l'étanchéité) et
+      toute chaufferie / réseau de chaleur (sécurité incendie ERP, ventilation, organes de coupure).
+      Statue explicitement sur le caractère TNC (technique non courante) de chaque procédé sous
+      ATEC/ATEx. Analyse les risques hydrauliques, électriques et de corrosion, ainsi que la
+      maintenabilité en exploitation (projette-toi en expert sinistre après 5 ans).
+
+  - id: amenagements_interieurs
+    titre: "Section G — Aménagements intérieurs / Second œuvre"
+    pivot_categories: ["TECH/CCTP TRAVAUX", "TECH/NOTICE", "TECH/RICT"]
+    cctp_keywords:
+      ["cloison", "doublage", "plafond", "carrelage", "faience", "revetement de sol", "revetements de sols",
+       "peinture", "chape", "projection", "serrurerie", "menuiserie interieure", "menuiseries interieures",
+       "sol souple", "parquet", "acoustique", "second oeuvre"]
+    georisques_aspects: []
+    points_verification: >
+      → Acoustique : isolement entre locaux, bruits de chocs (planchers), conformité aux arrêtés du
+      30/06/1999 et du 23/07/2013, étude acoustique pour habitations collectives, mission CTC.
+      → Sécurité d'utilisation : glissance des sols en zones humides (classement UPEC, indice de
+      glissance), garde-corps (NF P06-001 / P01-012).
+      → Accessibilité PMR : pentes, largeurs, seuils, quotas de places, arrêté du 2/12/2015.
+      → Stabilité des revêtements : collage / scellement, classement des locaux humides, AT si
+      nécessaire, fissuration du support.
+    instructions: >
+      Audite les aménagements intérieurs et le second œuvre. Analyse l'acoustique (isolement,
+      bruits de chocs des planchers, notamment sur structures bois ou mezzanines), la sécurité
+      d'utilisation (glissance en zones humides, garde-corps) et l'accessibilité PMR. Vérifie la
+      compatibilité des revêtements collés/scellés avec leur support et le classement des locaux
+      humides. Signale toute non-conformité PMR chiffrable (ratios, cotations manquantes).

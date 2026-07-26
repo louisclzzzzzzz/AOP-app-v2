@@ -3,6 +3,7 @@ import {
   correctExtraction,
   deepenMissingExtractionFields,
   documentFileUrl,
+  generateAuditRisques,
   generateProjectSynthesis,
   getCompleteness,
   getExtraction,
@@ -91,6 +92,7 @@ export function ExtractionSheet({ dossierId, dossier, documents, onApplied }: Pr
   const [error, setError] = useState<string | null>(null)
   const [deepening, setDeepening] = useState(false)
   const [generatingSynthesis, setGeneratingSynthesis] = useState(false)
+  const [generatingAudit, setGeneratingAudit] = useState(false)
 
   // --- Sélection manuelle de documents avant lancement (arborescence de l'étape 1) -----------
   const [showManualPicker, setShowManualPicker] = useState(false)
@@ -117,6 +119,13 @@ export function ExtractionSheet({ dossierId, dossier, documents, onApplied }: Pr
     return () => clearTimeout(timer)
   }, [dossier.synthese_projet_status, onApplied])
 
+  // Audit des risques (Phase 2) : même mécanique en arrière-plan que la synthèse projet.
+  useEffect(() => {
+    if (dossier.audit_risques_status !== 'generating') return
+    const timer = setTimeout(() => onApplied(), 3000)
+    return () => clearTimeout(timer)
+  }, [dossier.audit_risques_status, onApplied])
+
   const handleGenerateSynthesis = useCallback(async () => {
     setGeneratingSynthesis(true)
     setError(null)
@@ -127,6 +136,19 @@ export function ExtractionSheet({ dossierId, dossier, documents, onApplied }: Pr
       setError(e instanceof Error ? e.message : 'Échec du lancement de la synthèse projet')
     } finally {
       setGeneratingSynthesis(false)
+    }
+  }, [dossierId, onApplied])
+
+  const handleGenerateAudit = useCallback(async () => {
+    setGeneratingAudit(true)
+    setError(null)
+    try {
+      await generateAuditRisques(dossierId)
+      onApplied()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Échec du lancement de l'audit des risques")
+    } finally {
+      setGeneratingAudit(false)
     }
   }, [dossierId, onApplied])
 
@@ -473,6 +495,18 @@ ${extractionMd}
                 : 'Générer la synthèse projet (IA)'}
           </button>
           <button
+            onClick={handleGenerateAudit}
+            disabled={generatingAudit || dossier.audit_risques_status === 'generating'}
+            title="Audit critique des risques DO/TRC section par section (fondations, structure, couverture, façades, équipements, aménagements), croisant les CCTP/RICT/étude de sol et les données publiques Géorisques — Phase 2 du protocole d'analyse"
+            className="rounded-md border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50 disabled:opacity-50"
+          >
+            {dossier.audit_risques_status === 'generating'
+              ? 'Génération en cours…'
+              : dossier.audit_risques_md
+                ? "Régénérer l'audit des risques (IA)"
+                : "Générer l'audit des risques (IA)"}
+          </button>
+          <button
             onClick={handleDownloadReport}
             disabled={downloadingReport}
             className="rounded-md border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50 disabled:opacity-50"
@@ -508,6 +542,24 @@ ${extractionMd}
         >
           <div className="max-h-[40rem] overflow-y-auto p-4">
             <Markdown text={dossier.synthese_projet_md} />
+          </div>
+        </CollapsiblePanel>
+      )}
+
+      {dossier.audit_risques_status === 'error' && dossier.audit_risques_error && (
+        <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">
+          Échec de l'audit des risques : {dossier.audit_risques_error}
+        </p>
+      )}
+
+      {dossier.audit_risques_md && (
+        <CollapsiblePanel
+          title="Audit des risques — Phase 2"
+          subtitle="Rapport généré par IA (Géorisques inclus)"
+          defaultCollapsed={false}
+        >
+          <div className="max-h-[40rem] overflow-y-auto p-4">
+            <Markdown text={dossier.audit_risques_md} />
           </div>
         </CollapsiblePanel>
       )}
