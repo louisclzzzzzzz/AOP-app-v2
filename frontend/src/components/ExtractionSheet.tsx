@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   correctExtraction,
-  deepenMissingExtractionFields,
   documentFileUrl,
   generateAuditRisques,
   generateProjectSynthesis,
@@ -70,6 +69,16 @@ function escapeMd(value: string): string {
   return value.replace(/\|/g, '\\|').replace(/\r?\n/g, ' ')
 }
 
+/** Retire le titre `# ...` en première ligne d'un rapport IA (synthèse projet, audit des
+ * risques) avant de l'inclure sous un titre `##` déjà porté par la section englobante. */
+function stripLeadingHeading(md: string): string {
+  const lines = md.split('\n')
+  if (lines[0]?.startsWith('# ')) {
+    return lines.slice(1).join('\n').replace(/^\n+/, '')
+  }
+  return md
+}
+
 function downloadTextFile(filename: string, content: string) {
   const blob = new Blob([content], { type: 'text/markdown;charset=utf-8' })
   const url = URL.createObjectURL(blob)
@@ -90,7 +99,6 @@ export function ExtractionSheet({ dossierId, dossier, documents, onApplied }: Pr
   const [validating, setValidating] = useState(false)
   const [downloadingReport, setDownloadingReport] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [deepening, setDeepening] = useState(false)
   const [generatingSynthesis, setGeneratingSynthesis] = useState(false)
   const [generatingAudit, setGeneratingAudit] = useState(false)
 
@@ -226,22 +234,6 @@ export function ExtractionSheet({ dossierId, dossier, documents, onApplied }: Pr
     }
   }, [dossierId, onApplied, selectedDocIds])
 
-  const handleDeepenMissing = useCallback(
-    async () => {
-      setDeepening(true)
-      setError(null)
-      try {
-        const updated = await deepenMissingExtractionFields(dossierId)
-        setEntries(updated)
-      } catch (e) {
-        setError(e instanceof Error ? e.message : "Échec de l'approfondissement")
-      } finally {
-        setDeepening(false)
-      }
-    },
-    [dossierId],
-  )
-
   const handleCorrection = useCallback(
     async (entry: ExtractionEntry, finalValue: string) => {
       setSavingId(entry.field_id)
@@ -331,6 +323,17 @@ export function ExtractionSheet({ dossierId, dossier, documents, onApplied }: Pr
 
       const duration = formatDuration(dossier.created_at, dossier.extraction_validated_at ?? dossier.updated_at)
 
+      // La synthèse projet et l'audit des risques portent déjà leur propre titre `# ...` en
+      // première ligne : on le retire pour que le titre de section `##` ci-dessous fasse
+      // office de titre unique, cohérent avec le reste du rapport (Arborescence, Pièces,
+      // Extraction).
+      const syntheseMd = dossier.synthese_projet_md
+        ? stripLeadingHeading(dossier.synthese_projet_md)
+        : '_Synthèse projet non générée._'
+      const auditMd = dossier.audit_risques_md
+        ? stripLeadingHeading(dossier.audit_risques_md)
+        : '_Audit des risques non généré._'
+
       const md = `# Rapport d'analyse — ${dossier.original_filename}
 
 Généré le ${new Date().toLocaleString('fr-FR')}
@@ -347,6 +350,14 @@ ${piecesMd}
 ## Extraction des données — étape 3
 
 ${extractionMd}
+
+## Synthèse projet — Phase 1
+
+${syntheseMd}
+
+## Audit des risques — Phase 2
+
+${auditMd}
 `
 
       const safeName = dossier.original_filename.replace(/\.[^./]+$/, '').replace(/[^a-zA-Z0-9._-]+/g, '_')
@@ -458,7 +469,6 @@ ${extractionMd}
 
   const isReview = status === 'extraction_review'
   const foundCount = entries.filter((e) => e.final_value).length
-  const missingCount = entries.length - foundCount
 
   return (
     <div className="flex flex-col gap-4">
@@ -472,16 +482,6 @@ ${extractionMd}
           </span>
         </div>
         <div className="flex items-center gap-2">
-          {isReview && missingCount > 0 && (
-            <button
-              onClick={handleDeepenMissing}
-              disabled={deepening}
-              title="Recherche élargie par mots-clés sur tout le dossier pour tous les champs restés absents"
-              className="rounded-md border border-blue-200 bg-blue-50 px-3 py-2 text-sm font-medium text-blue-700 hover:bg-blue-100 disabled:opacity-50"
-            >
-              {deepening ? 'Recherche en cours…' : `Approfondir les ${missingCount} champ${missingCount > 1 ? 's' : ''} manquant${missingCount > 1 ? 's' : ''}`}
-            </button>
-          )}
           <button
             onClick={handleGenerateSynthesis}
             disabled={generatingSynthesis || dossier.synthese_projet_status === 'generating'}
