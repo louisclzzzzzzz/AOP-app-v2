@@ -50,6 +50,11 @@ _NEW_DOSSIER_COLUMNS = {
     "synthese_projet_status": "VARCHAR(16) DEFAULT 'not_generated'",
     "synthese_projet_error": "TEXT",
     "synthese_projet_generated_at": "DATETIME",
+    "audit_risques_md": "TEXT",
+    "audit_risques_model": "VARCHAR(128)",
+    "audit_risques_status": "VARCHAR(16) DEFAULT 'not_generated'",
+    "audit_risques_error": "TEXT",
+    "audit_risques_generated_at": "DATETIME",
 }
 
 _NEW_DOCUMENT_COLUMNS = {
