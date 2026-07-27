@@ -5,6 +5,7 @@ app/ingestion/ ; ce module ne fait que parler au SDK de façon fiable.
 """
 from __future__ import annotations
 
+import json
 import logging
 import threading
 import time
@@ -168,10 +169,12 @@ def call_structured_chat(
     client = get_client()
     cfg = get_models_config()["llm"]
     model = model or cfg["model"]
-    temperature = float(cfg.get("temperature", 0.0))
+    base_temperature = float(cfg.get("temperature", 0.0))
     timeout = cfg.get("timeout_seconds")
+    max_tokens = cfg.get("max_tokens")
+    parse_retries = int(cfg.get("parse_retries", 0))
 
-    def _do():
+    def _do(temperature: float):
         _throttle_llm_call()
         return client.chat.parse(
             model=model,
@@ -181,10 +184,32 @@ def call_structured_chat(
             ],
             response_format=response_model,
             temperature=temperature,
+            max_tokens=int(max_tokens) if max_tokens else None,
             timeout_ms=int(timeout) * 1000 if timeout else None,
         )
 
-    response = _retry(_do, what=what)
+    # Le décodage structuré de Mistral produit occasionnellement un JSON invalide sur de longues
+    # réponses (guillemet interne non échappé, troncature) — `chat.parse` lève alors une
+    # JSONDecodeError / ValidationError APRÈS le succès HTTP, donc hors du champ de `_retry` (qui ne
+    # couvre que les erreurs réseau/API MistralError). On re-tente ici en relevant légèrement la
+    # température pour casser une sortie déterministe malformée (à T=0 le décodage est glouton, donc
+    # re-jouer à l'identique reproduirait le même JSON cassé).
+    response = None
+    last_parse_error: Exception | None = None
+    for attempt in range(parse_retries + 1):
+        temperature = base_temperature if attempt == 0 else min(0.4, base_temperature + 0.2 * attempt)
+        try:
+            response = _retry(lambda: _do(temperature), what=what)
+            break
+        except (json.JSONDecodeError, ValueError) as exc:
+            last_parse_error = exc
+            logger.warning(
+                "Réponse structurée non parsable pour %s (tentative %d/%d, T=%.1f) : %s",
+                what, attempt + 1, parse_retries + 1, temperature, exc,
+            )
+    if response is None:
+        raise RuntimeError(f"Réponse structurée non parsable après {parse_retries + 1} tentative(s) pour {what} : {last_parse_error}")
+
     if not response.choices:
         raise RuntimeError(f"Réponse LLM vide pour : {what}")
     parsed = response.choices[0].message.parsed if response.choices[0].message else None

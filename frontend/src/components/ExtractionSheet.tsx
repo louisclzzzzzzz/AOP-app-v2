@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   correctExtraction,
-  deepenMissingExtractionFields,
   documentFileUrl,
+  generateAuditRisques,
   generateProjectSynthesis,
   getCompleteness,
   getExtraction,
@@ -69,6 +69,16 @@ function escapeMd(value: string): string {
   return value.replace(/\|/g, '\\|').replace(/\r?\n/g, ' ')
 }
 
+/** Retire le titre `# ...` en première ligne d'un rapport IA (synthèse projet, audit des
+ * risques) avant de l'inclure sous un titre `##` déjà porté par la section englobante. */
+function stripLeadingHeading(md: string): string {
+  const lines = md.split('\n')
+  if (lines[0]?.startsWith('# ')) {
+    return lines.slice(1).join('\n').replace(/^\n+/, '')
+  }
+  return md
+}
+
 function downloadTextFile(filename: string, content: string) {
   const blob = new Blob([content], { type: 'text/markdown;charset=utf-8' })
   const url = URL.createObjectURL(blob)
@@ -89,8 +99,8 @@ export function ExtractionSheet({ dossierId, dossier, documents, onApplied }: Pr
   const [validating, setValidating] = useState(false)
   const [downloadingReport, setDownloadingReport] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [deepening, setDeepening] = useState(false)
   const [generatingSynthesis, setGeneratingSynthesis] = useState(false)
+  const [generatingAudit, setGeneratingAudit] = useState(false)
 
   // --- Sélection manuelle de documents avant lancement (arborescence de l'étape 1) -----------
   const [showManualPicker, setShowManualPicker] = useState(false)
@@ -117,6 +127,13 @@ export function ExtractionSheet({ dossierId, dossier, documents, onApplied }: Pr
     return () => clearTimeout(timer)
   }, [dossier.synthese_projet_status, onApplied])
 
+  // Audit des risques (Phase 2) : même mécanique en arrière-plan que la synthèse projet.
+  useEffect(() => {
+    if (dossier.audit_risques_status !== 'generating') return
+    const timer = setTimeout(() => onApplied(), 3000)
+    return () => clearTimeout(timer)
+  }, [dossier.audit_risques_status, onApplied])
+
   const handleGenerateSynthesis = useCallback(async () => {
     setGeneratingSynthesis(true)
     setError(null)
@@ -127,6 +144,19 @@ export function ExtractionSheet({ dossierId, dossier, documents, onApplied }: Pr
       setError(e instanceof Error ? e.message : 'Échec du lancement de la synthèse projet')
     } finally {
       setGeneratingSynthesis(false)
+    }
+  }, [dossierId, onApplied])
+
+  const handleGenerateAudit = useCallback(async () => {
+    setGeneratingAudit(true)
+    setError(null)
+    try {
+      await generateAuditRisques(dossierId)
+      onApplied()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Échec du lancement de l'audit des risques")
+    } finally {
+      setGeneratingAudit(false)
     }
   }, [dossierId, onApplied])
 
@@ -203,22 +233,6 @@ export function ExtractionSheet({ dossierId, dossier, documents, onApplied }: Pr
       setRunning(false)
     }
   }, [dossierId, onApplied, selectedDocIds])
-
-  const handleDeepenMissing = useCallback(
-    async () => {
-      setDeepening(true)
-      setError(null)
-      try {
-        const updated = await deepenMissingExtractionFields(dossierId)
-        setEntries(updated)
-      } catch (e) {
-        setError(e instanceof Error ? e.message : "Échec de l'approfondissement")
-      } finally {
-        setDeepening(false)
-      }
-    },
-    [dossierId],
-  )
 
   const handleCorrection = useCallback(
     async (entry: ExtractionEntry, finalValue: string) => {
@@ -309,6 +323,17 @@ export function ExtractionSheet({ dossierId, dossier, documents, onApplied }: Pr
 
       const duration = formatDuration(dossier.created_at, dossier.extraction_validated_at ?? dossier.updated_at)
 
+      // La synthèse projet et l'audit des risques portent déjà leur propre titre `# ...` en
+      // première ligne : on le retire pour que le titre de section `##` ci-dessous fasse
+      // office de titre unique, cohérent avec le reste du rapport (Arborescence, Pièces,
+      // Extraction).
+      const syntheseMd = dossier.synthese_projet_md
+        ? stripLeadingHeading(dossier.synthese_projet_md)
+        : '_Synthèse projet non générée._'
+      const auditMd = dossier.audit_risques_md
+        ? stripLeadingHeading(dossier.audit_risques_md)
+        : '_Audit des risques non généré._'
+
       const md = `# Rapport d'analyse — ${dossier.original_filename}
 
 Généré le ${new Date().toLocaleString('fr-FR')}
@@ -325,6 +350,14 @@ ${piecesMd}
 ## Extraction des données — étape 3
 
 ${extractionMd}
+
+## Synthèse projet — Phase 1
+
+${syntheseMd}
+
+## Audit des risques — Phase 2
+
+${auditMd}
 `
 
       const safeName = dossier.original_filename.replace(/\.[^./]+$/, '').replace(/[^a-zA-Z0-9._-]+/g, '_')
@@ -436,7 +469,6 @@ ${extractionMd}
 
   const isReview = status === 'extraction_review'
   const foundCount = entries.filter((e) => e.final_value).length
-  const missingCount = entries.length - foundCount
 
   return (
     <div className="flex flex-col gap-4">
@@ -450,16 +482,6 @@ ${extractionMd}
           </span>
         </div>
         <div className="flex items-center gap-2">
-          {isReview && missingCount > 0 && (
-            <button
-              onClick={handleDeepenMissing}
-              disabled={deepening}
-              title="Recherche élargie par mots-clés sur tout le dossier pour tous les champs restés absents"
-              className="rounded-md border border-blue-200 bg-blue-50 px-3 py-2 text-sm font-medium text-blue-700 hover:bg-blue-100 disabled:opacity-50"
-            >
-              {deepening ? 'Recherche en cours…' : `Approfondir les ${missingCount} champ${missingCount > 1 ? 's' : ''} manquant${missingCount > 1 ? 's' : ''}`}
-            </button>
-          )}
           <button
             onClick={handleGenerateSynthesis}
             disabled={generatingSynthesis || dossier.synthese_projet_status === 'generating'}
@@ -471,6 +493,18 @@ ${extractionMd}
               : dossier.synthese_projet_md
                 ? 'Régénérer la synthèse projet (IA)'
                 : 'Générer la synthèse projet (IA)'}
+          </button>
+          <button
+            onClick={handleGenerateAudit}
+            disabled={generatingAudit || dossier.audit_risques_status === 'generating'}
+            title="Audit critique des risques DO/TRC section par section (fondations, structure, couverture, façades, équipements, aménagements), croisant les CCTP/RICT/étude de sol et les données publiques Géorisques — Phase 2 du protocole d'analyse"
+            className="rounded-md border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50 disabled:opacity-50"
+          >
+            {dossier.audit_risques_status === 'generating'
+              ? 'Génération en cours…'
+              : dossier.audit_risques_md
+                ? "Régénérer l'audit des risques (IA)"
+                : "Générer l'audit des risques (IA)"}
           </button>
           <button
             onClick={handleDownloadReport}
@@ -508,6 +542,24 @@ ${extractionMd}
         >
           <div className="max-h-[40rem] overflow-y-auto p-4">
             <Markdown text={dossier.synthese_projet_md} />
+          </div>
+        </CollapsiblePanel>
+      )}
+
+      {dossier.audit_risques_status === 'error' && dossier.audit_risques_error && (
+        <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">
+          Échec de l'audit des risques : {dossier.audit_risques_error}
+        </p>
+      )}
+
+      {dossier.audit_risques_md && (
+        <CollapsiblePanel
+          title="Audit des risques — Phase 2"
+          subtitle="Rapport généré par IA (Géorisques inclus)"
+          defaultCollapsed={false}
+        >
+          <div className="max-h-[40rem] overflow-y-auto p-4">
+            <Markdown text={dossier.audit_risques_md} />
           </div>
         </CollapsiblePanel>
       )}

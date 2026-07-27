@@ -7,14 +7,15 @@ depuis `completeness_validated`, jamais enchaîné automatiquement — même pri
 étapes précédentes.
 
 Un appel LLM par DOCUMENT de référence (pas par champ, §3 OPTIMISATION.md) : on appelle chaque
-document de référence distinct une fois, couvrant tous les champs qu'il concerne. Un champ
-introuvable dans ses documents de référence (absents du dossier, ou présents mais sans la
-valeur) est déclaré absent directement, sans recherche élargie automatique sur le reste du
-dossier. Deux mécanismes complémentaires, tous deux déclenchés explicitement par l'expert :
-`run_extraction_pipeline(document_ids=...)` restreint tout le run à une sélection manuelle de
-documents (couche 1 sans filtrage par catégorie), et `deepen_missing_fields` relance la
-recherche élargie (mots-clés) pour tous les champs restés absents en un seul passage, sans
-toucher aux champs déjà trouvés.
+document de référence distinct une fois, couvrant tous les champs qu'il concerne (couche 1).
+Un champ introuvable dans ses documents de référence (absents du dossier, ou présents mais sans
+la valeur) déclenche automatiquement une recherche élargie par mots-clés sur l'ensemble du
+dossier (couche 2, `layer2_candidates`/`plan_layer2_calls`), sans action de l'expert — le run
+standard va donc chercher le maximum d'information disponible en une seule fois. Seuls les
+champs toujours introuvables après cette recherche élargie sont déclarés absents, avec une
+justification explicite. `run_extraction_pipeline(document_ids=...)` reste le seul mécanisme
+séparé : une sélection manuelle de documents qui restreint tout le run (couche 1 sans filtrage
+par catégorie, pas de couche 2 — le périmètre a déjà été choisi par l'expert).
 """
 from __future__ import annotations
 
@@ -229,18 +230,37 @@ async def run_extraction_pipeline(dossier_id: str, *, document_ids: list[str] | 
             layer1_outcomes[f.id] = outcome
     await asyncio.to_thread(_persist, layer1_outcomes)
 
-    # --- Couche 2 : absent, aucun appel LLM (pas de recherche élargie automatique — voir
-    # `deepen_missing_fields` pour un approfondissement à la demande sur tous les champs
-    # restés absents) -------------------------------------------------------------------
+    # --- Couche 2 : approfondissement automatique (recherche élargie par mots-clés sur tout le
+    # dossier) pour tous les champs restés absents après la couche 1, en un seul passage — fusion
+    # de l'ancien mécanisme à la demande (`deepen_missing_fields`) dans le run standard, pour que
+    # l'expert n'ait jamais besoin de le déclencher manuellement. Non appliqué en sélection
+    # manuelle (`manual_scope`) : le périmètre documentaire a déjà été choisi par l'expert, une
+    # couche 2 élargirait le run au-delà de ce périmètre volontairement restreint. ----------------
     missing_fields = [f for f in schema.fields if f.id not in layer1_outcomes]
-    if missing_fields:
-        absent_message = (
-            "Aucune valeur trouvée dans les documents sélectionnés manuellement pour ce champ."
-            if manual_scope
-            else "Aucune valeur trouvée dans les documents de référence attendus pour ce champ."
-        )
-        absent_outcomes = {f.id: absent_outcome(absent_message) for f in missing_fields}
+    if missing_fields and manual_scope:
+        absent_outcomes = {
+            f.id: absent_outcome("Aucune valeur trouvée dans les documents sélectionnés manuellement pour ce champ.")
+            for f in missing_fields
+        }
         await asyncio.to_thread(_persist, absent_outcomes)
+    elif missing_fields:
+        layer2_calls = plan_layer2_calls(missing_fields, signals)
+        layer2_results = await _run_calls(layer2_calls)
+        layer2_outcomes: dict[str, ExtractionOutcome] = {
+            f.id: resolve_field(
+                f,
+                candidates=layer2_candidates(f, signals),
+                results_by_document=layer2_results,
+                match_layer=MatchLayer.CONTENT.value,
+                cross_check_required=False,
+            )
+            or absent_outcome(
+                "Aucune valeur trouvée, y compris après recherche élargie par mots-clés sur "
+                "l'ensemble du dossier."
+            )
+            for f in missing_fields
+        }
+        await asyncio.to_thread(_persist, layer2_outcomes)
 
     # --- Synthèse textuelle : un appel unique à partir des valeurs déjà résolues ------------
     def _read_field_values() -> list[tuple[str, str]]:
@@ -273,90 +293,3 @@ async def run_extraction_pipeline(dossier_id: str, *, document_ids: list[str] | 
         counters=_counters,
         recompute=lambda s, dossier: recompute_extraction_counters(s, dossier),
     )
-
-
-def _document_signals(dossier_id: str) -> list[DocumentSignal]:
-    with session_scope() as s:
-        documents = list_documents(s, dossier_id)
-        doc_snapshots = [
-            {
-                "id": d.id,
-                "filename": d.filename,
-                "final_category": d.final_category,
-                "final_lot": d.final_lot,
-                "classification_confidence": d.classification_confidence,
-                "text_cache_id": d.text_cache_id,
-            }
-            for d in documents
-        ]
-    return [build_document_signal(snap) for snap in doc_snapshots]
-
-
-async def deepen_missing_fields(dossier_id: str) -> None:
-    """Approfondissement de TOUS les champs restés absents, en un seul passage (§ docstring
-    module, point 2) : recherche élargie par mots-clés sur tout le dossier
-    (`layer2_candidates`/`plan_layer2_calls`/`MAX_LLM_CANDIDATES`), déclenchée explicitement par
-    l'expert depuis l'écran de validation de l'étape 3 — jamais automatique. `plan_layer2_calls`
-    regroupe déjà les champs par document candidat commun (un seul appel LLM peut couvrir
-    plusieurs champs manquants sur un même document), donc traiter tous les champs manquants
-    d'un coup est strictement plus économe que les approfondir un par un. Les champs déjà
-    trouvés ne sont pas touchés ; ceux qui restent introuvables après cette recherche élargie
-    sont mis à jour avec une justification explicite (pas laissés dans leur état d'origine)."""
-    schema = load_extraction_schema()
-
-    def _missing_field_ids() -> set[str]:
-        with session_scope() as s:
-            results = list_extraction_results(s, dossier_id)
-            return {r.field_id for r in results if not r.final_value}
-
-    missing_ids = await asyncio.to_thread(_missing_field_ids)
-    missing_fields = [f for f in schema.fields if f.id in missing_ids]
-    if not missing_fields:
-        return
-
-    signals = await asyncio.to_thread(_document_signals, dossier_id)
-    calls = plan_layer2_calls(missing_fields, signals)
-
-    results_by_document: dict[str, DocumentExtractionResult] = {}
-    for doc, fields_for_doc in calls:
-        doc = await asyncio.to_thread(ensure_document_ocr, dossier_id, doc)
-        result = await asyncio.to_thread(analyze_document, doc, fields_for_doc)
-        results_by_document[doc.document_id] = result
-
-    outcomes: dict[str, ExtractionOutcome] = {}
-    for f in missing_fields:
-        outcomes[f.id] = resolve_field(
-            f,
-            candidates=layer2_candidates(f, signals),
-            results_by_document=results_by_document,
-            match_layer=MatchLayer.CONTENT.value,
-            cross_check_required=False,
-        ) or absent_outcome(
-            "Recherche élargie effectuée sur les documents les plus proches par mots-clés : "
-            "aucune valeur trouvée."
-        )
-
-    def _persist() -> None:
-        with session_scope() as s:
-            for field_id, outcome in outcomes.items():
-                result = get_extraction_result_by_field(s, dossier_id, field_id)
-                assert result is not None
-                set_extraction_result(
-                    s,
-                    result,
-                    match_layer=outcome.match_layer,
-                    value=outcome.value,
-                    confidence=outcome.confidence,
-                    justification=outcome.justification,
-                    citation=outcome.citation,
-                    sources=outcome.sources,
-                    cross_check_status=outcome.cross_check_status,
-                    model_name=outcome.model_name,
-                    model_version=outcome.model_version,
-                    error=outcome.error,
-                )
-            dossier = get_dossier(s, dossier_id)
-            assert dossier is not None
-            recompute_extraction_counters(s, dossier)
-
-    await asyncio.to_thread(_persist)

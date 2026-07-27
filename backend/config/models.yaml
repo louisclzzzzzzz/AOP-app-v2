@@ -23,8 +23,19 @@ llm:
   # retiré du catalogue Mistral ; mistral-medium est nativement multimodal depuis 2505)
   multimodal_model: "mistral-medium-2604"
   # Température basse partout : on veut de la reproductibilité, pas de créativité
+  # Température basse partout : reproductibilité. Sur re-tentative après une réponse JSON
+  # structurée invalide (guillemet interne non échappé…), on relève légèrement la température
+  # (§parse_retries) pour casser une sortie déterministe malformée.
   temperature: 0.0
   max_retries: 3
+  # Plafond de tokens de sortie : les sections d'audit (Phase 2) et thèmes de synthèse (Phase 1)
+  # produisent de longs rapports structurés — sans plafond explicite, une réponse tronquée par le
+  # défaut du modèle donne un JSON invalide (JSONDecodeError). Généreux pour laisser passer une
+  # section entière de risques développés.
+  max_tokens: 8000
+  # Nombre de re-tentatives quand la réponse structurée n'est pas un JSON parsable (distinct de
+  # max_retries qui couvre les erreurs réseau/API). Chaque re-tentative relève la température.
+  parse_retries: 2
   # Relevé de 120s : la synthèse projet (app/synthesis/engine.py) envoie désormais jusqu'à ~100k
   # tokens de contexte par appel (§SYNTHESIS_TOTAL_CONTEXT_MAX_CHARS), un volume qui peut dépasser
   # 120s de traitement — les autres usages (classification/complétude/extraction) restent sur des

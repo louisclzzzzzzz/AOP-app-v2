@@ -9,6 +9,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
+from app.api.audit import router as audit_router
 from app.api.classification import router as classification_router
 from app.api.classification import taxonomy_router
 from app.api.completeness import pieces_checklist_router
@@ -56,6 +57,7 @@ app.include_router(pieces_checklist_router)
 app.include_router(extraction_router)
 app.include_router(extraction_schema_router)
 app.include_router(project_synthesis_router)
+app.include_router(audit_router)
 app.include_router(websocket_router)
 
 

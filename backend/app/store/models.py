@@ -203,6 +203,17 @@ class Dossier(Base):
     synthese_projet_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     synthese_projet_generated_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
+    # Audit des risques — Phase 2 du protocole d'analyse (refs/PHASE ANALYSE/00_PROTOCOLE.md),
+    # audit critique DO/TRC section par section (A→G) : tableau récapitulatif + analyse détaillée
+    # de chaque risque (statut 🔴/🟠/🟢, exposé/analyse expert/impact assurabilité/recommandation),
+    # relisant les CCTP/étude de sol/RICT pivots et croisant les données publiques Géorisques
+    # (app/audit/). Générée à la demande de l'expert, comme la Phase 1.
+    audit_risques_md: Mapped[str | None] = mapped_column(Text, nullable=True)
+    audit_risques_model: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    audit_risques_status: Mapped[str] = mapped_column(String(16), default="not_generated")
+    audit_risques_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    audit_risques_generated_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_now)
     updated_at: Mapped[dt.datetime] = mapped_column(
         DateTime(timezone=True), default=_now, onupdate=_now

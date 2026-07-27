@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pytest
+from pydantic import BaseModel
 
 from app.mistral.client import MistralNotConfiguredError, _retry, get_client
 from app.mistral.client import get_client as get_client_fn
@@ -102,6 +103,84 @@ def test_throttle_llm_call_disabled_when_interval_zero(isolated_workspace, monke
 
     client_mod._throttle_llm_call()
     client_mod._throttle_llm_call()
+
+
+class _FakeParsed:
+    def __init__(self, value):
+        self.parsed = value
+
+
+class _FakeChoice:
+    def __init__(self, value):
+        self.message = _FakeParsed(value)
+
+
+class _FakeResponse:
+    def __init__(self, value):
+        self.choices = [_FakeChoice(value)]
+        self.usage = None
+        self.model = "mistral-large-test"
+
+
+class _StubModel(BaseModel):
+    x: int
+
+
+def _install_llm_stub(monkeypatch, parse_side_effects):
+    """Branche un faux client dont chat.parse consomme successivement `parse_side_effects` :
+    une Exception est levée, le sentinel "OK" renvoie une réponse structurée valide."""
+    import app.mistral.client as client_mod
+
+    calls = {"temps": []}
+    seq = list(parse_side_effects)
+
+    class _Chat:
+        def parse(self, **kwargs):
+            calls["temps"].append(kwargs.get("temperature"))
+            effect = seq.pop(0)
+            if isinstance(effect, Exception):
+                raise effect
+            return _FakeResponse(_StubModel(x=1))
+
+    class _Client:
+        chat = _Chat()
+
+    monkeypatch.setattr(client_mod, "get_client", lambda: _Client())
+    monkeypatch.setattr(client_mod, "_throttle_llm_call", lambda: None)
+    monkeypatch.setattr(
+        client_mod, "get_models_config",
+        lambda: {"llm": {"model": "mistral-large-test", "temperature": 0.0, "max_retries": 3, "parse_retries": 2}},
+    )
+    return client_mod, calls
+
+
+def test_call_structured_chat_retries_on_invalid_json(isolated_workspace, monkeypatch):
+    import json
+
+    client_mod, calls = _install_llm_stub(
+        monkeypatch, [json.JSONDecodeError("Expecting ',' delimiter", "{}", 0), "OK"]
+    )
+
+    parsed, api_model = client_mod.call_structured_chat(
+        system_prompt="s", user_prompt="u", response_model=_StubModel, what="test"
+    )
+
+    assert parsed.x == 1
+    assert api_model == "mistral-large-test"
+    # 2 appels : le 1er à T=0.0 (échec JSON), le 2e à température relevée
+    assert len(calls["temps"]) == 2
+    assert calls["temps"][0] == 0.0
+    assert calls["temps"][1] > 0.0
+
+
+def test_call_structured_chat_raises_after_parse_retries_exhausted(isolated_workspace, monkeypatch):
+    import json
+
+    client_mod, calls = _install_llm_stub(monkeypatch, [json.JSONDecodeError("bad", "{}", 0)] * 3)
+
+    with pytest.raises(RuntimeError, match="non parsable"):
+        client_mod.call_structured_chat(system_prompt="s", user_prompt="u", response_model=_StubModel, what="test")
+    assert len(calls["temps"]) == 3
 
 
 def test_ocr_semaphore_bounds_concurrency(isolated_workspace, monkeypatch):

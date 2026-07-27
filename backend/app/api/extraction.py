@@ -17,7 +17,7 @@ from app.api.schemas import (
     DossierOut,
 )
 from app.extraction.extraction_schema import load_extraction_schema
-from app.extraction.pipeline import deepen_missing_fields, ensure_results_initialized, run_extraction_pipeline
+from app.extraction.pipeline import ensure_results_initialized, run_extraction_pipeline
 from app.extraction.report import REPORT_JSON_FILENAME, validate_extraction
 from app.pipeline_support import run_pipeline_safely
 from app.progress import progress_manager
@@ -135,27 +135,6 @@ async def correct_extraction(
         assert dossier is not None
         recompute_extraction_counters(s, dossier)
         return _entry_to_out(result)
-
-
-@router.post("/{dossier_id}/extraction/deepen", response_model=list[ExtractionEntryOut])
-async def deepen_missing_extraction_fields(dossier_id: str) -> list[ExtractionEntryOut]:
-    """Approfondissement de TOUS les champs restés absents en un seul passage : recherche
-    élargie par mots-clés sur tout le dossier (§extraction/engine.py), déclenchée explicitement
-    par l'expert — ne touche jamais aux champs déjà trouvés."""
-    with session_scope() as s:
-        dossier = get_dossier(s, dossier_id)
-        if dossier is None:
-            raise HTTPException(404, "Dossier introuvable")
-
-    try:
-        await deepen_missing_fields(dossier_id)
-    except Exception as exc:
-        logger.exception("Échec de l'approfondissement des champs manquants pour %s", dossier_id)
-        raise HTTPException(500, f"Échec de l'approfondissement : {exc}") from exc
-
-    with session_scope() as s:
-        results = ensure_results_initialized(s, dossier_id)
-        return [_entry_to_out(r) for r in results]
 
 
 @router.post("/{dossier_id}/extraction/validate", response_model=ExtractionApplyOut)

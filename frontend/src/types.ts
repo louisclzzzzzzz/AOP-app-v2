@@ -52,6 +52,11 @@ export interface Dossier {
   synthese_projet_status: 'not_generated' | 'generating' | 'done' | 'error'
   synthese_projet_error: string | null
   synthese_projet_generated_at: string | null
+  audit_risques_md: string | null
+  audit_risques_model: string | null
+  audit_risques_status: 'not_generated' | 'generating' | 'done' | 'error'
+  audit_risques_error: string | null
+  audit_risques_generated_at: string | null
   duplicate_of_dossier_id: string | null
   duplicate_of_filename: string | null
   duplicate_of_created_at: string | null

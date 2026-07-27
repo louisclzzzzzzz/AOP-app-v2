@@ -10,13 +10,14 @@ plutôt que sur le nombre d'appels (§3 OPTIMISATION.md) :
 2. **Recoupement dérivé, pas appelé** : pour les champs critiques (montants, dates, garanties),
    les valeurs obtenues via plusieurs documents de référence lors de l'étape 1 sont comparées
    programmatiquement après coup (`resolve_field`) — aucun appel LLM dédié au recoupement.
-3. **Absent par défaut** : un champ introuvable dans ses documents de référence (absents du
-   dossier, ou présents mais sans la valeur) est déclaré absent directement → `value=None`,
-   justification explicite, aucun appel LLM supplémentaire dans le run standard.
-4. **Approfondissement à la demande** (`layer2_candidates`/`plan_layer2_calls`) : sur un champ
-   resté absent, l'expert peut déclencher une recherche élargie ponctuelle (mots-clés sur tout
-   le dossier, plafond `MAX_LLM_CANDIDATES`) — ce n'est plus une couche automatique du run
-   standard, mais une action explicite par champ (endpoint `.../extraction/{field_id}/deepen`).
+3. **Absent après couche 1, jamais laissé tel quel** : un champ introuvable dans ses documents de
+   référence (absents du dossier, ou présents mais sans la valeur) déclenche automatiquement une
+   recherche élargie (couche 2, ci-dessous) — le run standard va chercher le maximum
+   d'information possible sans action supplémentaire de l'expert.
+4. **Approfondissement automatique** (`layer2_candidates`/`plan_layer2_calls`) : pour chaque champ
+   resté absent après la couche 1, une recherche élargie par mots-clés sur tout le dossier
+   (plafond `MAX_LLM_CANDIDATES` documents candidats) est lancée par `run_extraction_pipeline`
+   lui-même, en un seul passage groupé par document candidat commun — pas une action séparée.
 5. **Sélection manuelle de documents** (`plan_manual_calls`) : alternative au run standard,
    déclenchée en amont — l'expert restreint tout le run à une liste de documents choisis dans
    l'arborescence organisée ; chaque document sélectionné est alors interrogé pour l'ensemble
