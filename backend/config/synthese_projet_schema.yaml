@@ -12,11 +12,15 @@
 #   format             : indication de forme donnée au LLM (lignes/prose/tableau/liste/mixte)
 #   source             : "extraction_fields" (aucun appel LLM, reformatage déterministe de
 #                        valeurs déjà résolues à l'étape 3) ou "documents" (relecture directe
-#                        des documents pivots de ce thème, un appel LLM dédié)
+#                        des documents pivots de ce thème, en map-reduce : un appel LLM par
+#                        document pour en tirer un relevé factuel par thème, puis un appel LLM
+#                        final par thème qui recoupe ces relevés — app/synthesis/engine.py)
 #   extraction_field_ids: pour source=extraction_fields, champs de `extraction_schema.yaml` à
 #                        reformater tels quels
 #   pivot_categories   : pour source=documents, chemins `taxonomy.yaml` dont les documents
-#                        classifiés sont fournis en contexte au LLM, par ordre de priorité
+#                        classifiés alimentent ce thème. TOUS sont relus intégralement (l'étape
+#                        de map n'a plus de budget de contexte à saturer) ; l'ordre ne détermine
+#                        plus que l'ordre d'apparition des relevés dans le prompt final
 #   grounding_field_ids: champs déjà résolus à l'étape 3 (extraction_schema.yaml) injectés dans
 #                        le prompt comme "données déjà validées" — garantit la cohérence avec
 #                        l'étape 3 sans réextraction, et permet de recouper CCTP/notice/RICT
@@ -50,18 +54,15 @@ topics:
     # catégorie 2" pour tout l'ensemble) et la rapportait comme classement unique, alors que
     # c'est la lecture la moins fine des trois sources disponibles.
     #
-    # ORDRE IMPORTANT : `select_topic_documents` (app/synthesis/engine.py) parcourt les
-    # catégories dans cet ordre, et `_build_documents_context` remplit le budget dans cet ordre
-    # jusqu'à épuisement — donc les catégories placées en tête sont TOUJOURS incluses, celles en
-    # fin de liste seulement si le budget le permet encore. TECH/CCTP TRAVAUX contient souvent
-    # 15-25 documents (un par lot) : le mettre avant TECH/ARRETE PC (1 seul document, mais celui
-    # qui porte justement la version concurrente du classement ERP) épuiserait le budget sur les
-    # lots CCTP avant même d'atteindre l'arrêté PC — exactement l'inverse de l'effet recherché
-    # (bug constaté en testant ce changement : le thème s'est mis à ne voir QUE la version CCTP,
-    # au lieu de voir les deux et signaler la contradiction). TECH/CCTP TRAVAUX reste donc en
-    # dernier, pour ne consommer que le budget restant une fois les catégories peu nombreuses
-    # garanties. TECH/RICT est un document unique (comme TECH/ARRETE PC) : il est placé juste
-    # après pour rester garanti quel que soit le budget restant.
+    # ORDRE : `select_topic_documents` (app/synthesis/engine.py) parcourt les catégories dans cet
+    # ordre, qui fixe l'ordre des relevés dans le prompt final du thème. Il ne décide PLUS de ce
+    # qui est vu ou non par le LLM : avec le map-reduce, chaque document pivot est relu
+    # intégralement et son relevé est toujours présent dans le prompt final. L'ordre garde donc un
+    # rôle purement rédactionnel (les sources les plus fiables en premier), là où il était
+    # auparavant critique — TECH/CCTP TRAVAUX, souvent 15-25 documents (un par lot), épuisait le
+    # budget avant même d'atteindre TECH/ARRETE PC, pourtant porteur de la version concurrente du
+    # classement ERP, et le thème ne voyait plus QUE la version CCTP au lieu de signaler la
+    # contradiction (bug réel, dossier Le Grand Pic).
     pivot_categories: ["TECH/NOTICE", "TECH/ARRETE PC", "TECH/RICT", "ASS/CCTP", "ASS/RC", "TECH/CCTP TRAVAUX"]
     grounding_field_ids: [destination_batiment]
     cross_document: true
@@ -83,9 +84,9 @@ topics:
     # plages de niveaux nommées dans le CCTP/la notice (ex. "du niveau -8 au niveau +3"), que le
     # LLM a confondu avec un compte total ("8 niveaux" — faux à la fois arithmétiquement, la
     # plage -8..+3 comptant 12 niveaux, et par rapport à l'arrêté PC qui donne le compte exact
-    # par bâtiment : "Nombre de niveaux : 12" / "13" / "11"). L'arrêté PC est un document unique,
-    # placé en tête pour rester garanti quel que soit le budget restant ; TECH/RICT confirme le
-    # compte de façon indépendante ("Bâtiment A, B et C de 12 niveaux dont 2 niveaux de parking").
+    # par bâtiment : "Nombre de niveaux : 12" / "13" / "11"). L'arrêté PC, qui porte le compte
+    # exact, est placé en tête ; TECH/RICT le confirme de façon indépendante ("Bâtiment A, B et C
+    # de 12 niveaux dont 2 niveaux de parking").
     pivot_categories: ["TECH/ARRETE PC", "TECH/RICT", "ASS/CCTP", "TECH/NOTICE", "TECH/CCTP TRAVAUX", "ASS/CCAP"]
     grounding_field_ids:
       - travaux_neufs_ou_existant

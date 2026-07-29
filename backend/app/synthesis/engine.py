@@ -1,11 +1,33 @@
 """Moteur de génération de la synthèse projet (Phase 1 du protocole d'analyse).
 
 Contrairement à `app/extraction/engine.py` (un champ = une valeur atomique courte), ici un
-THÈME = une section narrative (prose, tableau ou liste), obtenue en un seul appel LLM par thème
-qui relit directement le texte complet des documents pivots concernés (`config/taxonomy.yaml`
-`is_pivot` + `pivot_categories` du thème) — jamais une simple reformulation des valeurs déjà
-extraites, sauf pour les thèmes `source: extraction_fields` (identité de l'opération), qui sont
-de simples reformatages déterministes, sans appel LLM.
+THÈME = une section narrative (prose, tableau ou liste) qui repose sur la lecture INTÉGRALE des
+documents pivots concernés (`config/taxonomy.yaml` `is_pivot` + `pivot_categories` du thème) —
+jamais une simple reformulation des valeurs déjà extraites, sauf pour les thèmes
+`source: extraction_fields` (identité de l'opération), qui sont de simples reformatages
+déterministes, sans appel LLM.
+
+Cette lecture se fait en **map-reduce**, et non plus en concaténant les textes bruts dans un
+unique prompt par thème :
+
+- **map** (`summarize_document`) — un appel LLM par DOCUMENT pivot (pas par document × thème),
+  sur son texte intégral et sans troncature : un seul document par appel tient largement dans la
+  fenêtre du modèle. Il en sort, pour chacun des thèmes dont ce document est pivot, un relevé
+  factuel dense de ce que ce document apporte à ce thème (ou l'absence d'information). Un document
+  partagé par plusieurs thèmes (le RICT est pivot de 4 thèmes) n'est traité qu'une fois puis
+  réutilisé partout — même dédup que celle déjà appliquée à l'OCR dans ce pipeline.
+- **reduce** (`generate_topic`) — le même unique appel LLM par thème qu'avant, mais alimenté par
+  les relevés du map au lieu d'extraits bruts tronqués.
+
+Ce que ça corrige (§data/resultats_synthese_test/RAPPORT_TECHNIQUE_ANALYSE.md) : l'ancien
+assemblage plafonnait chaque document à 60 000 caractères — tronqués à plat depuis le début, sans
+sélection par pertinence — et s'arrêtait à 300 000 caractères par thème, au-delà desquels les
+documents pivots restants étaient purement et simplement absents du prompt, jamais vus par le
+LLM. Un document pivot n'est désormais plus jamais tronqué ni exclu par manque de budget.
+
+Chaque relevé reste attribué à son fichier source dans le prompt de reduce : c'est ce qui permet
+au thème de continuer à comparer les documents entre eux et à signaler une divergence (cas réel
+rencontré : classement ERP différent entre le CCTP et l'arrêté de permis de construire).
 """
 from __future__ import annotations
 
@@ -21,24 +43,41 @@ from app.synthesis.schema import SynthesisSchema, SynthesisTopic
 
 logger = logging.getLogger(__name__)
 
-# Budget de contexte PAR THÈME (potentiellement plusieurs documents pivots) — plus généreux que
-# le budget par appel de l'extraction (§extraction/engine.py DOCUMENT_EXCERPT_MAX_CHARS) car un
-# thème comme "récit du sol" ou "synthèse RICT" a besoin du texte complet du document, pas d'un
-# extrait scoré par mots-clés.
-#
-# Calibré sur la fenêtre de contexte réelle de mistral-large-2512 (~128k tokens), pas sur une
-# valeur arbitraire : l'ancien budget (40 000 caractères, ~14k tokens) ne laissait passer que 2-3
-# documents avant de s'arrêter, ignorant silencieusement le reste des candidats sur les gros
-# dossiers multi-lots (cf. rapport technique, §4.1 — jusqu'à 69 documents CCTP candidats pour 3
-# réellement envoyés). ~3 caractères/token en moyenne sur du texte technique français (mesuré sur
-# les dossiers de test) → viser ~100k tokens de documents laisse une marge confortable pour le
-# system prompt, les instructions, le bloc de grounding et jusqu'à ~4000 tokens de sortie avant
-# d'approcher la limite du modèle.
-SYNTHESIS_TOTAL_CONTEXT_MAX_CHARS = 300_000
-SYNTHESIS_PER_DOCUMENT_MAX_CHARS = 60_000
+# Seuil purement indicatif : au-delà, un document seul commence à peser lourd dans la fenêtre de
+# mistral-large (~128k tokens, ~3 caractères/token sur du technique français). On ne tronque PAS
+# pour autant — c'est justement le défaut corrigé ici — mais on veut le voir dans les logs, car
+# c'est le seul cas où l'appel de map peut échouer pour cause de contexte et basculer sur le repli
+# "extrait brut tronqué" ci-dessous.
+SYNTHESIS_LARGE_DOCUMENT_WARN_CHARS = 350_000
+
+# Plafonds du SEUL chemin de repli (§_build_topic_context) : quand le relevé d'un document n'a pas
+# pu être produit (échec LLM, thème non traité dans la réponse), on réinjecte son texte brut
+# tronqué dans le prompt du thème plutôt que de perdre le document. C'est le comportement
+# historique, désormais cantonné aux cas dégradés — d'où un budget total volontairement plus bas
+# que l'ancien (le cas nominal ne consomme plus que des relevés courts).
+SYNTHESIS_FALLBACK_PER_DOCUMENT_MAX_CHARS = 60_000
+SYNTHESIS_FALLBACK_TOTAL_MAX_CHARS = 180_000
 
 # (libellé, valeur finale) d'un champ déjà résolu à l'étape 3, indexé par field_id.
 FieldValues = dict[str, tuple[str, str]]
+
+
+@dataclass(frozen=True)
+class DocumentSummary:
+    """Résultat de l'étape "map" pour UN document pivot.
+
+    `summaries_by_topic` ne contient que les thèmes que ce document informe réellement ;
+    `covered_topic_ids` liste tous les thèmes que le LLM a bel et bien traités — la différence
+    entre les deux, c'est "ce document n'a rien à dire sur ce thème" (information utile en soi),
+    à ne pas confondre avec "ce document n'a pas pu être analysé" (repli sur extrait brut)."""
+
+    document_id: str
+    filename: str
+    final_category: str | None
+    summaries_by_topic: dict[str, str] = field(default_factory=dict)
+    covered_topic_ids: frozenset[str] = frozenset()
+    model_name: str | None = None
+    error: str | None = None
 
 
 @dataclass(frozen=True)
@@ -49,22 +88,179 @@ class TopicOutcome:
     error: str | None
     documents_used: list[str] = field(default_factory=list)
     candidates_count: int = 0
+    documents_degraded: list[str] = field(default_factory=list)
 
 
 class _TopicResponse(BaseModel):
     contenu: str
 
 
+class _DocumentTopicSummary(BaseModel):
+    theme_id: str
+    apporte_des_informations: bool
+    resume: str
+
+
+class _DocumentSummaryResponse(BaseModel):
+    resumes: list[_DocumentTopicSummary]
+
+
+# --- Étape "map" : un relevé factuel par document pivot ----------------------------------------
+
+_MAP_SYSTEM_PROMPT = """Tu es un expert en audit technique et souscription assurance \
+construction (SMABTP). On te donne le texte intégral d'UN document d'un dossier de consultation \
+des entreprises (DCE), et la liste des thèmes d'analyse pour lesquels ce document fait référence.
+
+Ta tâche : pour CHAQUE thème demandé, produire un relevé factuel dense de ce que CE document — et \
+lui seul — apporte à CE thème. Ces relevés seront ensuite recoupés entre documents pour rédiger \
+le rapport final : ils doivent rester fidèles et vérifiables, pas élégants.
+
+Règles impératives :
+- N'utilise QUE le contenu du document fourni. Aucune connaissance extérieure, aucune déduction, \
+aucune estimation, aucun ordre de grandeur "habituel", aucune complétion de ce qui manque.
+- Conserve les données telles qu'écrites : chiffres, unités, dates, cotes, surfaces, montants, \
+noms de sociétés, classements réglementaires — ainsi que les références internes du document \
+(numéro d'article, d'avis, de lot, de mission, titre de section) chaque fois qu'il les donne.
+- Pour toute affirmation qu'un autre document du dossier pourrait contredire (classement ERP et \
+catégorie, nombre de niveaux, surfaces, montants, missions du bureau de contrôle, avis émis), \
+reprends la formulation exacte du document entre guillemets au lieu de la reformuler.
+- Ne cite pas le nom du document dans ton relevé : il est déjà attribué à sa source.
+- Si le document ne dit rien d'utile pour un thème, mets `apporte_des_informations` à false et \
+laisse `resume` vide. N'invente pas de contenu de remplissage et ne recopie pas l'énoncé du thème.
+- Sois dense et structuré (puces courtes bienvenues), sans phrase de liaison, sans introduction, \
+sans commentaire sur ta propre démarche.
+- Réponds avec exactement une entrée par thème demandé, en reprenant son `theme_id` à \
+l'identique."""
+
+
+def topics_for_document(doc: DocumentSignal, schema: SynthesisSchema) -> list[SynthesisTopic]:
+    """Thèmes dont ce document est pivot — l'inverse de `select_topic_documents`. C'est ce qui
+    permet à l'étape "map" de ne lire chaque document qu'UNE fois, quel que soit le nombre de
+    thèmes qu'il alimente, au lieu d'un appel par couple (document, thème)."""
+    if not doc.content_excerpt or doc.final_category is None:
+        return []
+    return [
+        topic
+        for topic in schema.topics
+        if topic.source == "documents" and doc.final_category in topic.pivot_categories
+    ]
+
+
+def _build_map_user_prompt(*, doc: DocumentSignal, topics: list[SynthesisTopic]) -> str:
+    # Les `grounding_field_ids` du thème (valeurs déjà validées à l'étape 3) ne sont volontairement
+    # PAS injectés ici : le map doit rester une lecture neutre du document, sinon le relevé tend à
+    # confirmer la valeur déjà connue au lieu de rapporter ce que le document dit vraiment — et on
+    # perdrait justement les divergences que le reduce doit signaler. Le grounding reste au reduce.
+    topic_blocks = "\n\n".join(
+        f"- theme_id : {topic.id}\n"
+        f"  Thème : {topic.titre}\n"
+        f"  Ce qu'il faut relever : {(topic.instructions or '').strip()}"
+        for topic in topics
+    )
+    return f"""Document analysé : {doc.filename} (catégorie : {doc.final_category or 'inconnue'})
+
+Thèmes pour lesquels ce document fait référence ({len(topics)}) :
+{topic_blocks}
+
+Texte intégral du document (natif ou OCR) :
+---
+{doc.content_excerpt}
+---
+
+Produis un relevé factuel par thème."""
+
+
+def summarize_document(doc: DocumentSignal, topics: list[SynthesisTopic]) -> DocumentSummary:
+    """Étape "map" : un seul appel LLM pour ce document, couvrant d'un coup tous les thèmes dont il
+    est pivot. Le texte est envoyé intégralement, sans troncature.
+
+    Best-effort : un échec ne lève jamais — il renseigne `error`, et l'étape "reduce" retombe
+    alors sur un extrait brut tronqué de ce document (§_build_topic_context) plutôt que de le
+    perdre."""
+    assert topics, "summarize_document appelé sans thème (le document n'est pivot d'aucun thème)"
+
+    if len(doc.content_excerpt) > SYNTHESIS_LARGE_DOCUMENT_WARN_CHARS:
+        logger.warning(
+            "Synthèse projet — document %s : %d caractères envoyés en un seul appel (seuil d'alerte %d) ; "
+            "en cas de dépassement de la fenêtre du modèle, le thème retombera sur un extrait brut tronqué",
+            doc.filename,
+            len(doc.content_excerpt),
+            SYNTHESIS_LARGE_DOCUMENT_WARN_CHARS,
+        )
+
+    try:
+        parsed, api_model_name = call_structured_chat(
+            system_prompt=_MAP_SYSTEM_PROMPT,
+            user_prompt=_build_map_user_prompt(doc=doc, topics=topics),
+            response_model=_DocumentSummaryResponse,
+            what=f"synthèse projet — relevé du document {doc.filename}",
+        )
+    except Exception as exc:
+        logger.exception("Échec du relevé du document %s (synthèse projet)", doc.filename)
+        return DocumentSummary(
+            document_id=doc.document_id,
+            filename=doc.filename,
+            final_category=doc.final_category,
+            error=str(exc),
+        )
+
+    requested = {topic.id for topic in topics}
+    summaries: dict[str, str] = {}
+    covered: set[str] = set()
+    for item in parsed.resumes:
+        topic_id = item.theme_id.strip()
+        if topic_id not in requested:
+            logger.warning(
+                "Synthèse projet — document %s : theme_id inattendu %r dans le relevé (ignoré)",
+                doc.filename,
+                item.theme_id,
+            )
+            continue
+        covered.add(topic_id)
+        if item.apporte_des_informations and item.resume.strip():
+            summaries[topic_id] = item.resume.strip()
+
+    missing = requested - covered
+    if missing:
+        logger.warning(
+            "Synthèse projet — document %s : %d thème(s) demandé(s) absent(s) du relevé (%s) — "
+            "repli sur extrait brut pour ces thèmes",
+            doc.filename,
+            len(missing),
+            sorted(missing),
+        )
+
+    return DocumentSummary(
+        document_id=doc.document_id,
+        filename=doc.filename,
+        final_category=doc.final_category,
+        summaries_by_topic=summaries,
+        covered_topic_ids=frozenset(covered),
+        model_name=api_model_name,
+        error=None,
+    )
+
+
+# --- Étape "reduce" : un appel LLM par thème, alimenté par les relevés --------------------------
+
 _TOPIC_SYSTEM_PROMPT = """Tu es un expert en audit technique et souscription assurance \
 construction (SMABTP), en train de rédiger la Phase 1 (synthèse projet) d'un rapport d'analyse \
 de dossier de consultation des entreprises (DCE).
 
+Le contexte fourni n'est pas le texte brut du dossier : c'est, pour chaque document pivot de ce \
+thème, un relevé factuel de ce que CE document apporte à CE thème, établi lors d'une première \
+passe de lecture intégrale, document par document. Chaque relevé reste donc attribué à son \
+fichier source.
+
 Règles impératives :
-- N'utilise QUE les informations présentes dans les documents fournis ci-dessous et les données \
+- N'utilise QUE les informations présentes dans les relevés fournis ci-dessous et les données \
 déjà validées — n'invente jamais une donnée absente.
-- Si une information demandée est absente des documents fournis, dis-le explicitement \
+- Si une information demandée est absente des relevés fournis, dis-le explicitement \
 ("non précisé dans les documents fournis") plutôt que de l'omettre silencieusement ou de \
 l'inventer.
+- Confronte les relevés entre eux : si deux documents se contredisent sur une même donnée \
+(classement ERP, nombre de niveaux, surfaces, montants, avis émis…), signale la divergence \
+explicitement en nommant les deux fichiers sources, au lieu de trancher en silence.
 - Utilise systématiquement des citations : après chaque donnée factuelle, indique entre \
 parenthèses le document source (ex. "(Source : RICT SOCOTEC)").
 - Respecte strictement le format demandé (prose, tableau Markdown, ou liste à puces).
@@ -82,28 +278,77 @@ def select_topic_documents(topic: SynthesisTopic, documents: list[DocumentSignal
     return selected
 
 
-def _build_documents_context(
-    documents: list[DocumentSignal],
+@dataclass(frozen=True)
+class _TopicContext:
+    text: str
+    documents_used: list[str]
+    documents_degraded: list[str]
+    documents_without_info: list[str]
+
+
+def _build_topic_context(
+    topic: SynthesisTopic,
+    candidates: list[DocumentSignal],
+    summaries: dict[str, DocumentSummary],
     *,
-    total_budget: int = SYNTHESIS_TOTAL_CONTEXT_MAX_CHARS,
-    per_document_budget: int = SYNTHESIS_PER_DOCUMENT_MAX_CHARS,
-) -> tuple[str, list[str]]:
-    """Retourne le contexte assemblé ET la liste des documents réellement inclus dedans —
-    distincte de la liste des candidats (`select_topic_documents` peut en retourner bien plus
-    que ce que `total_budget` permet d'envoyer ; au-delà, un document candidat est purement et
-    simplement absent du prompt, jamais vu par le LLM, donc jamais une vraie source)."""
+    fallback_total_budget: int = SYNTHESIS_FALLBACK_TOTAL_MAX_CHARS,
+    fallback_per_document_budget: int = SYNTHESIS_FALLBACK_PER_DOCUMENT_MAX_CHARS,
+) -> _TopicContext:
+    """Assemble le contexte du reduce : un bloc par document pivot candidat, toujours nommé par son
+    fichier source — c'est ce qui permet au thème de comparer les documents et de signaler une
+    divergence (ex. classement ERP différent entre CCTP et arrêté PC).
+
+    Aucun budget ne s'applique aux relevés (tous les documents pivots sont représentés, c'est tout
+    l'objet du map-reduce). Le budget ne cadre que le chemin de repli "extrait brut", emprunté
+    seulement quand le relevé d'un document n'a pas pu être produit."""
     blocks: list[str] = []
-    included: list[str] = []
-    remaining = total_budget
-    for doc in documents:
-        if remaining <= 0:
-            break
-        cap = min(per_document_budget, remaining)
-        excerpt = doc.content_excerpt[:cap]
-        blocks.append(f"### Document : {doc.filename} (catégorie : {doc.final_category or 'inconnue'})\n{excerpt}")
-        included.append(doc.filename)
+    used: list[str] = []
+    degraded: list[str] = []
+    without_info: list[str] = []
+    remaining = fallback_total_budget
+
+    for doc in candidates:
+        summary = summaries.get(doc.document_id)
+        header = f"### Document : {doc.filename} (catégorie : {doc.final_category or 'inconnue'})"
+
+        if summary is not None and topic.id in summary.summaries_by_topic:
+            blocks.append(f"{header}\n{summary.summaries_by_topic[topic.id]}")
+            used.append(doc.filename)
+            continue
+
+        if summary is not None and topic.id in summary.covered_topic_ids:
+            # Le document a bien été lu, il n'a simplement rien à dire sur ce thème. On ne recopie
+            # pas un bloc vide par document (25 CCTP muets noieraient les relevés utiles) : ils
+            # sont regroupés en une seule ligne en fin de contexte, pour que le LLM puisse quand
+            # même conclure à une absence d'information en connaissance de cause.
+            without_info.append(doc.filename)
+            continue
+
+        cap = min(fallback_per_document_budget, remaining)
+        excerpt = doc.content_excerpt[:cap] if cap > 0 else ""
+        if not excerpt:
+            logger.warning(
+                "Synthèse projet — thème %s : document %s sans relevé ET budget de repli épuisé, document absent du prompt",
+                topic.id,
+                doc.filename,
+            )
+            continue
+        blocks.append(f"{header} — relevé indisponible, extrait brut du document (tronqué) :\n{excerpt}")
+        used.append(doc.filename)
+        degraded.append(doc.filename)
         remaining -= len(excerpt)
-    return "\n\n".join(blocks), included
+
+    if without_info:
+        blocks.append(
+            "### Documents pivots lus sans information utile pour ce thème\n" + ", ".join(without_info)
+        )
+
+    return _TopicContext(
+        text="\n\n".join(blocks),
+        documents_used=used,
+        documents_degraded=degraded,
+        documents_without_info=without_info,
+    )
 
 
 def _format_extraction_fields_topic(topic: SynthesisTopic, field_values: FieldValues) -> str:
@@ -140,7 +385,7 @@ Format attendu : {topic.format}
 Consigne de rédaction :
 {topic.instructions}
 {grounding_block}
-Documents pivots fournis (texte natif ou OCR) :
+Relevés factuels établis document par document sur l'ensemble des documents pivots de ce thème :
 ---
 {context}
 ---
@@ -154,10 +399,15 @@ def _no_documents_message(topic: SynthesisTopic) -> str:
 
 
 def generate_topic(
-    topic: SynthesisTopic, *, documents: list[DocumentSignal], field_values: FieldValues
+    topic: SynthesisTopic,
+    *,
+    documents: list[DocumentSignal],
+    field_values: FieldValues,
+    summaries: dict[str, DocumentSummary],
 ) -> TopicOutcome:
-    """Un seul appel LLM par thème (aucun pour `source: extraction_fields`, simple reformatage
-    déterministe des valeurs déjà résolues à l'étape 3)."""
+    """Étape "reduce" : un seul appel LLM par thème (aucun pour `source: extraction_fields`, simple
+    reformatage déterministe des valeurs déjà résolues à l'étape 3), alimenté par les relevés
+    produits en amont par `summarize_document` — indexés par `document_id`."""
     if topic.source == "extraction_fields":
         content = _format_extraction_fields_topic(topic, field_values)
         return TopicOutcome(topic_id=topic.id, content_md=content, model_name=None, error=None)
@@ -166,22 +416,20 @@ def generate_topic(
     if not candidates:
         return TopicOutcome(topic_id=topic.id, content_md=_no_documents_message(topic), model_name=None, error=None)
 
-    context, documents_used = _build_documents_context(candidates)
+    context = _build_topic_context(topic, candidates, summaries)
     grounding = _format_grounding_block(topic, field_values)
-    if len(documents_used) < len(candidates):
+    if context.documents_degraded:
         logger.warning(
-            "Synthèse projet — thème %s : %d document(s) pivot(s) candidat(s) mais seuls %d envoyés au LLM "
-            "(budget de contexte atteint) : %s ignoré(s)",
+            "Synthèse projet — thème %s : %d document(s) pivot(s) sans relevé exploitable, repli sur extrait brut tronqué : %s",
             topic.id,
-            len(candidates),
-            len(documents_used),
-            [d.filename for d in candidates if d.filename not in documents_used],
+            len(context.documents_degraded),
+            context.documents_degraded,
         )
 
     try:
         parsed, api_model_name = call_structured_chat(
             system_prompt=_TOPIC_SYSTEM_PROMPT,
-            user_prompt=_build_topic_user_prompt(topic=topic, grounding=grounding, context=context),
+            user_prompt=_build_topic_user_prompt(topic=topic, grounding=grounding, context=context.text),
             response_model=_TopicResponse,
             what=f"synthèse projet — thème {topic.id}",
         )
@@ -192,8 +440,9 @@ def generate_topic(
             content_md=None,
             model_name=None,
             error=str(exc),
-            documents_used=documents_used,
+            documents_used=context.documents_used,
             candidates_count=len(candidates),
+            documents_degraded=context.documents_degraded,
         )
 
     return TopicOutcome(
@@ -201,8 +450,9 @@ def generate_topic(
         content_md=parsed.contenu,
         model_name=api_model_name,
         error=None,
-        documents_used=documents_used,
+        documents_used=context.documents_used,
         candidates_count=len(candidates),
+        documents_degraded=context.documents_degraded,
     )
 
 
@@ -229,6 +479,27 @@ def build_documents_cartography(documents: list[DocumentSignal], taxonomy: Taxon
     return "\n".join(lines)
 
 
+def _sources_note(outcome: TopicOutcome) -> str:
+    """Ligne de traçabilité sous une section : les fichiers réellement exploités pour ce thème.
+    C'est la trace de sourcing retenue en production — les relevés du map n'ont plus à porter une
+    citation par phrase (besoin de vérification propre à la phase de test)."""
+    if not outcome.candidates_count:
+        return ""
+    parts: list[str] = []
+    if outcome.documents_used:
+        parts.append("_Sources consultées : " + ", ".join(outcome.documents_used) + "_")
+    without_info = outcome.candidates_count - len(outcome.documents_used)
+    if without_info > 0:
+        parts.append(f"_(+{without_info} document(s) pivot(s) lu(s) sans information utile pour ce thème)_")
+    if outcome.documents_degraded:
+        parts.append(
+            "_(relevé indisponible, extrait brut tronqué utilisé pour : "
+            + ", ".join(outcome.documents_degraded)
+            + ")_"
+        )
+    return " ".join(parts)
+
+
 def assemble_report(
     outcomes: list[TopicOutcome], schema: SynthesisSchema, *, cartography_md: str | None = None
 ) -> str:
@@ -245,14 +516,9 @@ def assemble_report(
             body = f"_Section non générée (erreur : {outcome.error})._"
         else:
             body = outcome.content_md or "_Aucune donnée disponible._"
-            if outcome.documents_used:
-                body += "\n\n_Sources consultées : " + ", ".join(outcome.documents_used) + "_"
-                skipped = outcome.candidates_count - len(outcome.documents_used)
-                if skipped > 0:
-                    body += (
-                        f" _(+{skipped} document(s) pivot(s) supplémentaire(s) trouvé(s) mais non "
-                        "envoyé(s) au LLM — budget de contexte atteint)_"
-                    )
+            note = _sources_note(outcome)
+            if note:
+                body += "\n\n" + note
         sections.append(f"## {topic.titre}\n\n{body}")
 
     return "\n\n".join(sections) + "\n"

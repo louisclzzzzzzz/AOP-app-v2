@@ -31,10 +31,11 @@ from app.mistral.client import call_structured_chat
 
 logger = logging.getLogger(__name__)
 
-# Même logique de budget que la Phase 1 (§synthesis/engine.py) : calibré sur la fenêtre de
-# ~128k tokens de mistral-large, ~3 caractères/token sur du technique français. Chaque section
-# n'envoie que ses documents pivots FILTRÉS (cctp_keywords), donc en pratique bien moins que le
-# plafond — le plafond n'est là que comme garde-fou contre un dossier au corpus aberrant.
+# Budget calibré sur la fenêtre de ~128k tokens de mistral-large, ~3 caractères/token sur du
+# technique français. Chaque section n'envoie que ses documents pivots FILTRÉS (cctp_keywords),
+# donc en pratique bien moins que le plafond — le plafond n'est là que comme garde-fou contre un
+# dossier au corpus aberrant. Note : la Phase 1 (§synthesis/engine.py) ne fonctionne plus ainsi,
+# elle est passée en map-reduce (un relevé par document, plus aucun document tronqué ni exclu).
 AUDIT_TOTAL_CONTEXT_MAX_CHARS = 280_000
 AUDIT_PER_DOCUMENT_MAX_CHARS = 60_000
 

@@ -119,9 +119,23 @@ def _fake_extraction_call(monkeypatch):
 
 
 def _fake_synthesis_call(monkeypatch):
+    """Deux types d'appel depuis la Phase 1 : l'étape "map" (un relevé par document pivot, un
+    résumé par thème concerné) puis l'étape "reduce" (un contenu Markdown par thème)."""
     import app.synthesis.engine as engine
 
     def _fake(*, system_prompt, user_prompt, response_model, what):
+        if "resumes" in response_model.model_fields:
+            item_model = response_model.model_fields["resumes"].annotation.__args__[0]
+            theme_ids = re.findall(r"theme_id : (\S+)", user_prompt)
+            items = [
+                item_model(
+                    theme_id=theme_id,
+                    apporte_des_informations=True,
+                    resume=f"Relevé pour {theme_id}.",
+                )
+                for theme_id in theme_ids
+            ]
+            return response_model(resumes=items), "mistral-large-test-fake"
         return response_model(contenu=f"Contenu généré pour : {what}"), "mistral-large-test-fake"
 
     monkeypatch.setattr(engine, "call_structured_chat", _fake)
