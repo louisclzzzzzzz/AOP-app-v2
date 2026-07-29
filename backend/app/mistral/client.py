@@ -16,6 +16,10 @@ from typing import Any, Callable, TypeVar
 from mistralai.client import Mistral
 from mistralai.client.errors.mistralerror import MistralError
 from mistralai.client.models.ocrresponse import OCRResponse
+from mistralai.extra.utils.response_format import (
+    pydantic_model_from_json,
+    response_format_from_pydantic_model,
+)
 from pydantic import BaseModel
 
 from app.settings import get_models_config, get_settings
@@ -153,6 +157,41 @@ def call_ocr(
 
 ModelT = TypeVar("ModelT", bound=BaseModel)
 
+# Consigne ajoutée au prompt utilisateur lors des tentatives de rattrapage d'un JSON non parsable.
+# Rejouer la MÊME consigne à température plus haute ne sert à rien quand la cause est structurelle :
+# mesuré sur le run e2e du 2026-07-29, 9 appels "map" de la Phase 1 ont perdu leurs 3 tentatives
+# sans jamais rattraper (et le même document rejoué à T=0.7 bouclait encore). La tentative de
+# rattrapage doit donc changer la CONSIGNE, pas seulement le hasard du tirage.
+_JSON_REPAIR_INSTRUCTION = """
+
+ATTENTION — ta réponse précédente n'était pas un JSON syntaxiquement valide. Réponds à nouveau, \
+identique sur le fond, en respectant strictement ces trois points :
+- aucun retour à la ligne ni suite d'espaces/tabulations à l'intérieur d'une valeur texte ;
+- aucun guillemet droit (") à l'intérieur d'une valeur texte — pour citer, utilise « … » ;
+- après chaque valeur, enchaîne immédiatement sur la virgule ou l'accolade fermante, sans insérer \
+d'espaces ni de tabulations de remplissage."""
+
+
+def _message_content(response) -> str | None:
+    """Texte brut renvoyé par le modèle, avant tout parsing — c'est précisément ce que
+    `client.chat.parse` du SDK ne laisse jamais voir quand son `json.loads()` interne échoue."""
+    if not response.choices:
+        return None
+    message = response.choices[0].message
+    if message is None:
+        return None
+    content = message.content
+    return content if isinstance(content, str) else None
+
+
+def _malformed_json_excerpt(content: str, exc: Exception, *, window: int = 250) -> str:
+    """Fenêtre du texte brut autour du point de rupture, avec un marqueur ⟦ICI⟧ — sans ça, on ne
+    dispose que de la position de l'erreur et la cause reste une hypothèse (§bug du 2026-07-29)."""
+    pos = getattr(exc, "pos", None)
+    if not isinstance(pos, int):
+        return content[: 2 * window]
+    return content[max(0, pos - window) : pos] + " ⟦ICI⟧ " + content[pos : pos + window]
+
 
 def call_structured_chat(
     *,
@@ -163,9 +202,18 @@ def call_structured_chat(
     model: str | None = None,
 ) -> tuple[ModelT, str | None]:
     """Appel LLM avec Structured Outputs (JSON Schema strict dérivé du modèle Pydantic fourni).
-    Utilisé par la classification (étape 1, `mistral-small` batché), la complétude (étape 2) et
-    l'extraction (étape 3, `mistral-large`). `model` permet à un appelant de préciser son propre
-    modèle (ex. classification) ; par défaut retombe sur `llm.model` (mistral-large)."""
+    Utilisé par la classification (étape 1, `mistral-small` batché), la complétude (étape 2),
+    l'extraction (étape 3, `mistral-large`) et les deux phases d'analyse. `model` permet à un
+    appelant de préciser son propre modèle (ex. classification) ; par défaut retombe sur
+    `llm.model` (mistral-large).
+
+    On n'utilise volontairement PAS `client.chat.parse` du SDK, alors que c'est exactement ce
+    qu'il fait (`response_format_from_pydantic_model` → `chat.complete` → `json.loads`) : son
+    `json.loads()` est appelé APRÈS le 200 OK et laisse remonter l'exception SANS jamais exposer le
+    `message.content` qui l'a provoquée. On ne disposait donc que de la position de l'erreur, et la
+    cause d'un JSON cassé restait une hypothèse (§data/resultats_tests_2026-07-29/grand_pic_map_reduce
+    /BUG_map_reduce_json_parse_failures.md). Recomposer les trois étapes nous rend le texte brut et
+    le `finish_reason` — de quoi distinguer un guillemet non échappé d'une troncature à max_tokens."""
     client = get_client()
     cfg = get_models_config()["llm"]
     model = model or cfg["model"]
@@ -173,48 +221,82 @@ def call_structured_chat(
     timeout = cfg.get("timeout_seconds")
     max_tokens = cfg.get("max_tokens")
     parse_retries = int(cfg.get("parse_retries", 0))
+    json_response_format = response_format_from_pydantic_model(response_model)
 
-    def _do(temperature: float):
+    def _do(temperature: float, prompt: str):
         _throttle_llm_call()
-        return client.chat.parse(
+        return client.chat.complete(
             model=model,
             messages=[
                 {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
+                {"role": "user", "content": prompt},
             ],
-            response_format=response_model,
+            response_format=json_response_format,
             temperature=temperature,
             max_tokens=int(max_tokens) if max_tokens else None,
             timeout_ms=int(timeout) * 1000 if timeout else None,
         )
 
-    # Le décodage structuré de Mistral produit occasionnellement un JSON invalide sur de longues
-    # réponses (guillemet interne non échappé, troncature) — `chat.parse` lève alors une
-    # JSONDecodeError / ValidationError APRÈS le succès HTTP, donc hors du champ de `_retry` (qui ne
-    # couvre que les erreurs réseau/API MistralError). On re-tente ici en relevant légèrement la
-    # température pour casser une sortie déterministe malformée (à T=0 le décodage est glouton, donc
-    # re-jouer à l'identique reproduirait le même JSON cassé).
+    # Le mode Structured Outputs de Mistral *guide* la génération avec un JSON Schema, il ne
+    # garantit pas mécaniquement un JSON syntaxiquement valide : sur de longues réponses, un
+    # guillemet droit non échappé au milieu d'une valeur texte suffit à tout casser. Cette erreur
+    # survient APRÈS le succès HTTP, donc hors du champ de `_retry` (qui ne couvre que les erreurs
+    # réseau/API MistralError) — d'où cette seconde boucle. Chaque rattrapage relève légèrement la
+    # température ET ajoute une consigne de réparation explicite : à consigne inchangée, le seul
+    # effet de la température est de recasser le JSON ailleurs (0% de rattrapage mesuré).
     response = None
+    parsed: ModelT | None = None
     last_parse_error: Exception | None = None
     for attempt in range(parse_retries + 1):
         temperature = base_temperature if attempt == 0 else min(0.4, base_temperature + 0.2 * attempt)
+        prompt = user_prompt if attempt == 0 else user_prompt + _JSON_REPAIR_INSTRUCTION
+        response = _retry(lambda: _do(temperature, prompt), what=what)
+
+        content = _message_content(response)
+        if content is None:
+            raise RuntimeError(f"Réponse LLM vide pour : {what}")
         try:
-            response = _retry(lambda: _do(temperature), what=what)
+            parsed = pydantic_model_from_json(json.loads(content), response_model)
             break
         except (json.JSONDecodeError, ValueError) as exc:
             last_parse_error = exc
+            finish_reason = response.choices[0].finish_reason if response.choices else None
             logger.warning(
-                "Réponse structurée non parsable pour %s (tentative %d/%d, T=%.1f) : %s",
-                what, attempt + 1, parse_retries + 1, temperature, exc,
+                "Réponse structurée non parsable pour %s (tentative %d/%d, T=%.1f, finish_reason=%s, "
+                "%d caractères reçus) : %s\nTexte brut autour du point de rupture : %s",
+                what,
+                attempt + 1,
+                parse_retries + 1,
+                temperature,
+                finish_reason,
+                len(content),
+                exc,
+                _malformed_json_excerpt(content, exc),
             )
-    if response is None:
-        raise RuntimeError(f"Réponse structurée non parsable après {parse_retries + 1} tentative(s) pour {what} : {last_parse_error}")
-
-    if not response.choices:
-        raise RuntimeError(f"Réponse LLM vide pour : {what}")
-    parsed = response.choices[0].message.parsed if response.choices[0].message else None
+            if finish_reason in ("length", "error"):
+                # Symptôme d'une boucle dégénérée du décodage contraint : le modèle enchaîne des
+                # espaces/tabulations (toujours licites entre deux tokens JSON, donc jamais
+                # interrompues par la grammaire) et n'atteint jamais le token suivant ; la
+                # génération finit avortée par le serveur ou coupée par max_tokens, laissant un
+                # JSON tronqué. Ça se corrige côté schéma — préférer une liste de chaînes courtes à
+                # une longue chaîne multi-lignes (§app/synthesis/engine.py `constats`) —, pas en
+                # relançant l'appel.
+                logger.warning(
+                    "Génération interrompue (finish_reason=%s, max_tokens=%s) pour %s : réponse tronquée, "
+                    "%d caractères dont %d de whitespace final — vérifier que le schéma de réponse ne "
+                    "demande pas un long texte multi-lignes dans une seule valeur JSON",
+                    finish_reason,
+                    max_tokens,
+                    what,
+                    len(content),
+                    len(content) - len(content.rstrip()),
+                )
     if parsed is None:
-        raise RuntimeError(f"Réponse LLM structurée invalide (aucun contenu parsé) pour : {what}")
+        raise RuntimeError(
+            f"Réponse structurée non parsable après {parse_retries + 1} tentative(s) pour {what} : {last_parse_error}"
+        )
+
+    assert response is not None
     if response.usage:
         logger.info(
             "USAGE llm what=%r model=%s prompt_tokens=%s completion_tokens=%s total_tokens=%s",

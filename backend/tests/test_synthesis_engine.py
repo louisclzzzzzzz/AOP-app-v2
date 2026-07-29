@@ -131,8 +131,12 @@ def test_summarize_document_covers_all_topics_in_a_single_untruncated_call(monke
         return (
             response_model(
                 resumes=[
-                    item(theme_id="synthese_rict", apporte_des_informations=True, resume="Avis suspendu n°12."),
-                    item(theme_id="recit_sol", apporte_des_informations=False, resume=""),
+                    item(
+                        theme_id="synthese_rict",
+                        apporte_des_informations=True,
+                        constats=["Avis suspendu n°12.", "- Mission L confiée à SOCOTEC."],
+                    ),
+                    item(theme_id="recit_sol", apporte_des_informations=False, constats=[]),
                 ]
             ),
             "mistral-large-test",
@@ -150,7 +154,10 @@ def test_summarize_document_covers_all_topics_in_a_single_untruncated_call(monke
     assert long_text in calls[0]  # texte intégral, aucune troncature
     assert summary.error is None
     assert summary.model_name == "mistral-large-test"
-    assert summary.summaries_by_topic == {"synthese_rict": "Avis suspendu n°12."}
+    # Les constats sont recomposés en puces Markdown, et une puce déjà préfixée n'est pas doublée
+    assert summary.summaries_by_topic == {
+        "synthese_rict": "- Avis suspendu n°12.\n- Mission L confiée à SOCOTEC."
+    }
     # `recit_sol` est traité mais sans information : à distinguer d'un thème non traité (repli brut)
     assert summary.covered_topic_ids == frozenset({"synthese_rict", "recit_sol"})
 
@@ -161,8 +168,8 @@ def test_summarize_document_ignores_unknown_theme_ids(monkeypatch):
         return (
             response_model(
                 resumes=[
-                    item(theme_id="theme_invente", apporte_des_informations=True, resume="Hors périmètre."),
-                    item(theme_id=" synthese_rict ", apporte_des_informations=True, resume="Avis suspendu."),
+                    item(theme_id="theme_invente", apporte_des_informations=True, constats=["Hors périmètre."]),
+                    item(theme_id=" synthese_rict ", apporte_des_informations=True, constats=["Avis suspendu."]),
                 ]
             ),
             "mistral-large-test",
@@ -172,7 +179,7 @@ def test_summarize_document_ignores_unknown_theme_ids(monkeypatch):
 
     summary = summarize_document(_doc(final_category="TECH/RICT", content_excerpt="x"), [_topic(id="synthese_rict")])
 
-    assert summary.summaries_by_topic == {"synthese_rict": "Avis suspendu."}
+    assert summary.summaries_by_topic == {"synthese_rict": "- Avis suspendu."}
     assert "theme_invente" not in summary.covered_topic_ids
 
 

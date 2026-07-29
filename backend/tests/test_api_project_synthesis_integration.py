@@ -131,7 +131,7 @@ def _fake_synthesis_call(monkeypatch):
                 item_model(
                     theme_id=theme_id,
                     apporte_des_informations=True,
-                    resume=f"Relevé pour {theme_id}.",
+                    constats=[f"Relevé pour {theme_id}."],
                 )
                 for theme_id in theme_ids
             ]

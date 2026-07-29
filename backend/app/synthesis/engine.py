@@ -98,7 +98,16 @@ class _TopicResponse(BaseModel):
 class _DocumentTopicSummary(BaseModel):
     theme_id: str
     apporte_des_informations: bool
-    resume: str
+    # Liste de constats courts, et non un seul texte multi-lignes : demander des puces séparées par
+    # des \n À L'INTÉRIEUR d'une chaîne JSON déclenchait une pathologie du décodage contraint —
+    # après le \n final et la fermeture de la chaîne, le modèle partait en boucle dégénérée sur du
+    # whitespace (toujours licite entre deux tokens JSON, donc jamais interrompue par la grammaire)
+    # et n'atteignait jamais la virgule suivante ; le serveur finissait par avorter la génération
+    # (finish_reason='error') ou saturer max_tokens, laissant un JSON tronqué non parsable. 9 des 30
+    # appels "map" du run e2e du 2026-07-29 sont tombés là-dedans, sans jamais rattraper en 3
+    # tentatives. Avec une liste, la grammaire attend « , » ou « ] » après chaque élément : le
+    # modèle a un signal de sortie fort au lieu d'une zone de whitespace libre.
+    constats: list[str]
 
 
 class _DocumentSummaryResponse(BaseModel):
@@ -117,18 +126,25 @@ le rapport final : ils doivent rester fidèles et vérifiables, pas élégants.
 
 Règles impératives :
 - N'utilise QUE le contenu du document fourni. Aucune connaissance extérieure, aucune déduction, \
-aucune estimation, aucun ordre de grandeur "habituel", aucune complétion de ce qui manque.
+aucune estimation, aucun ordre de grandeur « habituel », aucune complétion de ce qui manque.
 - Conserve les données telles qu'écrites : chiffres, unités, dates, cotes, surfaces, montants, \
 noms de sociétés, classements réglementaires — ainsi que les références internes du document \
 (numéro d'article, d'avis, de lot, de mission, titre de section) chaque fois qu'il les donne.
 - Pour toute affirmation qu'un autre document du dossier pourrait contredire (classement ERP et \
 catégorie, nombre de niveaux, surfaces, montants, missions du bureau de contrôle, avis émis), \
-reprends la formulation exacte du document entre guillemets au lieu de la reformuler.
+reprends la formulation exacte du document, encadrée par des guillemets français « … », au lieu \
+de la reformuler.
+- N'utilise JAMAIS le caractère guillemet droit (") dans tes réponses, y compris pour citer : \
+utilise « … » ou aucun guillemet. Emploie de même « pouce » ou « ″ » plutôt que " pour une unité.
 - Ne cite pas le nom du document dans ton relevé : il est déjà attribué à sa source.
+- `constats` est une LISTE de constats courts : un élément = un fait. Chaque élément tient sur une \
+seule ligne, sans retour à la ligne et sans puce (« - ») en tête — c'est la liste elle-même qui \
+fait office de puces.
 - Si le document ne dit rien d'utile pour un thème, mets `apporte_des_informations` à false et \
-laisse `resume` vide. N'invente pas de contenu de remplissage et ne recopie pas l'énoncé du thème.
-- Sois dense et structuré (puces courtes bienvenues), sans phrase de liaison, sans introduction, \
-sans commentaire sur ta propre démarche.
+renvoie une liste `constats` vide. N'invente pas de contenu de remplissage et ne recopie pas \
+l'énoncé du thème.
+- Sois dense et factuel, sans phrase de liaison, sans introduction, sans commentaire sur ta propre \
+démarche.
 - Réponds avec exactement une entrée par thème demandé, en reprenant son `theme_id` à \
 l'identique."""
 
@@ -217,8 +233,12 @@ def summarize_document(doc: DocumentSignal, topics: list[SynthesisTopic]) -> Doc
             )
             continue
         covered.add(topic_id)
-        if item.apporte_des_informations and item.resume.strip():
-            summaries[topic_id] = item.resume.strip()
+        # Les constats redeviennent ici un bloc Markdown à puces : c'est la forme attendue par le
+        # prompt de reduce, la liste n'existant que pour cadrer le décodage JSON du map.
+        constats = [c.strip().lstrip("-•").strip() for c in item.constats]
+        constats = [c for c in constats if c]
+        if item.apporte_des_informations and constats:
+            summaries[topic_id] = "\n".join(f"- {c}" for c in constats)
 
     missing = requested - covered
     if missing:

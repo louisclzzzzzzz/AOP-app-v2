@@ -175,8 +175,20 @@ inter-documents (cas réel : classement ERP différent entre le CCTP et l'arrêt
 
 Les deux étapes répondent avec un objet structuré via `call_structured_chat` (Structured Outputs
 Mistral, `app/mistral/client.py`) : `_DocumentSummaryResponse { resumes: [{ theme_id,
-apporte_des_informations, resume }] }` pour le map, `_TopicResponse { contenu: str }` pour le
-reduce — un seul champ texte Markdown, sans le titre de section (déjà géré côté assemblage).
+apporte_des_informations, constats: [str] }] }` pour le map, `_TopicResponse { contenu: str }` pour
+le reduce — un seul champ texte Markdown, sans le titre de section (déjà géré côté assemblage).
+
+**Pourquoi `constats` est une liste et non un texte multi-lignes** : demander des puces séparées
+par des `\n` *à l'intérieur* d'une chaîne JSON déclenche une pathologie du décodage contraint. Une
+fois la chaîne refermée, le whitespace est toujours licite entre deux tokens JSON — la grammaire
+n'oblige donc jamais le modèle à en sortir, et il peut boucler indéfiniment sur des espaces et
+tabulations sans jamais atteindre la virgule suivante. La génération finit avortée par le serveur
+(`finish_reason="error"`) ou coupée par `max_tokens`, laissant un JSON tronqué non parsable.
+**9 des 30 appels de map du run e2e du 2026-07-29 sont tombés là-dedans**, sans jamais rattraper en
+3 tentatives (le même document rejoué à T=0.7 bouclait encore : ce n'est pas un aléa de tirage).
+Avec une liste, la grammaire attend `,` ou `]` après chaque élément : le modèle a un signal de
+sortie fort au lieu d'une zone de whitespace libre. Rejeu des 9 documents avec ce schéma : 9/9
+valides du premier coup.
 
 ### 2.5 Assemblage du rapport (`assemble_report`)
 
