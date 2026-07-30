@@ -145,6 +145,14 @@ renvoie une liste `constats` vide. N'invente pas de contenu de remplissage et ne
 l'énoncé du thème.
 - Sois dense et factuel, sans phrase de liaison, sans introduction, sans commentaire sur ta propre \
 démarche.
+- Sois EXHAUSTIF : ce relevé remplace le document pour la suite de l'analyse, tout ce que tu \
+n'écris pas sera définitivement perdu. Compte en dizaines de constats, pas en unités — de l'ordre \
+de 15 à 40 pour un document technique de plusieurs dizaines de milliers de caractères. Un relevé \
+d'un ou deux constats sur un tel document signifie que tu n'as pas fait le travail.
+- Relève TOUTES les valeurs d'une énumération, jamais un échantillon : si le document donne cinq \
+classements, cinq types ou cinq capacités, les cinq doivent figurer dans ton relevé.
+- Ne produis jamais de constat « méta » sur le document (« ce document décrit une résidence de \
+tourisme ») là où tu peux relever son CONTENU (typologies, capacités, classements, cotes).
 - Réponds avec exactement une entrée par thème demandé, en reprenant son `theme_id` à \
 l'identique."""
 
