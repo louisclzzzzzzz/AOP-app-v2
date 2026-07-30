@@ -84,7 +84,7 @@ def _fake_classification_call(monkeypatch):
 def _fake_completeness_call(monkeypatch):
     import app.completeness.engine as engine
 
-    def _fake(*, system_prompt, user_prompt, response_model, what):
+    def _fake(*, system_prompt, user_prompt, response_model, what, **kwargs):
         piece_ids = re.findall(r'piece_id="([^"]+)"', user_prompt)
         items = [
             {"piece_id": piece_id, "presence": "absent", "confidence": 0.5, "justification": "Hors sujet.", "citation": ""}
@@ -105,7 +105,7 @@ def _fake_extraction_call(monkeypatch):
             return dict(found=True, value="Commune de Marly", confidence=0.9, justification="j", citation="c")
         return dict(found=False, value="", confidence=0.1, justification="Absent.", citation="")
 
-    def _fake(*, system_prompt, user_prompt, response_model, what):
+    def _fake(*, system_prompt, user_prompt, response_model, what, **kwargs):
         if "synthese" in response_model.model_fields:
             return response_model(synthese="Synthèse de test."), "mistral-large-test-fake"
         filename_match = re.search(r"Document analysé : (.+)", user_prompt)
@@ -123,7 +123,7 @@ def _fake_synthesis_call(monkeypatch):
     résumé par thème concerné) puis l'étape "reduce" (un contenu Markdown par thème)."""
     import app.synthesis.engine as engine
 
-    def _fake(*, system_prompt, user_prompt, response_model, what):
+    def _fake(*, system_prompt, user_prompt, response_model, what, **kwargs):
         if "resumes" in response_model.model_fields:
             item_model = response_model.model_fields["resumes"].annotation.__args__[0]
             theme_ids = re.findall(r"theme_id : (\S+)", user_prompt)

@@ -220,6 +220,39 @@ def test_call_structured_chat_logs_raw_text_around_the_break(isolated_workspace,
     assert "finish_reason=stop" in logged
 
 
+def test_call_structured_chat_honours_explicit_max_tokens(isolated_workspace, monkeypatch):
+    """Les étapes « map » des deux phases produisent bien plus de sortie qu'un thème ou une section
+    (le RICT du dossier de test rend ~117 constats sur 6 sections) : sans plafond propre, la réponse
+    était coupée en plein JSON et le rattrapage rendait un relevé silencieusement appauvri."""
+    import app.mistral.client as client_mod
+
+    calls: list[int | None] = []
+
+    class _Chat:
+        def complete(self, **kwargs):
+            calls.append(kwargs.get("max_tokens"))
+            return _FakeResponse(_VALID_JSON, "stop")
+
+    class _Client:
+        chat = _Chat()
+
+    monkeypatch.setattr(client_mod, "get_client", lambda: _Client())
+    monkeypatch.setattr(client_mod, "_throttle_llm_call", lambda: None)
+    monkeypatch.setattr(
+        client_mod, "get_models_config",
+        lambda: {"llm": {"model": "m", "temperature": 0.0, "max_retries": 3, "parse_retries": 0,
+                         "max_tokens": 8000, "max_tokens_document_summary": 16000}},
+    )
+
+    client_mod.call_structured_chat(system_prompt="s", user_prompt="u", response_model=_StubModel, what="t")
+    client_mod.call_structured_chat(
+        system_prompt="s", user_prompt="u", response_model=_StubModel, what="t",
+        max_tokens=client_mod.document_summary_max_tokens(),
+    )
+
+    assert calls == [8000, 16000]
+
+
 def test_call_structured_chat_diagnoses_degenerate_whitespace_loop(isolated_workspace, monkeypatch, caplog):
     """Cause réelle des 9 échecs du run e2e du 2026-07-29 : le modèle ferme correctement la chaîne,
     puis boucle sur du whitespace (toujours licite entre deux tokens JSON, donc jamais interrompu

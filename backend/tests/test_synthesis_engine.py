@@ -125,7 +125,7 @@ def test_summarize_document_covers_all_topics_in_a_single_untruncated_call(monke
     caractères par document et par thème)."""
     calls = []
 
-    def _fake(*, system_prompt, user_prompt, response_model, what):
+    def _fake(*, system_prompt, user_prompt, response_model, what, **kwargs):
         calls.append(user_prompt)
         item = response_model.model_fields["resumes"].annotation.__args__[0]
         return (
@@ -163,7 +163,7 @@ def test_summarize_document_covers_all_topics_in_a_single_untruncated_call(monke
 
 
 def test_summarize_document_ignores_unknown_theme_ids(monkeypatch):
-    def _fake(*, system_prompt, user_prompt, response_model, what):
+    def _fake(*, system_prompt, user_prompt, response_model, what, **kwargs):
         item = response_model.model_fields["resumes"].annotation.__args__[0]
         return (
             response_model(
@@ -319,7 +319,7 @@ def test_build_topic_context_bounds_the_raw_excerpt_fallback_only():
 def test_generate_topic_documents_source_calls_llm_with_summaries(monkeypatch):
     captured = {}
 
-    def _fake(*, system_prompt, user_prompt, response_model, what):
+    def _fake(*, system_prompt, user_prompt, response_model, what, **kwargs):
         captured["user_prompt"] = user_prompt
         captured["what"] = what
         return response_model(contenu="Contenu généré."), "mistral-large-test"
@@ -406,7 +406,7 @@ def test_generate_topic_still_runs_when_no_summary_could_be_produced(monkeypatch
     le fait retomber sur les extraits bruts d'avant."""
     captured = {}
 
-    def _fake(*, system_prompt, user_prompt, response_model, what):
+    def _fake(*, system_prompt, user_prompt, response_model, what, **kwargs):
         captured["user_prompt"] = user_prompt
         return response_model(contenu="Contenu dégradé."), "mistral-large-test"
 

@@ -73,7 +73,7 @@ def _fake_classification_call(monkeypatch):
 def _fake_completeness_call(monkeypatch):
     import app.completeness.engine as engine
 
-    def _fake(*, system_prompt, user_prompt, response_model, what):
+    def _fake(*, system_prompt, user_prompt, response_model, what, **kwargs):
         piece_ids = re.findall(r'piece_id="([^"]+)"', user_prompt)
         items = [{"piece_id": p, "presence": "absent", "confidence": 0.5, "justification": "x", "citation": ""} for p in piece_ids]
         return response_model(items=items), "mistral-large-test-fake"
@@ -89,7 +89,7 @@ def _fake_extraction_call(monkeypatch):
             return dict(found=True, value="8 bd du port, Amiens", confidence=0.9, justification="j", citation="c")
         return dict(found=False, value="", confidence=0.1, justification="Absent.", citation="")
 
-    def _fake(*, system_prompt, user_prompt, response_model, what):
+    def _fake(*, system_prompt, user_prompt, response_model, what, **kwargs):
         if "synthese" in response_model.model_fields:
             return response_model(synthese="Synthèse de test."), "mistral-large-test-fake"
         filename_match = re.search(r"Document analysé : (.+)", user_prompt)
@@ -103,9 +103,27 @@ def _fake_extraction_call(monkeypatch):
 
 
 def _fake_audit_call(monkeypatch):
+    """Trois types d'appel depuis la Phase 2 : l'extraction de l'adresse chantier, l'étape « map »
+    (un relevé par document pivot) puis l'étape « reduce » (les risques d'une section)."""
+    import re
+
     import app.audit.engine as engine
 
-    def _fake(*, system_prompt, user_prompt, response_model, what):
+    def _fake(*, system_prompt, user_prompt, response_model, what, **kwargs):
+        if "releves" in response_model.model_fields:
+            item_model = response_model.model_fields["releves"].annotation.__args__[0]
+            section_ids = re.findall(r"section_id : (\S+)", user_prompt)
+            items = [
+                item_model(
+                    section_id=section_id,
+                    concerne_cette_section=True,
+                    constats=[f"Constat pour {section_id}."],
+                )
+                for section_id in section_ids
+            ]
+            return response_model(releves=items), "mistral-large-test-fake"
+        if "adresse" in response_model.model_fields:
+            return response_model(adresse="1 rue du Test, 38000 Grenoble"), "mistral-large-test-fake"
         risk = dict(
             statut="🔴", element_ouvrage="FONDATIONS", risque="Défaut de stabilité", alea="Tassement",
             synoptique_description="Tassement différentiel possible.", synoptique_preconisation="Réclamer la G2.",

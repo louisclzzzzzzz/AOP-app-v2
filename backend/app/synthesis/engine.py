@@ -38,7 +38,7 @@ from pydantic import BaseModel
 
 from app.classify.taxonomy import Taxonomy
 from app.ingestion.document_signal import DocumentSignal
-from app.mistral.client import call_structured_chat
+from app.mistral.client import call_structured_chat, document_summary_max_tokens
 from app.synthesis.schema import SynthesisSchema, SynthesisTopic
 
 logger = logging.getLogger(__name__)
@@ -210,6 +210,7 @@ def summarize_document(doc: DocumentSignal, topics: list[SynthesisTopic]) -> Doc
             user_prompt=_build_map_user_prompt(doc=doc, topics=topics),
             response_model=_DocumentSummaryResponse,
             what=f"synthèse projet — relevé du document {doc.filename}",
+            max_tokens=document_summary_max_tokens(),
         )
     except Exception as exc:
         logger.exception("Échec du relevé du document %s (synthèse projet)", doc.filename)

@@ -172,6 +172,14 @@ identique sur le fond, en respectant strictement ces trois points :
 d'espaces ni de tabulations de remplissage."""
 
 
+def document_summary_max_tokens() -> int | None:
+    """Plafond de sortie des étapes « map » des deux phases d'analyse (§models.yaml
+    `llm.max_tokens_document_summary`) : un relevé couvrant tous les thèmes/sections d'un document
+    produit bien plus de tokens qu'un thème ou une section isolés."""
+    cfg = get_models_config()["llm"]
+    return cfg.get("max_tokens_document_summary") or cfg.get("max_tokens")
+
+
 def _message_content(response) -> str | None:
     """Texte brut renvoyé par le modèle, avant tout parsing — c'est précisément ce que
     `client.chat.parse` du SDK ne laisse jamais voir quand son `json.loads()` interne échoue."""
@@ -200,6 +208,7 @@ def call_structured_chat(
     response_model: type[ModelT],
     what: str,
     model: str | None = None,
+    max_tokens: int | None = None,
 ) -> tuple[ModelT, str | None]:
     """Appel LLM avec Structured Outputs (JSON Schema strict dérivé du modèle Pydantic fourni).
     Utilisé par la classification (étape 1, `mistral-small` batché), la complétude (étape 2),
@@ -219,7 +228,11 @@ def call_structured_chat(
     model = model or cfg["model"]
     base_temperature = float(cfg.get("temperature", 0.0))
     timeout = cfg.get("timeout_seconds")
-    max_tokens = cfg.get("max_tokens")
+    # `max_tokens` explicite : un appelant dont la sortie est structurellement plus longue que la
+    # moyenne (§étapes « map » des deux phases) relève son propre plafond, sans changer celui des
+    # autres appels — une réponse coupée en plein JSON est irrécupérable et la re-tentative rend
+    # alors un résultat silencieusement appauvri.
+    max_tokens = max_tokens or cfg.get("max_tokens")
     parse_retries = int(cfg.get("parse_retries", 0))
     json_response_format = response_format_from_pydantic_model(response_model)
 

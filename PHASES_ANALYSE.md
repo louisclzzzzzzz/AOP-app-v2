@@ -271,8 +271,15 @@ run_audit_pipeline(dossier_id)
   ├─ 2. Géocodage + interrogation Géorisques (best-effort, cf. 3.4)
   │     Adresse chantier → géocodage BAN → 6 endpoints Géorisques.
   │
-  └─ 3. Génération des sections A→G en concurrence bornée
-        asyncio.Semaphore(4), même logique que la Phase 1.
+  ├─ 3. "map" — un appel LLM par DOCUMENT pivot (summarize_document_for_audit)
+  │     Chaque document est relu INTÉGRALEMENT, sans troncature, en un seul appel qui
+  │     couvre d'un coup toutes les sections dont il est pivot (sections_for_document).
+  │     Il en sort la liste de ses prescriptions, réserves et LACUNES pour chaque section.
+  │     Le RICT, pivot de 6 sections sur le dossier de test, est lu une fois et rend
+  │     ~157 constats répartis entre elles.
+  │
+  └─ 4. "reduce" — un appel LLM par section A→G en concurrence bornée
+        asyncio.Semaphore(4) partagé avec l'étape 3, même logique que la Phase 1.
 ```
 
 Le rapport assemblé (contexte Géorisques + tableau synoptique + analyse détaillée) est stocké dans
@@ -280,19 +287,38 @@ Le rapport assemblé (contexte Géorisques + tableau synoptique + analyse détai
 
 ### 3.3 Sélection des documents par section
 
-`select_section_documents` reprend le principe de la Phase 1 (parcours ordonné des
-`pivot_categories`), avec un filtre supplémentaire sur les catégories « par lot »
-(`LOT_FILTERED_CATEGORIES = {TECH/CCTP TRAVAUX, TECH/DPGF}`) : un gros dossier compte souvent
-15 à 25 CCTP (un par corps d'état), et un audit d'étanchéité n'a besoin que du ou des CCTP
-étanchéité/couverture — pas des 25. Chaque section déclare une liste `cctp_keywords`
+`document_matches_section` apparie un document et une section : catégorie pivot, plus un filtre sur
+les catégories « par lot » (`LOT_FILTERED_CATEGORIES = {TECH/CCTP TRAVAUX, TECH/DPGF}`). Un gros
+dossier compte souvent 15 à 25 CCTP (un par corps d'état), et un audit d'étanchéité n'a besoin que
+du ou des CCTP étanchéité/couverture — pas des 25. Chaque section déclare une liste `cctp_keywords`
 (insensible à la casse et aux accents, via normalisation Unicode NFKD) appliquée au nom de fichier
-et au lot détecté ; sans correspondance, le document est écarté pour cette section. Les autres
-catégories pivots (RICT, étude de sol, notice) ne sont jamais filtrées.
+et au lot détecté. Les autres catégories pivots (RICT, étude de sol, notice) ne sont jamais filtrées.
 
-Budgets de contexte : `AUDIT_PER_DOCUMENT_MAX_CHARS = 60 000`,
-`AUDIT_TOTAL_CONTEXT_MAX_CHARS = 280 000` — même logique que la Phase 1, mais en pratique rarement
-saturés grâce au filtrage par mots-clés (le plafond n'est qu'un garde-fou contre un dossier au
-corpus aberrant).
+Cet appariement sert dans les deux sens, à partir du même prédicat : `select_section_documents`
+(les documents d'une section, pour le reduce) et `sections_for_document` (les sections d'un
+document, pour le map et pour décider quoi OCRiser). Il ne porte que sur le nom de fichier et le
+lot, disponibles **avant** l'OCR — c'est ce qui permet de ne jamais OCRiser un CCTP hors sujet.
+
+**Pourquoi le map-reduce ici aussi.** L'ancien assemblage concaténait les textes bruts dans le
+prompt de chaque section, sous les mêmes plafonds que la Phase 1 — et ils saturaient pour de bon :
+sur le run du 2026-07-29, **369 661 caractères perdus en 10 troncatures**, le RICT rogné de 84 423 à
+60 000 caractères dans **cinq** sections et purement absent d'une sixième (budget total épuisé),
+l'étude de sol G2PRO ramenée de 180 562 à 60 000. Le map-reduce supprime ces pertes **et envoie
+moins** : 940 281 caractères d'entrée contre 1 203 026 (-22 %), le RICT n'étant plus renvoyé cinq
+fois tronqué mais lu une seule fois en entier. Seul le chemin de repli reste borné
+(`AUDIT_FALLBACK_*_MAX_CHARS`), pour un document dont le relevé n'a pas pu être produit.
+
+Deux réglages que le rejeu sur documents réels a rendus nécessaires, et qui valent comme mise en
+garde générale sur les étapes de map :
+
+- **le plafond de sortie doit être propre au map** (`llm.max_tokens_document_summary = 16000`) : un
+  relevé couvrant 6 sections dépasse les 8000 tokens des autres appels. La réponse était alors
+  coupée en plein JSON, et le rattrapage renvoyait un relevé de 6 constats au lieu de 157 — un
+  appauvrissement massif que rien ne signalait, puisque l'appel finissait par « réussir » ;
+- **le prompt doit calibrer le volume attendu et interdire les constats « méta »**. Sans consigne
+  explicite (« compte en dizaines de constats », « ne relève jamais l'absence d'un sujet étranger à
+  l'objet du document »), le modèle rendait un unique constat de synthèse sur des CCTP de lot —
+  un CCTP Fondations spéciales passait de 1 à 65 constats une fois la consigne ajoutée.
 
 ### 3.4 Intégration Géorisques (`audit/georisques.py`)
 
