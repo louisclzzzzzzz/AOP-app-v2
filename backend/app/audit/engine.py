@@ -18,6 +18,7 @@ saturé par des lots hors sujet et l'analyse diluée).
 from __future__ import annotations
 
 import logging
+import re
 import unicodedata
 from dataclasses import dataclass, field
 from typing import Literal
@@ -50,9 +51,23 @@ class RiskItem(BaseModel):
     synoptique_description: str
     synoptique_preconisation: str
     expose_situation: str
-    analyse_expert: str
+    # Listes, et non de longs textes multi-lignes : demander des puces séparées par des \n À
+    # L'INTÉRIEUR d'une chaîne JSON déclenche une boucle dégénérée du décodage contraint — une fois
+    # la chaîne refermée, le whitespace reste licite entre deux tokens JSON, donc la grammaire
+    # n'oblige jamais le modèle à en sortir, et la génération part en espaces/tabulations jusqu'à
+    # être avortée par le serveur (finish_reason='error') ou coupée par max_tokens, laissant un JSON
+    # tronqué. C'est ce qui a fait tomber 9 des 30 appels "map" de la Phase 1 (§synthesis/engine.py
+    # `constats`, run e2e du 2026-07-29). La Phase 2 n'avait pas encore cassé, mais elle produisait
+    # déjà le motif déclencheur : sur ce même run, 30/30 `recommandation` et 20/30 `analyse_expert`
+    # contenaient des sauts de ligne (jusqu'à 19 dans un seul champ).
+    #
+    # Le passage en liste ne raccourcit rien : ces deux champs SONT déjà des listes (un point de
+    # vérification « → … » / une action par élément), chaque élément restant un paragraphe dense.
+    # On ne supprime que les \n ENTRE les items — et la grammaire attend « , » ou « ] » après
+    # chacun, ce qui donne au modèle un signal de sortie fort au lieu d'une zone de whitespace libre.
+    analyse_expert: list[str]
     impact_assurabilite: str
-    recommandation: str
+    recommandations: list[str]
     source: str
 
 
@@ -161,14 +176,21 @@ SUPERSTRUCTURE, COUVERTURE, FAÇADES, ÉQUIPEMENTS, AMÉNAGEMENTS, ENVIRONNEMENT
 - synoptique_description : UNE phrase concise décrivant le problème (pour le tableau récapitulatif).
 - synoptique_preconisation : UNE phrase concise décrivant l'action attendue (pour le tableau).
 - expose_situation : résumé détaillé des prescriptions relevées dans les CCTP, l'étude de sol et le \
-RICT.
-- analyse_expert : analyse approfondie au regard des DTU / Eurocodes / règles de l'art ; rappelle \
-les points de vérification (→) concernés.
+RICT, en un seul paragraphe continu.
+- analyse_expert : LISTE des points de vérification, un élément par point. Chaque élément est un \
+paragraphe dense (2 à 4 phrases) qui analyse le point au regard des DTU / Eurocodes / règles de \
+l'art — commence-le par « → » suivi du titre du point en gras.
 - impact_assurabilite : nature du désordre potentiel (décennal, esthétique, fonctionnel, \
 impropriété à destination) et avis sur l'acceptation du risque en souscription.
-- recommandation : actions précises ou documents complémentaires à réclamer (plans d'exécution, \
-notes de calcul, certificats, essais, avis du bureau de contrôle).
+- recommandations : LISTE d'actions, une action par élément (plans d'exécution, notes de calcul, \
+certificats, essais, avis du bureau de contrôle à réclamer). Chaque élément est précis et \
+actionnable, et se suffit à lui-même.
 - source : nom des fichiers sources et articles/avis cités.
+
+Format des valeurs texte (impératif) : n'insère JAMAIS de retour à la ligne, de puce (« - ») en \
+tête ni de numérotation (« 1. ») à l'intérieur d'une valeur — ce sont les listes `analyse_expert` \
+et `recommandations` qui structurent le propos, un élément par point. N'utilise pas non plus de \
+guillemet droit (") : pour citer un passage, encadre-le par des guillemets français « … ».
 
 N'invente jamais une prescription absente des documents fournis."""
 
@@ -324,14 +346,32 @@ def _synoptic_table(outcomes: list[SectionOutcome]) -> str:
     return "\n".join(lines)
 
 
+def _clean_items(items: list[str]) -> list[str]:
+    """Nettoie une liste produite par le LLM : puces/numérotations résiduelles en tête d'élément
+    (le prompt les interdit, mais un élément déjà préfixé ne doit pas se retrouver doublé) et
+    éléments vides."""
+    cleaned = []
+    for item in items:
+        text = re.sub(r"^\s*(?:[-•*]|\d+[.)])\s*", "", item).strip()
+        if text:
+            cleaned.append(text)
+    return cleaned
+
+
 def _render_risk_detail(r: RiskItem) -> str:
     header = f"[STATUT : {r.statut}] | [{r.element_ouvrage}] | [{r.risque} / {r.alea}]" if r.alea else f"[STATUT : {r.statut}] | [{r.element_ouvrage}] | [{r.risque}]"
+    # `analyse_expert` : un paragraphe par point de vérification (les éléments commencent déjà par
+    # « → »), donc séparés par une ligne vide plutôt que rendus en puces.
+    analyse = "\n\n".join(_clean_items(r.analyse_expert)) or "_Non renseigné._"
+    recommandations = _clean_items(r.recommandations)
+    reco_block = "\n".join(f"- {item}" for item in recommandations) if recommandations else "_Non renseignée._"
     return (
         f"{header}\n\n"
         f"**Exposé de la situation :** {r.expose_situation}\n\n"
-        f"**Analyse de l'Expert & Référentiel :** {r.analyse_expert}\n\n"
+        f"**Analyse de l'Expert & Référentiel :**\n\n{analyse}\n\n"
         f"**Impact Assurabilité :** {r.impact_assurabilite}\n\n"
-        f"**Recommandation de levée de doute :** {r.recommandation} **Source :** {r.source}"
+        f"**Recommandation de levée de doute :**\n\n{reco_block}\n\n"
+        f"**Source :** {r.source}"
     )
 
 

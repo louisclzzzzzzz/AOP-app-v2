@@ -239,7 +239,16 @@ Chaque risque identifié par le LLM est un objet structuré (`RiskItem`, `audit/
 `statut` (🔴 critique / 🟠 modéré / 🟡 faible / 🟢 maîtrisé), `element_ouvrage`, `risque`, `alea`,
 une description et une préconisation courtes (pour le tableau synoptique), puis pour l'analyse
 détaillée : `expose_situation`, `analyse_expert` (référencée DTU/Eurocodes), `impact_assurabilite`,
-`recommandation` (actions/documents à réclamer) et `source` (fichiers/articles cités).
+`recommandations` (actions/documents à réclamer) et `source` (fichiers/articles cités).
+
+`analyse_expert` et `recommandations` sont des **listes de chaînes** — un point de vérification /
+une action par élément, chaque élément restant un paragraphe dense. Ce n'est pas un choix de style
+mais la même précaution qu'en Phase 1 (§2.4, `constats`) : des puces séparées par des `\n` *à
+l'intérieur* d'une chaîne JSON exposent le décodage contraint à une boucle dégénérée sur du
+whitespace, qui tronque la réponse. La Phase 2 n'avait pas encore cassé, mais elle produisait déjà
+le motif déclencheur — sur le run du 2026-07-29, 30/30 `recommandation` et 20/30 `analyse_expert`
+contenaient des sauts de ligne, jusqu'à 19 dans un seul champ. Le passage en liste ne raccourcit
+rien : ces deux champs *étaient* déjà des listes, écrasées dans une chaîne.
 
 Le prompt système cadre explicitement le rôle : *« Expert Senior en Ingénierie des Risques
 Construction, en charge de la souscription des polices Dommages-Ouvrage (DO) et Tous Risques

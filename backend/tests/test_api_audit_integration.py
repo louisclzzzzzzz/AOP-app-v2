@@ -109,8 +109,10 @@ def _fake_audit_call(monkeypatch):
         risk = dict(
             statut="🔴", element_ouvrage="FONDATIONS", risque="Défaut de stabilité", alea="Tassement",
             synoptique_description="Tassement différentiel possible.", synoptique_preconisation="Réclamer la G2.",
-            expose_situation="Le CCTP prévoit des semelles.", analyse_expert="Selon l'Eurocode 7…",
-            impact_assurabilite="Risque décennal élevé.", recommandation="Exiger la note de calcul.", source="CCTP",
+            expose_situation="Le CCTP prévoit des semelles.",
+            analyse_expert=["→ **Portance** : selon l'Eurocode 7…"],
+            impact_assurabilite="Risque décennal élevé.",
+            recommandations=["Exiger la note de calcul."], source="CCTP",
         )
         return response_model(risques=[risk]), "mistral-large-test-fake"
 
