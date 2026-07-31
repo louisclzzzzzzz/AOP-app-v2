@@ -214,8 +214,33 @@ def test_generate_topic_extraction_fields_source_never_calls_llm(monkeypatch):
 
     assert outcome.error is None
     assert outcome.model_name is None
-    assert "Commune de Marly" in outcome.content_md
-    assert "Adresse du MOA" not in outcome.content_md  # valeur vide, exclue du rendu
+    # Rendu en tableau à 2 colonnes (carte d'identité), pas en lignes « **libellé :** valeur ».
+    assert "| Donnée | Valeur |" in outcome.content_md
+    assert "| Nom du MOA | Commune de Marly |" in outcome.content_md
+    # Un champ sans valeur reste affiché « non trouvé » : l'absence d'une donnée de souscription
+    # est une information, une ligne omise se confondrait avec un champ jamais demandé.
+    assert "| Adresse du MOA | _non trouvé_ |" in outcome.content_md
+
+
+def test_extraction_fields_table_escapes_pipes_and_newlines():
+    """Une valeur d'extraction peut contenir un « | » (champ `montants_garanties_demandes`, dont le
+    résultat attendu est une correspondance garantie → montant) ou un retour à la ligne : les deux
+    casseraient la ligne de tableau Markdown."""
+    topic = _topic(source="extraction_fields", extraction_field_ids=["garanties_demandees"])
+    outcome = generate_topic(
+        topic,
+        documents=[],
+        field_values={"garanties_demandees": ("Garanties", "TRC | 12 M€\nDO | 8 M€")},
+        summaries={},
+    )
+
+    lines = outcome.content_md.splitlines()
+    assert len(lines) == 3  # en-tête + séparateur + une seule ligne de données
+    row = lines[-1]
+    assert row.count("\\|") == 2  # les 2 pipes de la valeur sont échappés
+    # Seuls les 3 délimiteurs d'une ligne à 2 colonnes restent des pipes non échappés.
+    assert row.count("|") - row.count("\\|") == 3
+    assert row.startswith("| Garanties |") and row.endswith("|")
 
 
 def test_generate_topic_extraction_fields_source_handles_no_data():
@@ -488,9 +513,56 @@ def test_assemble_report_traces_sources_and_documents_without_information():
 
     report = assemble_report(outcomes, schema)
 
-    assert "_Sources consultées : a.pdf_" in report
-    assert "+2 document(s) pivot(s) lu(s) sans information utile" in report
+    assert "_Sources (1) : a.pdf_" in report
+    assert "+2 pivot(s) sans information utile" in report
     assert "extrait brut tronqué utilisé pour : b.pdf" in report
+
+
+def test_sources_note_truncates_long_file_lists_but_keeps_the_count():
+    """Sur un dossier à 24 CCTP par lot, cette note atteignait ~1 500 caractères PAR SECTION —
+    à elle seule une part majeure du rapport, pour une information de second plan (la source
+    précise de chaque donnée est portée par la colonne "Source" des tableaux)."""
+    filenames = [f"lot{i:02d}.pdf" for i in range(20)]
+    schema = SynthesisSchema(topics=[_topic(id="t1", titre="Premier")])
+    outcomes = [
+        TopicOutcome(
+            topic_id="t1",
+            content_md="Contenu",
+            model_name="m",
+            error=None,
+            documents_used=filenames,
+            candidates_count=len(filenames),
+        )
+    ]
+
+    report = assemble_report(outcomes, schema)
+
+    assert "_Sources (20) : " in report  # le compte total reste affiché, rien n'est masqué
+    assert "lot00.pdf" in report
+    assert "+14 autre(s)" in report
+    assert "lot19.pdf" not in report
+
+
+def test_sources_note_never_truncates_degraded_documents():
+    """La liste dégradée est un signal de qualité : l'expert doit voir TOUS les fichiers concernés
+    pour juger s'il peut se fier à la section, même s'ils sont nombreux."""
+    degraded = [f"deg{i:02d}.pdf" for i in range(20)]
+    schema = SynthesisSchema(topics=[_topic(id="t1", titre="Premier")])
+    outcomes = [
+        TopicOutcome(
+            topic_id="t1",
+            content_md="Contenu",
+            model_name="m",
+            error=None,
+            documents_used=degraded,
+            candidates_count=len(degraded),
+            documents_degraded=degraded,
+        )
+    ]
+
+    report = assemble_report(outcomes, schema)
+
+    assert all(name in report for name in degraded)
 
 
 def test_assemble_report_shows_error_note_for_failed_topic():

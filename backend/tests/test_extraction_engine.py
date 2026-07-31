@@ -423,3 +423,95 @@ def test_generate_synthesis_returns_none_on_llm_failure_without_raising(monkeypa
     monkeypatch.setattr(engine, "call_structured_chat", _boom)
 
     assert generate_synthesis([("Montant total HT", "1 234 567 EUR")]) is None
+
+
+# --- Lotissement des champs par appel (schéma v2 : 50 champs) -----------------------------------
+
+def test_plan_reference_document_calls_splits_fields_into_batches():
+    """Passé au schéma v2 (`donnes_ref_v2.md`), un CCTP assurance est catégorie de référence d'une
+    vingtaine de champs. Sans lotissement, ils partaient en UN appel partageant un unique extrait
+    de `DOCUMENT_EXCERPT_MAX_CHARS` caractères sélectionné pour tous leurs indices à la fois."""
+    fields = [_field(id=f"f{i}", reference_categories=["ASS/RC"]) for i in range(engine.MAX_FIELDS_PER_CALL + 3)]
+    doc = _doc(document_id="rc", final_category="ASS/RC", content_excerpt="texte")
+
+    calls = plan_reference_document_calls(fields, [doc])
+
+    assert len(calls) == 2
+    assert all(call_doc is doc for call_doc, _ in calls)
+    assert [len(batch) for _, batch in calls] == [engine.MAX_FIELDS_PER_CALL, 3]
+    # Aucun champ perdu ni dupliqué, et l'ordre du schéma (donc le regroupement par section) tenu.
+    assert [f.id for _, batch in calls for f in batch] == [f.id for f in fields]
+
+
+def test_plan_reference_document_calls_keeps_single_call_below_the_batch_size():
+    fields = [_field(id=f"f{i}", reference_categories=["ASS/RC"]) for i in range(3)]
+    doc = _doc(document_id="rc", final_category="ASS/RC", content_excerpt="texte")
+
+    calls = plan_reference_document_calls(fields, [doc])
+
+    assert len(calls) == 1
+    assert len(calls[0][1]) == 3
+
+
+def test_plan_manual_calls_batches_fields_too():
+    fields = [_field(id=f"f{i}") for i in range(engine.MAX_FIELDS_PER_CALL + 1)]
+    doc = _doc(content_excerpt="texte")
+
+    calls = plan_manual_calls(fields, [doc])
+
+    assert len(calls) == 2
+    assert [f.id for _, batch in calls for f in batch] == [f.id for f in fields]
+
+
+def test_merge_document_results_accumulates_decisions_across_batches():
+    first = engine.DocumentExtractionResult(document_id="d", decisions={"a": "A"}, model_name="m1")
+    second = engine.DocumentExtractionResult(document_id="d", decisions={"b": "B"}, model_name="m2")
+
+    merged = engine.merge_document_results(first, second)
+
+    assert merged.decisions == {"a": "A", "b": "B"}
+    assert merged.error is None
+
+
+def test_merge_document_results_keeps_decisions_when_one_batch_fails():
+    """L'échec d'un lot ne doit pas emporter les décisions des lots voisins du même document."""
+    ok = engine.DocumentExtractionResult(document_id="d", decisions={"a": "A"}, model_name="m")
+    failed = engine.DocumentExtractionResult(document_id="d", error="timeout")
+
+    merged = engine.merge_document_results(ok, failed)
+
+    assert merged.decisions == {"a": "A"}
+    assert merged.error == "timeout"
+
+
+def test_resolve_field_prefers_a_decision_over_a_sibling_batch_error():
+    """Conséquence directe du lotissement : un document peut porter à la fois une décision (lot
+    réussi) et une erreur (lot voisin en échec). La décision doit primer, sinon le champ serait
+    déclaré en erreur alors qu'il a bel et bien été extrait."""
+    f = _field(id="montant", reference_categories=["ASS/RC"])
+    doc = _doc(document_id="rc", final_category="ASS/RC", content_excerpt="texte")
+    response_model = engine._document_response_model(("montant",))
+    decision = _decision_item(
+        response_model,
+        field_id="montant",
+        found=True,
+        value="1 M€",
+        confidence=0.9,
+        justification="Montant lu dans l'article 3.",
+        citation="Montant des travaux : 1 M€",
+    )
+    result = engine.DocumentExtractionResult(
+        document_id="rc", decisions={"montant": decision}, model_name="m", error="échec du lot voisin"
+    )
+
+    outcome = resolve_field(
+        f,
+        candidates=[doc],
+        results_by_document={"rc": result},
+        match_layer="file",
+        cross_check_required=False,
+    )
+
+    assert outcome is not None
+    assert outcome.error is None
+    assert outcome.value == "1 M€"

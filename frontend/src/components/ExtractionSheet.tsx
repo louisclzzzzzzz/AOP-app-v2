@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   correctExtraction,
   documentFileUrl,
+  extractionExcelUrl,
   generateAuditRisques,
   generateProjectSynthesis,
   getCompleteness,
@@ -25,11 +26,6 @@ interface Props {
   dossier: Dossier
   documents: DocumentItem[] | null
   onApplied: () => void
-}
-
-const SECTION_LABELS: Record<string, string> = {
-  principal: 'Données principales',
-  complementaire: 'Informations complémentaires',
 }
 
 const CROSS_CHECK_LABELS: Record<string, string> = {
@@ -166,6 +162,9 @@ export function ExtractionSheet({ dossierId, dossier, documents, onApplied }: Pr
     return map
   }, [documents])
 
+  // L'API sert les champs dans l'ordre du schéma (`extraction_schema.yaml`), qui porte le
+  // regroupement thématique de la Feuil2 : une Map préserve l'ordre d'insertion, donc on ne
+  // retrie ni les sections ni les champs — un tri alphabétique casserait cet ordre métier.
   const bySection = useMemo(() => {
     const grouped = new Map<string, ExtractionEntry[]>()
     for (const entry of entries ?? []) {
@@ -174,6 +173,12 @@ export function ExtractionSheet({ dossierId, dossier, documents, onApplied }: Pr
       grouped.set(entry.section, list)
     }
     return grouped
+  }, [entries])
+
+  const sectionLabels = useMemo(() => {
+    const labels = new Map<string, string>()
+    for (const entry of entries ?? []) labels.set(entry.section, entry.section_libelle)
+    return labels
   }, [entries])
 
   const handleRun = useCallback(async () => {
@@ -295,23 +300,19 @@ export function ExtractionSheet({ dossierId, dossier, documents, onApplied }: Pr
             ].join('\n')
           : '_Aucune pièce sélectionnée._'
 
-      const sortedSections = [...bySection.keys()].sort((a, b) =>
-        a === 'principal' ? -1 : b === 'principal' ? 1 : a.localeCompare(b),
-      )
+      const sortedSections = [...bySection.keys()]
       const extractionMd =
         sortedSections.length > 0
           ? sortedSections
               .map((section) => {
                 const rows = (bySection.get(section) ?? [])
-                  .slice()
-                  .sort((a, b) => a.libelle.localeCompare(b.libelle))
                   .map((entry) => {
                     const sources =
                       entry.sources.map((s) => documentPathById.get(s.document_id) ?? s.filename).join(', ') || '—'
                     return `| ${escapeMd(entry.libelle)} | ${escapeMd(entry.final_value ?? 'Non trouvée')} | ${escapeMd(sources)} |`
                   })
                 return [
-                  `### ${SECTION_LABELS[section] ?? section}`,
+                  `### ${sectionLabels.get(section) ?? section}`,
                   '',
                   '| Donnée | Valeur | Sources |',
                   '|---|---|---|',
@@ -513,6 +514,15 @@ ${auditMd}
           >
             {downloadingReport ? 'Génération…' : 'Télécharger le rapport (.md)'}
           </button>
+          {/* Lien direct plutôt qu'un fetch + Blob : le serveur régénère le classeur à la volée
+              depuis l'état courant, y compris les corrections manuelles en cours de validation. */}
+          <a
+            href={extractionExcelUrl(dossierId)}
+            title="Tableau d'extraction au format Excel — une ligne par donnée de la feuille de référence, avec valeur, sources, preuve et confiance"
+            className="rounded-md border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50"
+          >
+            Exporter le tableau (.xlsx)
+          </a>
           {isReview && (
             <button
               onClick={handleValidate}
@@ -577,16 +587,13 @@ ${auditMd}
           </thead>
           <tbody className="divide-y divide-slate-100">
             {[...bySection.keys()]
-              .sort((a, b) => (a === 'principal' ? -1 : b === 'principal' ? 1 : a.localeCompare(b)))
               .flatMap((section) => [
                 <tr key={`section-${section}`} className="bg-slate-50">
                   <td colSpan={5} className="px-3 py-1.5 font-medium text-slate-600">
-                    {SECTION_LABELS[section] ?? section}
+                    {sectionLabels.get(section) ?? section}
                   </td>
                 </tr>,
                 ...(bySection.get(section) ?? [])
-                  .slice()
-                  .sort((a, b) => a.libelle.localeCompare(b.libelle))
                   .map((entry) => (
                     <tr key={entry.field_id} className={savingId === entry.field_id ? 'opacity-50' : ''}>
                       <td className="px-3 py-1.5">{entry.libelle}</td>

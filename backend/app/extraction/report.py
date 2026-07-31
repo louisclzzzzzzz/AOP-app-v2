@@ -105,7 +105,6 @@ def _build_report(dossier: Dossier, entries: list[ExtractionReportEntry]) -> dic
     }
 
 
-_SECTION_LABELS = {"principal": "Données principales", "complementaire": "Informations complémentaires"}
 _CROSS_CHECK_LABELS = {
     "coherent": "Recoupement cohérent",
     "incoherent": "⚠ Recoupement incohérent",
@@ -116,6 +115,7 @@ _CROSS_CHECK_LABELS = {
 
 
 def _render_markdown(report: dict) -> str:
+    schema = load_extraction_schema()
     by_section: dict[str, list[dict]] = defaultdict(list)
     for e in report["entries"]:
         by_section[e["section"]].append(e)
@@ -126,10 +126,18 @@ def _render_markdown(report: dict) -> str:
         f"Généré le {report['generated_at']} — {report['total_fields']} champ(s).",
         "",
     ]
-    for section in sorted(by_section, key=lambda s: (s != "principal", s)):
-        lines.append(f"## {_SECTION_LABELS.get(section, section)}")
+    # Ordre de déclaration des sections du schéma, puis les sections orphelines (rapport regénéré
+    # après suppression d'une section du YAML) pour qu'aucune donnée figée ne disparaisse du rendu.
+    declared = [s.id for s in schema.sections]
+    ordered_sections = [s for s in declared if s in by_section]
+    ordered_sections += sorted(s for s in by_section if s not in set(declared))
+    # Ordre du schéma à l'intérieur d'une section (et non l'ordre alphabétique des libellés) :
+    # la Feuil2 range les données dans un ordre métier voulu.
+    field_order = {f.id: i for i, f in enumerate(schema.fields)}
+    for section in ordered_sections:
+        lines.append(f"## {schema.section_label(section)}")
         lines.append("")
-        for e in sorted(by_section[section], key=lambda x: x["libelle"]):
+        for e in sorted(by_section[section], key=lambda x: field_order.get(x["field_id"], len(field_order))):
             value = e["value"] if e["value"] else "*(non trouvée)*"
             corrected = " (corrigé manuellement)" if e["manually_corrected"] else ""
             tag = _CROSS_CHECK_LABELS.get(e["cross_check_status"])

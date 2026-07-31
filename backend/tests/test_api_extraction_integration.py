@@ -188,7 +188,9 @@ def test_full_extraction_flow_with_cross_check_incoherence(isolated_workspace, m
     assert schema_resp.status_code == 200
     all_field_ids = {f["id"] for f in schema_resp.json()}
     assert "montants_totaux_ht" in all_field_ids
-    assert len(all_field_ids) == 30
+    assert len(all_field_ids) == 50
+    # Le libellé de section est servi par l'API (le client ne redéclare pas la table des sections).
+    assert all(f["section_libelle"] for f in schema_resp.json())
 
     # Ne peut pas lancer l'extraction avant que la complétude ne soit validée serait bloqué,
     # mais on est déjà à completeness_validated : essai anticipé (avant tout GET) doit marcher.

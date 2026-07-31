@@ -32,6 +32,7 @@ from app.extraction.engine import (
     analyze_document,
     generate_synthesis,
     layer2_candidates,
+    merge_document_results,
     plan_layer2_calls,
     plan_manual_calls,
     plan_reference_document_calls,
@@ -183,7 +184,10 @@ async def run_extraction_pipeline(dossier_id: str, *, document_ids: list[str] | 
             doc = await asyncio.to_thread(ensure_document_ocr, dossier_id, doc)
             signals_by_id[doc.document_id] = doc
             result = await asyncio.to_thread(analyze_document, doc, fields_for_doc)
-            results[doc.document_id] = result
+            # Un même document donne lieu à plusieurs appels quand ses champs ont été lotis
+            # (`_batch_fields`) : on fusionne au lieu d'écraser, sinon seul le dernier lot
+            # survivrait et tous les champs des lots précédents seraient déclarés absents.
+            results[doc.document_id] = merge_document_results(results.get(doc.document_id), result)
             touched_field_ids.update(f.id for f in fields_for_doc)
             counters = await asyncio.to_thread(_read_counters)
             counters["fields_extracted"] = min(

@@ -85,17 +85,21 @@ def _document_signals(dossier_id: str) -> list[DocumentSignal]:
 
 
 def _field_values(dossier_id: str) -> FieldValues:
+    """Valeurs de l'étape 3, indexées par field_id.
+
+    Les champs SANS valeur sont inclus, avec une valeur vide : la carte d'identité de la Phase 1
+    (`_format_extraction_fields_topic`) doit pouvoir afficher une ligne « non trouvé » plutôt que
+    d'omettre la donnée — une absence est une information de souscription, et une ligne manquante
+    en silence se confond avec un champ qu'on aurait oublié de demander. Les consommateurs qui ne
+    veulent que les valeurs renseignées (`_format_grounding_block`) testent déjà la valeur vide."""
     schema = load_extraction_schema()
     with session_scope() as s:
         results = list_extraction_results(s, dossier_id)
+    by_field_id = {r.field_id: r for r in results}
     values: FieldValues = {}
-    for r in results:
-        if not r.final_value:
-            continue
-        f = schema.by_id(r.field_id)
-        if f is None:
-            continue
-        values[r.field_id] = (f.libelle, r.final_value)
+    for f in schema.fields:
+        result = by_field_id.get(f.id)
+        values[f.id] = (f.libelle, result.final_value if result and result.final_value else "")
     return values
 
 

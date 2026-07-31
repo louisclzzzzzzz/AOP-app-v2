@@ -281,7 +281,7 @@ thème, un relevé factuel de ce que CE document apporte à CE thème, établi l
 passe de lecture intégrale, document par document. Chaque relevé reste donc attribué à son \
 fichier source.
 
-Règles impératives :
+Règles impératives — fidélité :
 - N'utilise QUE les informations présentes dans les relevés fournis ci-dessous et les données \
 déjà validées — n'invente jamais une donnée absente.
 - Si une information demandée est absente des relevés fournis, dis-le explicitement \
@@ -290,9 +290,27 @@ l'inventer.
 - Confronte les relevés entre eux : si deux documents se contredisent sur une même donnée \
 (classement ERP, nombre de niveaux, surfaces, montants, avis émis…), signale la divergence \
 explicitement en nommant les deux fichiers sources, au lieu de trancher en silence.
-- Utilise systématiquement des citations : après chaque donnée factuelle, indique entre \
-parenthèses le document source (ex. "(Source : RICT SOCOTEC)").
-- Respecte strictement le format demandé (prose, tableau Markdown, ou liste à puces).
+- Indique la source de chaque donnée factuelle. Dans un tableau, c'est le rôle de la colonne \
+"Source" : n'y remets pas le mot « Source », juste le nom du fichier. Hors tableau, mets le nom \
+du fichier entre parenthèses.
+
+Règles impératives — forme. Ce rapport est un outil de travail pour un souscripteur, pas une \
+note de synthèse rédigée : il doit se lire et se vérifier vite.
+- Respecte strictement le format demandé et, quand des colonnes de tableau sont imposées, \
+reprends-les à l'identique, dans l'ordre. Un tableau demandé se rend en tableau Markdown, jamais \
+en prose sous un titre.
+- N'écris AUCUNE introduction, AUCUNE phrase d'annonce de ce que tu vas dire, AUCUNE conclusion, \
+AUCUN résumé ni récapitulatif final, AUCUN commentaire sur ta propre démarche. Commence \
+directement par le contenu.
+- Ne dis jamais deux fois la même chose : un fait donné dans un tableau ne doit pas être repris \
+dans le texte qui l'entoure.
+- Pas de gras ni d'italique décoratifs. Le gras ne sert qu'à signaler une divergence entre \
+documents ou un point bloquant, jamais à mettre en valeur un mot au fil du texte.
+- Pas de titre de niveau 1 ni 2 (# / ##). Si le thème a plusieurs blocs, enchaîne-les sans titre, \
+ou avec un titre de niveau 4 (####) au maximum.
+- Va droit au fait : une phrase = une information. Supprime les formules de liaison ("par \
+ailleurs", "il convient de noter que", "en résumé"), les adjectifs d'appréciation ("ambitieux", \
+"remarquable", "notable") et toute analyse que les documents ne portent pas.
 - Réponds uniquement avec le contenu Markdown de cette section, sans reprendre le titre de la \
 section (déjà affiché séparément dans le rapport)."""
 
@@ -380,17 +398,32 @@ def _build_topic_context(
     )
 
 
+def _escape_table_cell(value: str) -> str:
+    """Une valeur d'extraction peut contenir un « | » (ex. un tableau garantie→montant) ou un
+    retour à la ligne : les deux cassent une ligne de tableau Markdown."""
+    return value.replace("|", "\\|").replace("\r\n", " ").replace("\n", " ").strip()
+
+
 def _format_extraction_fields_topic(topic: SynthesisTopic, field_values: FieldValues) -> str:
-    lines = []
+    """Carte d'identité du dossier : reformatage déterministe, sans appel LLM, des valeurs déjà
+    résolues et recoupées à l'étape 3.
+
+    Rendu en TABLEAU et non plus en lignes « **libellé :** valeur » : à 17 champs, la forme en
+    lignes occupait une page entière de rapport pour ce qui se lit d'un coup d'œil en deux
+    colonnes. Les champs non trouvés sont affichés « non trouvé » au lieu d'être omis — l'absence
+    d'une donnée de souscription est une information en soi, et une ligne manquante silencieusement
+    se confond avec un champ qu'on aurait oublié de demander."""
+    rows: list[str] = []
     for field_id in topic.extraction_field_ids:
         pair = field_values.get(field_id)
-        if pair is None or not pair[1]:
+        if pair is None:
             continue
         libelle, value = pair
-        lines.append(f"**{libelle} :** {value}")
-    if not lines:
+        rendered = _escape_table_cell(value) if value else "_non trouvé_"
+        rows.append(f"| {_escape_table_cell(libelle)} | {rendered} |")
+    if not rows:
         return "_Aucune donnée disponible (étape 3)._"
-    return "\n\n".join(lines)
+    return "\n".join(["| Donnée | Valeur |", "|---|---|", *rows])
 
 
 def _format_grounding_block(topic: SynthesisTopic, field_values: FieldValues) -> str:
@@ -408,8 +441,21 @@ def _format_grounding_block(topic: SynthesisTopic, field_values: FieldValues) ->
 
 def _build_topic_user_prompt(*, topic: SynthesisTopic, grounding: str, context: str) -> str:
     grounding_block = f"\n{grounding}\n" if grounding else ""
+    # Le plafond est répété en fin de prompt (juste avant la consigne de rédaction) : placé
+    # uniquement en tête, il se fait oublier derrière les relevés, qui font l'essentiel du contexte.
+    budget = (
+        f"Volume maximum : {topic.max_lignes} lignes de contenu, lignes de tableau comprises "
+        f"(hors ligne d'en-tête et hors ligne de séparation). Ce plafond est un maximum, pas une "
+        f"cible : n'écris pas de remplissage pour l'atteindre. Si la matière dépasse ce volume, "
+        f"garde les faits les plus déterminants pour la souscription et supprime le reste — jamais "
+        f"en tronquant une phrase ou un tableau en cours."
+        if topic.max_lignes
+        else ""
+    )
+    budget_header = f"\n{budget}" if budget else ""
+    budget_footer = f"\n{budget}\n" if budget else ""
     return f"""Thème à développer : {topic.titre}
-Format attendu : {topic.format}
+Format attendu : {topic.format}{budget_header}
 
 Consigne de rédaction :
 {topic.instructions}
@@ -418,8 +464,8 @@ Relevés factuels établis document par document sur l'ensemble des documents pi
 ---
 {context}
 ---
-
-Rédige le contenu Markdown de cette section."""
+{budget_footer}
+Rédige le contenu Markdown de cette section, sans introduction ni conclusion."""
 
 
 def _no_documents_message(topic: SynthesisTopic) -> str:
@@ -508,6 +554,21 @@ def build_documents_cartography(documents: list[DocumentSignal], taxonomy: Taxon
     return "\n".join(lines)
 
 
+# Au-delà de ce nombre, la liste des fichiers exploités est tronquée dans la note de traçabilité.
+# Sur un dossier à 24 CCTP par lot, cette ligne atteignait ~1 500 caractères PAR SECTION, soit à
+# elle seule une part majeure du rapport — pour une information de second plan, la source précise
+# de chaque donnée étant déjà portée par la colonne "Source" des tableaux. Le compte total reste
+# affiché, donc rien n'est masqué silencieusement.
+SOURCES_NOTE_MAX_FILENAMES = 6
+
+
+def _format_filenames(filenames: list[str], *, limit: int = SOURCES_NOTE_MAX_FILENAMES) -> str:
+    if len(filenames) <= limit:
+        return ", ".join(filenames)
+    hidden = len(filenames) - limit
+    return ", ".join(filenames[:limit]) + f", +{hidden} autre(s)"
+
+
 def _sources_note(outcome: TopicOutcome) -> str:
     """Ligne de traçabilité sous une section : les fichiers réellement exploités pour ce thème.
     C'est la trace de sourcing retenue en production — les relevés du map n'ont plus à porter une
@@ -516,11 +577,15 @@ def _sources_note(outcome: TopicOutcome) -> str:
         return ""
     parts: list[str] = []
     if outcome.documents_used:
-        parts.append("_Sources consultées : " + ", ".join(outcome.documents_used) + "_")
+        parts.append(
+            f"_Sources ({len(outcome.documents_used)}) : " + _format_filenames(outcome.documents_used) + "_"
+        )
     without_info = outcome.candidates_count - len(outcome.documents_used)
     if without_info > 0:
-        parts.append(f"_(+{without_info} document(s) pivot(s) lu(s) sans information utile pour ce thème)_")
+        parts.append(f"_(+{without_info} pivot(s) sans information utile)_")
     if outcome.documents_degraded:
+        # Jamais tronquée : c'est un signal de qualité dégradée, l'expert doit voir tous les
+        # fichiers concernés pour juger s'il peut se fier à la section.
         parts.append(
             "_(relevé indisponible, extrait brut tronqué utilisé pour : "
             + ", ".join(outcome.documents_degraded)

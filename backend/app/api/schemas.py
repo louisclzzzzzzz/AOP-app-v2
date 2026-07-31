@@ -192,6 +192,9 @@ class ExtractionFieldOut(BaseModel):
     id: str
     libelle: str
     section: str
+    # Libellé lisible de la section, servi par l'API plutôt que redéclaré côté client : les
+    # sections thématiques sont définies dans `extraction_schema.yaml` et évoluent avec lui.
+    section_libelle: str
     resultat_attendu: str | None
     reference_categories: list[str]
 
@@ -207,6 +210,7 @@ class ExtractionEntryOut(BaseModel):
     field_id: str
     libelle: str
     section: str
+    section_libelle: str
     resultat_attendu: str | None
 
     status: str
