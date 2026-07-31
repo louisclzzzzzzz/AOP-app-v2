@@ -3,8 +3,7 @@ from __future__ import annotations
 import pytest
 from pydantic import BaseModel
 
-from app.mistral.client import MistralNotConfiguredError, _retry, get_client
-from app.mistral.client import get_client as get_client_fn
+from app.mistral.client import MistralNotConfiguredError, _retry, get_clients, reset_slots_for_tests
 
 
 def test_get_client_raises_when_api_key_missing(isolated_workspace, monkeypatch):
@@ -15,9 +14,9 @@ def test_get_client_raises_when_api_key_missing(isolated_workspace, monkeypatch)
     from app.settings import get_settings
 
     get_settings.cache_clear()
-    get_client_fn.cache_clear()
+    reset_slots_for_tests()
     with pytest.raises(MistralNotConfiguredError):
-        get_client()
+        get_clients()
 
 
 def _fake_mistral_error(message: str):
@@ -28,7 +27,7 @@ def _fake_mistral_error(message: str):
     return MistralError(message, fake_response)
 
 
-def test_retry_succeeds_after_transient_failures(isolated_workspace):
+def test_retry_succeeds_after_transient_failures(isolated_workspace, monkeypatch):
     calls = {"n": 0}
 
     def flaky():
@@ -37,26 +36,25 @@ def test_retry_succeeds_after_transient_failures(isolated_workspace):
             raise _fake_mistral_error("temporary failure")
         return "ok"
 
-    # monkeypatch time.sleep to avoid slowing down the test with real backoff waits
+    # Neutralise l'attente de backoff. Via monkeypatch et JAMAIS par affectation directe :
+    # `client_mod.time` est le module `time` global du processus, donc une affectation non
+    # restaurée remplace `time.sleep` pour TOUTE la session de tests (c'était le cas ici, et ça
+    # faisait passer à tort les tests de concurrence qui s'appuient sur un vrai sleep).
     import app.mistral.client as client_mod
 
-    original_sleep = client_mod.time.sleep
-    client_mod.time.sleep = lambda _seconds: None
-    try:
-        result = _retry(flaky, what="test")
-    finally:
-        client_mod.time.sleep = original_sleep
+    monkeypatch.setattr(client_mod.time, "sleep", lambda _seconds: None)
+    result = _retry(flaky, what="test")
 
     assert result == "ok"
     assert calls["n"] == 3
 
 
-def test_retry_raises_after_exhausting_attempts(isolated_workspace):
+def test_retry_raises_after_exhausting_attempts(isolated_workspace, monkeypatch):
     from mistralai.client.errors.mistralerror import MistralError
 
     import app.mistral.client as client_mod
 
-    client_mod.time.sleep = lambda _seconds: None
+    monkeypatch.setattr(client_mod.time, "sleep", lambda _seconds: None)
 
     def always_fails():
         raise _fake_mistral_error("permanent failure")
@@ -65,44 +63,55 @@ def test_retry_raises_after_exhausting_attempts(isolated_workspace):
         _retry(always_fails, what="test")
 
 
-def test_throttle_llm_call_spaces_out_consecutive_calls(isolated_workspace, monkeypatch):
-    import app.mistral.client as client_mod
-
-    monkeypatch.setattr(client_mod, "get_models_config", lambda: {"llm": {"min_interval_seconds": 5.0}})
-    client_mod._llm_last_call_at = 0.0
-
-    fake_now = {"t": 100.0}
+def _fake_clock(monkeypatch, client_mod, start: float = 100.0):
+    """Horloge monotone simulée + `sleep` qui la fait avancer, pour tester l'ordonnanceur sans
+    attendre réellement."""
+    now = {"t": start}
     sleeps: list[float] = []
 
-    monkeypatch.setattr(client_mod.time, "monotonic", lambda: fake_now["t"])
+    monkeypatch.setattr(client_mod.time, "monotonic", lambda: now["t"])
 
     def fake_sleep(seconds: float) -> None:
         sleeps.append(seconds)
-        fake_now["t"] += seconds
+        now["t"] += seconds
 
     monkeypatch.setattr(client_mod.time, "sleep", fake_sleep)
+    return now, sleeps
 
-    client_mod._throttle_llm_call()
+
+def _use_slots(monkeypatch, client_mod, count: int, *, min_interval: float) -> None:
+    monkeypatch.setattr(client_mod, "get_models_config", lambda: {"llm": {"min_interval_seconds": min_interval}})
+    monkeypatch.setattr(client_mod, "api_slot_count", lambda: count)
+    client_mod.reset_slots_for_tests()
+
+
+def test_single_key_scheduler_spaces_out_consecutive_calls(isolated_workspace, monkeypatch):
+    """Comportement historique du token-bucket global : avec une seule clé, rien ne change."""
+    import app.mistral.client as client_mod
+
+    _use_slots(monkeypatch, client_mod, 1, min_interval=5.0)
+    now, sleeps = _fake_clock(monkeypatch, client_mod)
+
+    assert client_mod._acquire_llm_slot() == 0
     assert sleeps == []  # premier appel : rien à attendre
 
-    fake_now["t"] += 1.0  # 1s plus tard, il en faudrait 5 -> attend 4
-    client_mod._throttle_llm_call()
+    now["t"] += 1.0  # 1s plus tard, il en faudrait 5 -> attend 4
+    assert client_mod._acquire_llm_slot() == 0
     assert sleeps == [4.0]
 
 
-def test_throttle_llm_call_disabled_when_interval_zero(isolated_workspace, monkeypatch):
+def test_scheduler_disabled_when_interval_zero(isolated_workspace, monkeypatch):
     import app.mistral.client as client_mod
 
-    monkeypatch.setattr(client_mod, "get_models_config", lambda: {"llm": {"min_interval_seconds": 0.0}})
-    client_mod._llm_last_call_at = 0.0
+    _use_slots(monkeypatch, client_mod, 1, min_interval=0.0)
 
     def fail_if_called(_seconds: float) -> None:
         raise AssertionError("time.sleep ne devrait jamais être appelé quand le throttle est désactivé")
 
     monkeypatch.setattr(client_mod.time, "sleep", fail_if_called)
 
-    client_mod._throttle_llm_call()
-    client_mod._throttle_llm_call()
+    client_mod._acquire_llm_slot()
+    client_mod._acquire_llm_slot()
 
 
 class _FakeMessage:
@@ -165,8 +174,8 @@ def _install_llm_stub(monkeypatch, raw_contents):
     class _Client:
         chat = _Chat()
 
-    monkeypatch.setattr(client_mod, "get_client", lambda: _Client())
-    monkeypatch.setattr(client_mod, "_throttle_llm_call", lambda: None)
+    monkeypatch.setattr(client_mod, "get_client", lambda slot=0: _Client())
+    monkeypatch.setattr(client_mod, "_acquire_llm_slot", lambda: 0)
     monkeypatch.setattr(
         client_mod, "get_models_config",
         lambda: {"llm": {"model": "mistral-large-test", "temperature": 0.0, "max_retries": 3, "parse_retries": 2}},
@@ -236,8 +245,8 @@ def test_call_structured_chat_honours_explicit_max_tokens(isolated_workspace, mo
     class _Client:
         chat = _Chat()
 
-    monkeypatch.setattr(client_mod, "get_client", lambda: _Client())
-    monkeypatch.setattr(client_mod, "_throttle_llm_call", lambda: None)
+    monkeypatch.setattr(client_mod, "get_client", lambda slot=0: _Client())
+    monkeypatch.setattr(client_mod, "_acquire_llm_slot", lambda: 0)
     monkeypatch.setattr(
         client_mod, "get_models_config",
         lambda: {"llm": {"model": "m", "temperature": 0.0, "max_retries": 3, "parse_retries": 0,
@@ -289,33 +298,370 @@ def test_call_structured_chat_raises_after_parse_retries_exhausted(isolated_work
     assert len(calls["temps"]) == 3
 
 
-def test_ocr_semaphore_bounds_concurrency(isolated_workspace, monkeypatch):
+def _run_ocr_workers(client_mod, *, workers: int):
+    """Lance `workers` threads dans `ocr_slot()` et relève la concurrence atteinte, globalement et
+    par créneau. Les exceptions des threads sont remontées : sans ça, un `ocr_slot` cassé ferait
+    passer le test avec un pic à 0."""
     import threading
     import time as time_mod
-
-    import app.mistral.client as client_mod
-
-    monkeypatch.setattr(client_mod, "get_models_config", lambda: {"ocr": {"max_concurrency": 2}})
-    client_mod._ocr_semaphore = None
-    client_mod._ocr_semaphore_size = None
 
     lock = threading.Lock()
     current = {"n": 0}
     peak = {"n": 0}
+    per_slot_peak: dict[int, int] = {}
+    per_slot_current: dict[int, int] = {}
+    used: list[int] = []
+    errors: list[BaseException] = []
 
     def worker() -> None:
-        with client_mod._get_ocr_semaphore():
+        try:
+            with client_mod.ocr_slot() as slot:
+                with lock:
+                    used.append(slot)
+                    current["n"] += 1
+                    peak["n"] = max(peak["n"], current["n"])
+                    per_slot_current[slot] = per_slot_current.get(slot, 0) + 1
+                    per_slot_peak[slot] = max(per_slot_peak.get(slot, 0), per_slot_current[slot])
+                time_mod.sleep(0.05)
+                with lock:
+                    current["n"] -= 1
+                    per_slot_current[slot] -= 1
+        except BaseException as exc:  # noqa: BLE001 - remonté tel quel dans l'assertion
             with lock:
-                current["n"] += 1
-                peak["n"] = max(peak["n"], current["n"])
-            time_mod.sleep(0.05)
-            with lock:
-                current["n"] -= 1
+                errors.append(exc)
 
-    threads = [threading.Thread(target=worker) for _ in range(6)]
+    threads = [threading.Thread(target=worker) for _ in range(workers)]
     for t in threads:
         t.start()
     for t in threads:
         t.join()
 
-    assert peak["n"] <= 2
+    assert not errors, f"ocr_slot a levé : {errors[0]!r}"
+    return peak["n"], per_slot_peak, used
+
+
+def test_ocr_slot_bounds_concurrency_per_key(isolated_workspace, monkeypatch):
+    """`max_concurrency` est un plafond PAR CLÉ : avec une seule clé, il borne tout l'OCR."""
+    import app.mistral.client as client_mod
+
+    monkeypatch.setattr(client_mod, "get_models_config", lambda: {"ocr": {"max_concurrency": 2}})
+    monkeypatch.setattr(client_mod, "api_slot_count", lambda: 1)
+    client_mod.reset_slots_for_tests()
+
+    peak, per_slot_peak, used = _run_ocr_workers(client_mod, workers=6)
+
+    assert peak <= 2
+    assert set(used) == {0}
+    assert per_slot_peak[0] <= 2
+
+
+# --- Bascule de la charge quand une clé ne fonctionne pas ---------------------------------------
+
+def _fake_mistral_error_with_status(message: str, status: int):
+    import httpx
+    from mistralai.client.errors.mistralerror import MistralError
+
+    response = httpx.Response(status_code=status, request=httpx.Request("GET", "http://test"))
+    return MistralError(message, response)
+
+
+def test_all_keys_quarantined_still_attempts_instead_of_hanging(isolated_workspace, monkeypatch):
+    """Mieux vaut un échec explicite qu'un dossier figé : si tout est écarté, on tente quand même
+    la clé dont la quarantaine expire le plus tôt."""
+    import app.mistral.client as client_mod
+
+    _use_slots(monkeypatch, client_mod, 2, min_interval=0.0)
+    now, sleeps = _fake_clock(monkeypatch, client_mod)
+
+    client_mod.record_slot_failure(0, _fake_mistral_error_with_status("Too Many Requests", 429))
+    now["t"] += 1  # la clé 1 sera écartée plus tard, donc plus longtemps que la clé 0
+    client_mod.record_slot_failure(1, _fake_mistral_error_with_status("Too Many Requests", 429))
+
+    slot = client_mod._acquire_llm_slot()
+
+    assert slot == 0  # celle dont la quarantaine expire le plus tôt
+    assert sleeps == []  # on n'attend pas la fin de la quarantaine
+
+
+def test_health_snapshot_reports_slots_without_leaking_keys(isolated_workspace, monkeypatch):
+    import app.mistral.client as client_mod
+
+    _use_slots(monkeypatch, client_mod, 3, min_interval=0.0)
+    _fake_clock(monkeypatch, client_mod)
+    client_mod.record_slot_failure(2, _fake_mistral_error_with_status("Unauthorized", 401))
+
+    health = client_mod.api_slots_health()
+
+    assert [h["slot"] for h in health] == [1, 2, 3]
+    assert health[2]["quarantined"] is True
+    assert health[0]["quarantined"] is False
+    assert not any("key" in h or "cle" in h for h in health)
+
+
+def test_call_structured_chat_moves_to_another_key_after_a_rejected_one(isolated_workspace, monkeypatch):
+    """Bout-en-bout : la première clé refuse (401), `_retry` rejoue, et la tentative suivante part
+    sur une autre clé — sans quoi les 3 tentatives se seraient acharnées sur la clé morte."""
+    import app.mistral.client as client_mod
+
+    _use_slots(monkeypatch, client_mod, 3, min_interval=0.0)
+    _fake_clock(monkeypatch, client_mod)
+    monkeypatch.setattr(
+        client_mod,
+        "get_models_config",
+        lambda: {"llm": {"min_interval_seconds": 0.0, "max_retries": 3, "model": "m", "parse_retries": 0}},
+    )
+
+    used: list[int] = []
+    broken_slot = 0
+
+    class _PerSlotClient:
+        def __init__(self, slot: int) -> None:
+            self.slot = slot
+            self.chat = self
+
+        def complete(self, **kwargs):
+            used.append(self.slot)
+            if self.slot == broken_slot:
+                raise _fake_mistral_error_with_status("Unauthorized", 401)
+            return _FakeResponse(_VALID_JSON, "stop")
+
+    monkeypatch.setattr(client_mod, "get_client", lambda slot=0: _PerSlotClient(slot))
+
+    parsed, _model = client_mod.call_structured_chat(
+        system_prompt="s", user_prompt="u", response_model=_StubModel, what="test"
+    )
+
+    assert parsed.x == 1
+    assert used[0] == broken_slot  # première tentative sur la clé qui casse
+    assert used[-1] != broken_slot  # la réussite vient d'une autre clé
+    assert client_mod.api_slots_health()[broken_slot]["quarantined"] is True
+
+
+# --- Clé de secours : bascule quand la clé principale ne fonctionne plus ------------------------
+
+def _fake_mistral_error_with_status(message: str, status: int):
+    import httpx
+    from mistralai.client.errors.mistralerror import MistralError
+
+    response = httpx.Response(status_code=status, request=httpx.Request("GET", "http://test"))
+    return MistralError(message, response)
+
+
+def test_primary_key_takes_every_call_while_it_works(isolated_workspace, monkeypatch):
+    """Pas de répartition de charge : tant que la principale répond, le secours ne sert jamais."""
+    import app.mistral.client as client_mod
+
+    _use_slots(monkeypatch, client_mod, 3, min_interval=0.0)
+    _fake_clock(monkeypatch, client_mod)
+
+    assert [client_mod._acquire_llm_slot() for _ in range(10)] == [0] * 10
+
+
+def test_exhausted_primary_key_falls_back_to_the_backup(isolated_workspace, monkeypatch):
+    """Cas visé : la clé principale arrive au bout de son quota (429 à répétition). Les appels
+    doivent passer sur la clé de secours au lieu d'échouer."""
+    import app.mistral.client as client_mod
+
+    _use_slots(monkeypatch, client_mod, 2, min_interval=0.0)
+    _fake_clock(monkeypatch, client_mod)
+
+    client_mod.record_slot_failure(0, _fake_mistral_error_with_status("Too Many Requests", 429))
+
+    assert [client_mod._acquire_llm_slot() for _ in range(5)] == [1] * 5
+
+
+def test_revoked_primary_key_falls_back_to_the_backup(isolated_workspace, monkeypatch):
+    import app.mistral.client as client_mod
+
+    _use_slots(monkeypatch, client_mod, 2, min_interval=0.0)
+    _fake_clock(monkeypatch, client_mod)
+
+    client_mod.record_slot_failure(0, _fake_mistral_error_with_status("Unauthorized", 401))
+
+    assert client_mod._acquire_llm_slot() == 1
+
+
+def test_backup_chain_walks_down_in_declaration_order(isolated_workspace, monkeypatch):
+    """Avec 3 clés, on descend dans l'ordre : principale, puis secours 1, puis secours 2."""
+    import app.mistral.client as client_mod
+
+    _use_slots(monkeypatch, client_mod, 3, min_interval=0.0)
+    _fake_clock(monkeypatch, client_mod)
+
+    client_mod.record_slot_failure(0, _fake_mistral_error_with_status("quota", 402))
+    assert client_mod._acquire_llm_slot() == 1
+
+    client_mod.record_slot_failure(1, _fake_mistral_error_with_status("quota", 402))
+    assert client_mod._acquire_llm_slot() == 2
+
+
+def test_primary_key_is_used_again_once_its_quarantine_expires(isolated_workspace, monkeypatch):
+    """Le secours est temporaire : dès que la principale redevient utilisable (quota renouvelé,
+    rate limit passé), elle reprend la main sans intervention."""
+    import app.mistral.client as client_mod
+
+    _use_slots(monkeypatch, client_mod, 2, min_interval=0.0)
+    now, _sleeps = _fake_clock(monkeypatch, client_mod)
+
+    client_mod.record_slot_failure(0, _fake_mistral_error_with_status("Too Many Requests", 429))
+    assert client_mod._acquire_llm_slot() == 1
+
+    now["t"] += client_mod._QUARANTINE_RATE_LIMITED_SECONDS + 1
+    assert client_mod._acquire_llm_slot() == 0
+
+
+def test_quarantine_lengthens_while_the_key_keeps_failing(isolated_workspace, monkeypatch):
+    """Une clé réellement épuisée renvoie le même 429 à chaque essai : la mise à l'écart doit
+    s'allonger, sinon on la re-teste toutes les 30 s pour rien."""
+    import app.mistral.client as client_mod
+
+    _use_slots(monkeypatch, client_mod, 2, min_interval=0.0)
+    now, _sleeps = _fake_clock(monkeypatch, client_mod)
+
+    client_mod.record_slot_failure(0, _fake_mistral_error_with_status("Too Many Requests", 429))
+    first = client_mod.api_slots_health()[0]["quarantined_for_seconds"]
+
+    now["t"] += first + 1
+    client_mod.record_slot_failure(0, _fake_mistral_error_with_status("Too Many Requests", 429))
+    second = client_mod.api_slots_health()[0]["quarantined_for_seconds"]
+
+    assert second > first
+
+
+def test_a_success_brings_the_primary_key_back_immediately(isolated_workspace, monkeypatch):
+    import app.mistral.client as client_mod
+
+    _use_slots(monkeypatch, client_mod, 2, min_interval=0.0)
+    _fake_clock(monkeypatch, client_mod)
+
+    client_mod.record_slot_failure(0, _fake_mistral_error_with_status("Unauthorized", 401))
+    assert client_mod._acquire_llm_slot() == 1
+
+    client_mod.record_slot_success(0)
+
+    assert client_mod._acquire_llm_slot() == 0
+
+
+def test_transient_error_does_not_switch_key_immediately(isolated_workspace, monkeypatch):
+    """Un 500 n'est pas imputable à la clé : basculer dès le premier échec écarterait la clé
+    principale à la moindre indisponibilité de l'API."""
+    import app.mistral.client as client_mod
+
+    _use_slots(monkeypatch, client_mod, 2, min_interval=0.0)
+    _fake_clock(monkeypatch, client_mod)
+
+    client_mod.record_slot_failure(0, _fake_mistral_error_with_status("boom", 500))
+
+    assert client_mod._acquire_llm_slot() == 0
+
+
+def test_repeated_transient_errors_eventually_switch_key(isolated_workspace, monkeypatch):
+    import app.mistral.client as client_mod
+
+    _use_slots(monkeypatch, client_mod, 2, min_interval=0.0)
+    _fake_clock(monkeypatch, client_mod)
+
+    for _ in range(client_mod._SLOT_FAILURE_THRESHOLD):
+        client_mod.record_slot_failure(0, _fake_mistral_error_with_status("boom", 500))
+
+    assert client_mod._acquire_llm_slot() == 1
+
+
+def test_all_keys_quarantined_still_attempts_instead_of_hanging(isolated_workspace, monkeypatch):
+    """Mieux vaut un échec explicite qu'un dossier figé : si tout est écarté, on tente quand même
+    la clé dont la quarantaine expire le plus tôt, sans attendre sa fin."""
+    import app.mistral.client as client_mod
+
+    _use_slots(monkeypatch, client_mod, 2, min_interval=0.0)
+    now, sleeps = _fake_clock(monkeypatch, client_mod)
+
+    client_mod.record_slot_failure(0, _fake_mistral_error_with_status("Too Many Requests", 429))
+    now["t"] += 1  # la clé 1 est écartée plus tard, donc pour plus longtemps
+    client_mod.record_slot_failure(1, _fake_mistral_error_with_status("Too Many Requests", 429))
+
+    assert client_mod._acquire_llm_slot() == 0
+    assert sleeps == []
+
+
+def test_backup_key_starts_with_its_own_pacing_budget(isolated_workspace, monkeypatch):
+    """Le stimulateur est tenu par clé : après une bascule, le secours n'hérite pas de l'historique
+    d'appels de la clé défaillante et démarre sans attente."""
+    import app.mistral.client as client_mod
+
+    _use_slots(monkeypatch, client_mod, 2, min_interval=5.0)
+    _now, sleeps = _fake_clock(monkeypatch, client_mod)
+
+    assert client_mod._acquire_llm_slot() == 0  # consomme le budget de la principale
+    client_mod.record_slot_failure(0, _fake_mistral_error_with_status("quota", 402))
+
+    assert client_mod._acquire_llm_slot() == 1
+    assert sleeps == []
+
+
+def test_ocr_also_falls_back_to_the_backup_key(isolated_workspace, monkeypatch):
+    """L'OCR suit la même règle : sinon un dossier scanné continuerait de taper la clé épuisée."""
+    import app.mistral.client as client_mod
+
+    monkeypatch.setattr(client_mod, "get_models_config", lambda: {"ocr": {"max_concurrency": 2}})
+    monkeypatch.setattr(client_mod, "api_slot_count", lambda: 2)
+    client_mod.reset_slots_for_tests()
+
+    with client_mod.ocr_slot() as slot:
+        assert slot == 0
+
+    client_mod.record_slot_failure(0, _fake_mistral_error_with_status("quota", 402))
+
+    with client_mod.ocr_slot() as slot:
+        assert slot == 1
+
+
+def test_health_snapshot_reports_slots_without_leaking_keys(isolated_workspace, monkeypatch):
+    import app.mistral.client as client_mod
+
+    _use_slots(monkeypatch, client_mod, 3, min_interval=0.0)
+    _fake_clock(monkeypatch, client_mod)
+    client_mod.record_slot_failure(2, _fake_mistral_error_with_status("Unauthorized", 401))
+
+    health = client_mod.api_slots_health()
+
+    assert [h["slot"] for h in health] == [1, 2, 3]
+    assert health[2]["quarantined"] is True
+    assert health[0]["quarantined"] is False
+    assert not any("key" in h or "cle" in h for h in health)
+
+
+def test_call_structured_chat_moves_to_the_backup_after_the_primary_is_rejected(isolated_workspace, monkeypatch):
+    """Bout-en-bout : la principale refuse (401), `_retry` rejoue, et la tentative suivante part
+    sur le secours — sans quoi les 3 tentatives se seraient acharnées sur la clé morte."""
+    import app.mistral.client as client_mod
+
+    _use_slots(monkeypatch, client_mod, 2, min_interval=0.0)
+    _fake_clock(monkeypatch, client_mod)
+    monkeypatch.setattr(
+        client_mod,
+        "get_models_config",
+        lambda: {"llm": {"min_interval_seconds": 0.0, "max_retries": 3, "model": "m", "parse_retries": 0}},
+    )
+
+    used: list[int] = []
+
+    class _PerSlotClient:
+        def __init__(self, slot: int) -> None:
+            self.slot = slot
+            self.chat = self
+
+        def complete(self, **kwargs):
+            used.append(self.slot)
+            if self.slot == 0:
+                raise _fake_mistral_error_with_status("Unauthorized", 401)
+            return _FakeResponse(_VALID_JSON, "stop")
+
+    monkeypatch.setattr(client_mod, "get_client", lambda slot=0: _PerSlotClient(slot))
+
+    parsed, _model = client_mod.call_structured_chat(
+        system_prompt="s", user_prompt="u", response_model=_StubModel, what="test"
+    )
+
+    assert parsed.x == 1
+    assert used == [0, 1]  # 1re tentative sur la principale, 2e sur le secours
+    assert client_mod.api_slots_health()[0]["quarantined"] is True

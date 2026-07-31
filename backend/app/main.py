@@ -4,6 +4,7 @@ from __future__ import annotations
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Any
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -19,6 +20,7 @@ from app.api.extraction import extraction_schema_router
 from app.api.extraction import router as extraction_router
 from app.api.project_synthesis import router as project_synthesis_router
 from app.api.websocket import router as websocket_router
+from app.mistral.client import api_slots_health
 from app.settings import get_settings
 from app.store.db import init_db
 
@@ -62,8 +64,13 @@ app.include_router(websocket_router)
 
 
 @app.get("/api/health")
-async def health() -> dict[str, str]:
-    return {"status": "ok"}
+async def health() -> dict[str, Any]:
+    """État du service, et état des clés API.
+
+    `api_keys` rend visible une bascule sur une clé de secours : sans ça, l'épuisement de la clé
+    principale ne se lit que dans les logs du serveur. Ne contient jamais les clés elles-mêmes,
+    seulement leur rang et leur disponibilité."""
+    return {"status": "ok", "api_keys": api_slots_health()}
 
 
 # En production (build unique), le frontend compilé est servi directement par le backend

@@ -10,7 +10,7 @@ import logging
 from dataclasses import dataclass
 from pathlib import Path
 
-from app.mistral.client import call_ocr, upload_file_for_ocr
+from app.mistral.client import call_ocr, ocr_slot, upload_file_for_ocr
 from app.settings import get_models_config
 
 logger = logging.getLogger(__name__)
@@ -37,8 +37,11 @@ class OcrCallOutcome:
 def run_ocr(path: Path, *, pages: list[int] | None = None) -> OcrCallOutcome:
     """OCRise un fichier local (PDF ou image). `pages` (0-indexées) restreint l'appel à
     un sous-ensemble de pages — utilisé pour l'OCR de contrôle sur PDF partiellement natif."""
-    file_id = upload_file_for_ocr(path)
-    response = call_ocr(file_id=file_id, pages=pages)
+    # Un seul créneau (donc une seule clé API) pour l'upload ET le traitement : le file_id rendu
+    # par l'upload n'existe que dans le compte qui l'a uploadé.
+    with ocr_slot() as slot:
+        file_id = upload_file_for_ocr(path, slot=slot)
+        response = call_ocr(file_id=file_id, pages=pages, slot=slot)
     if response.usage_info:
         logger.info(
             "USAGE ocr file=%s pages_processed=%s doc_size_bytes=%s",
