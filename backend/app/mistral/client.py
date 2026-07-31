@@ -82,6 +82,18 @@ _SLOT_FAILURE_THRESHOLD = 3
 # définitivement morte finit écartée pour longtemps au lieu d'être re-testée toutes les 30 s.
 _QUARANTINE_BACKOFF_MAX_FACTOR = 10
 
+# Cas réel (run e2e du 2026-07-31, dossier dce_grand_pic2) : la Phase 1 lance 4 thèmes en parallèle
+# (`_SYNTHESIS_LLM_CONCURRENCY`), et une rafale simultanée a fait passer les 2 clés de secours en
+# 429 en même temps pendant que la principale était déjà écartée (401). Le code retentait alors
+# IMMÉDIATEMENT sur la clé la moins quarantainée plutôt que d'attendre sa levée — elle échouait de
+# nouveau sur-le-champ puisque son quota n'avait pas eu le temps de se libérer, épuisant les 3
+# tentatives de `_retry` (2 s puis 4 s de backoff) en quelques secondes, bien plus vite que les 30 s
+# d'une quarantaine de rate limit. Résultat : 4 sections du rapport perdues pour de bon
+# (data/resultats_tests_2026-07-31/grand_pic_v2_cles_secours/phase1_synthese.md). Mieux vaut
+# attendre que cette clé se libère (borné, pour ne jamais figer un dossier indéfiniment si toutes
+# les clés sont réellement mortes) que d'y retourner à coup sûr pour rien.
+_ALL_KEYS_QUARANTINED_MAX_WAIT_SECONDS = 35.0
+
 
 class MistralNotConfiguredError(RuntimeError):
     """Levée quand aucune clé n'est configurée : on ne devine jamais, on échoue clairement."""
@@ -243,6 +255,10 @@ def _acquire_llm_slot() -> int:
     Le stimulateur (`min_interval_seconds`) est tenu PAR CLÉ : après une bascule, la clé de secours
     démarre avec son propre budget au lieu d'hériter de l'historique de la clé défaillante.
 
+    Si TOUTES les clés sont en quarantaine, on attend la levée de la moins pénalisée plutôt que d'y
+    retourner immédiatement (§_ALL_KEYS_QUARANTINED_MAX_WAIT_SECONDS) — borné, pour ne jamais figer
+    un dossier si toutes les clés sont réellement mortes.
+
     L'attente a lieu HORS du verrou, pour ne pas bloquer les autres appels pendant la temporisation.
     """
     count = api_slot_count()
@@ -252,19 +268,21 @@ def _acquire_llm_slot() -> int:
         _ensure_llm_slots(count)
         now = time.monotonic()
         slot = next((i for i in range(count) if _slot_blocked_until[i] <= now), None)
+        quarantine_wait = 0.0
         if slot is None:
-            # Toutes les clés sont écartées : on ne bloque pas le pipeline sur la plus longue
-            # quarantaine — on tente celle qui expire le plus tôt et on laisse l'erreur remonter
-            # si elle échoue encore. Mieux vaut un échec explicite qu'un dossier figé.
             all_quarantined = True
             slot = min(range(count), key=lambda i: _slot_blocked_until[i])
+            quarantine_wait = min(
+                max(0.0, _slot_blocked_until[slot] - now), _ALL_KEYS_QUARANTINED_MAX_WAIT_SECONDS
+            )
         ready_at = _llm_next_available[slot]
-        wait = ready_at - now
-        _llm_next_available[slot] = max(now, ready_at) + min_interval
+        wait = max(ready_at - now, quarantine_wait)
+        _llm_next_available[slot] = now + wait + min_interval
     if all_quarantined:
         logger.warning(
-            "Toutes les clés API (%d) sont en quarantaine — tentative sur la clé n°%d malgré tout",
+            "Toutes les clés API (%d) sont en quarantaine — attente de %.0fs pour la clé n°%d avant nouvelle tentative",
             count,
+            wait,
             slot + 1,
         )
     if wait > 0:
@@ -281,17 +299,35 @@ def ocr_slot() -> Iterator[int]:
     compte qui l'a uploadé, le traiter avec une autre clé donnerait un 404. C'est la raison d'être
     de ce contexte, plutôt qu'une prise de jeton indépendante dans chaque fonction."""
     count = api_slot_count()
+    quarantine_wait = 0.0
     with _slots_lock:
         _ensure_ocr_slots(count)
         _ensure_llm_slots(count)
         semaphores = list(_ocr_semaphores)
         now = time.monotonic()
-        # Même politique que pour le LLM : ordre de déclaration, une clé écartée est sautée.
-        # `max_concurrency` reste un plafond par clé, mais comme une seule clé est active à la
-        # fois, il continue de borner l'OCR globalement comme avant.
-        candidates = [i for i in range(count) if _slot_blocked_until[i] <= now] or list(range(count))
+        healthy = [i for i in range(count) if _slot_blocked_until[i] <= now]
+        if healthy:
+            # Même politique que pour le LLM : ordre de déclaration, une clé écartée est sautée.
+            slot = healthy[0]
+        else:
+            # Toutes les clés sont écartées : on retient celle qui se libère le plus tôt — pas la
+            # première déclarée, qui est souvent la principale, la plus longuement quarantainée
+            # (401/402/403) — et on attend sa levée, bornée (§_acquire_llm_slot, même raison :
+            # y retourner tout de suite échouerait à coup sûr).
+            slot = min(range(count), key=lambda i: _slot_blocked_until[i])
+            quarantine_wait = min(
+                max(0.0, _slot_blocked_until[slot] - now), _ALL_KEYS_QUARANTINED_MAX_WAIT_SECONDS
+            )
 
-    slot = candidates[0]
+    if quarantine_wait > 0:
+        logger.warning(
+            "Toutes les clés API (%d) sont en quarantaine — attente de %.0fs pour la clé n°%d "
+            "avant nouvel appel OCR",
+            count,
+            quarantine_wait,
+            slot + 1,
+        )
+        time.sleep(quarantine_wait)
     semaphores[slot].acquire()
     try:
         yield slot

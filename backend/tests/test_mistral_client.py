@@ -9,8 +9,13 @@ from app.mistral.client import MistralNotConfiguredError, _retry, get_clients, r
 def test_get_client_raises_when_api_key_missing(isolated_workspace, monkeypatch):
     # isolated_workspace neutralise déjà MISTRAL_API_KEY (jamais un delenv : le dépôt a un
     # vrai .env sur disque que pydantic-settings relirait sinon dès que la variable de
-    # process est absente).
-    monkeypatch.setenv("MISTRAL_API_KEY", "")
+    # process est absente). Il faut neutraliser TOUTES les variables de clé de secours de la
+    # même façon, sinon ce test dépend silencieusement de l'absence de MISTRAL_API_KEY_2/_3/
+    # MISTRAL_API_KEYS sur la machine qui l'exécute — un .env avec des clés de secours réelles
+    # (ex. pour un test e2e manuel) suffit à le faire passer à tort.
+    for name in ("MISTRAL_API_KEY", "MISTRAL_API_KEY_2", "MISTRAL_API_KEY_3",
+                 "MISTRAL_API_KEY_4", "MISTRAL_API_KEY_5", "MISTRAL_API_KEYS"):
+        monkeypatch.setenv(name, "")
     from app.settings import get_settings
 
     get_settings.cache_clear()
@@ -365,9 +370,13 @@ def _fake_mistral_error_with_status(message: str, status: int):
     return MistralError(message, response)
 
 
-def test_all_keys_quarantined_still_attempts_instead_of_hanging(isolated_workspace, monkeypatch):
-    """Mieux vaut un échec explicite qu'un dossier figé : si tout est écarté, on tente quand même
-    la clé dont la quarantaine expire le plus tôt."""
+def test_all_keys_quarantined_waits_for_the_earliest_one_before_retrying(isolated_workspace, monkeypatch):
+    """Cas réel (run e2e du 2026-07-31, dossier dce_grand_pic2) : une rafale de 4 appels Phase 1
+    simultanés a mis les 2 clés de secours en quarantaine 429 en même temps pendant que la
+    principale était déjà écartée. Retourner IMMÉDIATEMENT sur la moins pénalisée échouait de
+    nouveau sur-le-champ (son quota n'avait pas eu le temps de se libérer), épuisant les 3
+    tentatives de `_retry` en quelques secondes — 4 sections du rapport perdues pour de bon. Il
+    faut désormais ATTENDRE (borné) que cette clé se libère plutôt que d'y retourner pour rien."""
     import app.mistral.client as client_mod
 
     _use_slots(monkeypatch, client_mod, 2, min_interval=0.0)
@@ -380,7 +389,23 @@ def test_all_keys_quarantined_still_attempts_instead_of_hanging(isolated_workspa
     slot = client_mod._acquire_llm_slot()
 
     assert slot == 0  # celle dont la quarantaine expire le plus tôt
-    assert sleeps == []  # on n'attend pas la fin de la quarantaine
+    assert sleeps == [29.0]  # attend sa levée : 30s de quarantaine - 1s déjà écoulée
+
+
+def test_all_keys_quarantined_wait_is_bounded(isolated_workspace, monkeypatch):
+    """Le plafond d'attente évite de figer un dossier si la quarantaine restante est très longue
+    (clé rejetée/quota épuisé : jusqu'à plusieurs milliers de secondes avec l'escalade)."""
+    import app.mistral.client as client_mod
+
+    _use_slots(monkeypatch, client_mod, 1, min_interval=0.0)
+    _now, sleeps = _fake_clock(monkeypatch, client_mod)
+
+    client_mod.record_slot_failure(0, _fake_mistral_error_with_status("Unauthorized", 401))  # 300s
+
+    slot = client_mod._acquire_llm_slot()
+
+    assert slot == 0
+    assert sleeps == [client_mod._ALL_KEYS_QUARANTINED_MAX_WAIT_SECONDS]
 
 
 def test_health_snapshot_reports_slots_without_leaking_keys(isolated_workspace, monkeypatch):
@@ -567,22 +592,6 @@ def test_repeated_transient_errors_eventually_switch_key(isolated_workspace, mon
     assert client_mod._acquire_llm_slot() == 1
 
 
-def test_all_keys_quarantined_still_attempts_instead_of_hanging(isolated_workspace, monkeypatch):
-    """Mieux vaut un échec explicite qu'un dossier figé : si tout est écarté, on tente quand même
-    la clé dont la quarantaine expire le plus tôt, sans attendre sa fin."""
-    import app.mistral.client as client_mod
-
-    _use_slots(monkeypatch, client_mod, 2, min_interval=0.0)
-    now, sleeps = _fake_clock(monkeypatch, client_mod)
-
-    client_mod.record_slot_failure(0, _fake_mistral_error_with_status("Too Many Requests", 429))
-    now["t"] += 1  # la clé 1 est écartée plus tard, donc pour plus longtemps
-    client_mod.record_slot_failure(1, _fake_mistral_error_with_status("Too Many Requests", 429))
-
-    assert client_mod._acquire_llm_slot() == 0
-    assert sleeps == []
-
-
 def test_backup_key_starts_with_its_own_pacing_budget(isolated_workspace, monkeypatch):
     """Le stimulateur est tenu par clé : après une bascule, le secours n'hérite pas de l'historique
     d'appels de la clé défaillante et démarre sans attente."""
@@ -613,6 +622,26 @@ def test_ocr_also_falls_back_to_the_backup_key(isolated_workspace, monkeypatch):
 
     with client_mod.ocr_slot() as slot:
         assert slot == 1
+
+
+def test_ocr_slot_picks_the_earliest_to_clear_key_when_all_quarantined(isolated_workspace, monkeypatch):
+    """Repli symétrique de `_acquire_llm_slot` : quand tout est écarté, on retient la clé qui se
+    libère le plus tôt — pas la première déclarée (souvent la principale, la plus longuement
+    quarantainée sur un rejet 401/402/403) — et on attend sa levée, bornée."""
+    import app.mistral.client as client_mod
+
+    monkeypatch.setattr(client_mod, "get_models_config", lambda: {"ocr": {"max_concurrency": 2}})
+    monkeypatch.setattr(client_mod, "api_slot_count", lambda: 2)
+    client_mod.reset_slots_for_tests()
+    now, sleeps = _fake_clock(monkeypatch, client_mod)
+
+    client_mod.record_slot_failure(0, _fake_mistral_error_with_status("Unauthorized", 401))  # jusqu'à t=400
+    now["t"] += 1  # t=101
+    client_mod.record_slot_failure(1, _fake_mistral_error_with_status("Too Many Requests", 429))  # jusqu'à t=131
+
+    with client_mod.ocr_slot() as slot:
+        assert slot == 1  # se libère à t=131, bien avant la clé 0 (t=400)
+    assert sleeps == [30.0]  # attend sa levée : 131 - 101
 
 
 def test_health_snapshot_reports_slots_without_leaking_keys(isolated_workspace, monkeypatch):
