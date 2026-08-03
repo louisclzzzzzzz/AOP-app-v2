@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import sys
 import zipfile
 from pathlib import Path
+
+import pytest
 
 from app.ingestion.unzip import _decode_member_name, extract_zip_flat, extract_zip_recursive
 
@@ -168,3 +171,42 @@ def test_degree_sign_is_not_misdecoded_as_block_element():
 
     assert decoded == "LOT N°1.pdf"
     assert "░" not in decoded
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="MAX_PATH (260) est une limite Windows uniquement")
+def test_windows_long_nested_path_is_extracted(isolated_workspace):
+    """Régression : un DCE réel a des noms de dossiers/fichiers longs et descriptifs (français)
+    — nichés sous workspace/<id>/.source.staging-xxxxxxxx/…, ils dépassent vite les 260
+    caractères que Windows autorise sans préfixe étendu (rencontré au premier test réel de
+    l'exécutable Windows empaqueté : mkdir/open levaient FileNotFoundError pour un chemin
+    dépassant la limite de quelques caractères seulement — jamais vu en dev sur macOS/Linux,
+    qui n'ont pas cette limite). Passe par `settings.workspace_dir` (pas un `tmp_path` brut) :
+    c'est la résolution long-path de app/settings.py qui doit absorber le problème, sans rien
+    changer ici à app/ingestion/unzip.py."""
+    from app.settings import get_settings
+
+    dest = get_settings().workspace_dir / "un-dossier-de-test" / "source"
+
+    long_dir = "A024 MARLY LE ROI _op rehab et restaur"
+    filename = (
+        "assurances-dommages-ouvrages-et-garanties-diverses--pour-le-conservatoire"
+        "-et-le-pole-jeunesse-v1.zip"
+    )
+    member = f"{long_dir}/2.COPIE DCE/{filename}"
+    # Garantit un dépassement de MAX_PATH quelle que soit la longueur de tmp_path sur le
+    # runner (au lieu de dépendre d'une profondeur qui varie d'un environnement à l'autre).
+    shortfall = 261 - len(str(dest / member))
+    if shortfall > 0:
+        long_dir += "X" * shortfall
+        member = f"{long_dir}/2.COPIE DCE/{filename}"
+    assert len(str(dest / member)) > 260
+
+    root_zip = dest.parent / "root.zip"
+    root_zip.parent.mkdir(parents=True)
+    with zipfile.ZipFile(root_zip, "w") as zf:
+        zf.writestr(member, "contenu attestation")
+
+    extract_zip_flat(root_zip, dest)
+
+    written = dest / long_dir / "2.COPIE DCE" / filename
+    assert written.read_text() == "contenu attestation"

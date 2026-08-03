@@ -27,6 +27,24 @@ def get_bundle_dir() -> Path | None:
     return _FROZEN_BUNDLE_DIR
 
 
+def _win_long_path(path: Path) -> Path:
+    """Windows refuse mkdir/open au-delà de MAX_PATH (260 caractères) sauf préfixe étendu
+    `\\\\?\\`, qui fonctionne sans droits admin ni réglage système (contrairement à l'opt-in
+    `LongPathsEnabled` sinon nécessaire) — indispensable ici : un DCE réel a une arborescence
+    et des noms de fichiers longs (traçabilité = copie fidèle de la source, jamais tronquée),
+    qui dépassent vite la limite une fois nichés sous workspace/<id>/.source.staging-xxxxxxxx/…
+    (cas réel rencontré au premier test Windows : dépassement de quelques caractères
+    seulement). No-op hors Windows, où cette limite n'existe pas."""
+    if sys.platform != "win32":
+        return path
+    s = str(path)
+    if s.startswith("\\\\?\\"):
+        return path
+    if s.startswith("\\\\"):  # chemin UNC \\serveur\partage\...
+        return Path("\\\\?\\UNC\\" + s[2:])
+    return Path("\\\\?\\" + s)
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=str(PROJECT_ROOT / ".env"),
@@ -46,9 +64,14 @@ class Settings(BaseSettings):
     mistral_api_keys: list[str] = []
 
     def model_post_init(self, __context: Any) -> None:
+        resolved = Path(self.workspace_dir).resolve()
         if not self.database_url:
-            self.database_url = f"sqlite:///{self.workspace_dir / 'aop.db'}"
-        self.workspace_dir = Path(self.workspace_dir).resolve()
+            # DSN construit sur le chemin résolu SANS préfixe long-path : le "?" de `\\?\`
+            # casserait le parsing d'URL SQLAlchemy (tout ce qui suit deviendrait une
+            # querystring). Sans risque pour MAX_PATH : aop.db reste à la racine de
+            # workspace/, jamais nichée sous la profondeur arbitraire d'un DCE.
+            self.database_url = f"sqlite:///{resolved / 'aop.db'}"
+        self.workspace_dir = _win_long_path(resolved)
 
 
 class MistralApiKeySettings(BaseSettings):

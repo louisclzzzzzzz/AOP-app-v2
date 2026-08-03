@@ -7,6 +7,11 @@ on:
   push:
     tags:
       - "v*"
+    # TODO(retirer avant merge): permet de tester le workflow sur cette branche tant que
+    # workflow_dispatch n'est pas dispatchable (nécessite d'être présent sur la branche
+    # par défaut pour être appelable via l'API/CLI gh).
+    branches:
+      - "worktree-windows-exe-packaging"
 
 permissions:
   contents: write
@@ -40,7 +45,14 @@ jobs:
 
       - name: Sync backend dependencies
         working-directory: backend
-        run: uv sync --frozen --no-dev
+        run: uv sync --frozen
+
+      - name: Run backend tests (Windows)
+        working-directory: backend
+        run: uv run --frozen pytest -v
+        # Fait tourner ici, sur windows-latest, les régressions spécifiques à Windows (ex.
+        # MAX_PATH) qu'une CI macOS/Linux ne peut jamais révéler — avant de passer du temps
+        # sur le build PyInstaller si le backend lui-même est cassé sur cet OS.
 
       - name: Build Windows executable with PyInstaller
         working-directory: backend

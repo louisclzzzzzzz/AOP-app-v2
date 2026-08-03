@@ -1,6 +1,11 @@
 from __future__ import annotations
 
-from app.settings import get_models_config
+import sys
+from pathlib import Path
+
+import pytest
+
+from app.settings import _win_long_path, get_models_config
 
 
 def test_models_config_has_all_required_sections():
@@ -82,3 +87,49 @@ def test_no_key_configured_yields_an_empty_list(isolated_workspace, monkeypatch)
 
     assert settings.mistral_api_keys == []
     assert settings.mistral_api_key == ""
+
+
+# --- Chemins longs Windows (MAX_PATH) -----------------------------------------------------------
+# Un DCE réel a des noms de dossiers/fichiers longs et une arborescence profonde (préservation
+# fidèle de la source, jamais tronquée) : nichés sous workspace/<id>/.source.staging-xxxxxxxx/…,
+# ils dépassent vite les 260 caractères que Windows autorise sans préfixe étendu `\\?\`
+# (rencontré réellement en testant AOP-v2.exe : dépassement de quelques caractères seulement).
+
+
+def test_win_long_path_is_noop_outside_windows():
+    if sys.platform == "win32":
+        pytest.skip("vérifie le comportement no-op hors Windows")
+    p = Path("/tmp/some/deep/path")
+    assert _win_long_path(p) is p
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="préfixe \\\\?\\ : comportement Windows uniquement")
+def test_win_long_path_adds_extended_prefix():
+    p = Path(r"C:\Users\test\workspace")
+    prefixed = _win_long_path(p)
+    assert str(prefixed) == "\\\\?\\C:\\Users\\test\\workspace"
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="préfixe \\\\?\\ : comportement Windows uniquement")
+def test_win_long_path_is_idempotent():
+    p = Path("\\\\?\\C:\\Users\\test\\workspace")
+    assert _win_long_path(p) == p
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="préfixe \\\\?\\ : comportement Windows uniquement")
+def test_win_long_path_handles_unc_paths():
+    p = Path(r"\\server\share\workspace")
+    assert str(_win_long_path(p)) == "\\\\?\\UNC\\server\\share\\workspace"
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="MAX_PATH est une limite Windows uniquement")
+def test_settings_workspace_dir_is_long_path_safe(isolated_workspace):
+    """`Settings.workspace_dir` doit porter le préfixe long-path : tout le code qui en dérive
+    des chemins (ingestion, ocr, classify) en hérite automatiquement, sans changement requis
+    ailleurs (voir app/ingestion/unzip.py, testé bout en bout dans test_unzip.py)."""
+    from app.settings import get_settings
+
+    settings = get_settings()
+    assert str(settings.workspace_dir).startswith("\\\\?\\")
+    # Le DSN SQLite ne doit PAS porter le préfixe : le "?" y casserait le parsing d'URL.
+    assert "\\\\?\\" not in settings.database_url
