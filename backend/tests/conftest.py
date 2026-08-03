@@ -23,13 +23,13 @@ def isolated_workspace(tmp_path, monkeypatch):
     monkeypatch.setenv("AOP_DATABASE_URL", f"sqlite:///{workspace_dir / 'test.db'}")
     monkeypatch.setenv("MISTRAL_API_KEY", "")
 
-    from app.mistral.client import get_client
+    from app.mistral.client import reset_slots_for_tests
     from app.settings import get_settings, get_models_config
     from app.store.db import init_db, reset_engine_for_tests
 
     get_settings.cache_clear()
     get_models_config.cache_clear()
-    get_client.cache_clear()
+    reset_slots_for_tests()
     reset_engine_for_tests()
     init_db()
 
@@ -37,7 +37,7 @@ def isolated_workspace(tmp_path, monkeypatch):
 
     reset_engine_for_tests()
     get_settings.cache_clear()
-    get_client.cache_clear()
+    reset_slots_for_tests()
 
 
 @pytest.fixture

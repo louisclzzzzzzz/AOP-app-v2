@@ -50,6 +50,23 @@ _MIN_RELEVANT_WORD_LEN = 4
 # point 4) — évite qu'un champ très générique ne déclenche un balayage de tout le dossier.
 MAX_LLM_CANDIDATES = 3
 
+# Nombre max de champs regroupés dans UN appel sur un même document. Le passage au schéma v2
+# (`donnes_ref_v2.md`, Feuil2) fait passer le schéma de 31 à 50 champs : sans ce plafond, un CCTP
+# assurance — catégorie de référence de la majorité des champs — se voyait demander une vingtaine
+# de valeurs en un seul appel, sur un extrait de `DOCUMENT_EXCERPT_MAX_CHARS` caractères
+# sélectionné pour la réunion de TOUS leurs indices à la fois. Deux effets, tous deux constatés
+# dès qu'un appel couvre trop de champs hétérogènes : l'extrait se dilue (aucun des champs n'a
+# assez de contexte propre) et la réponse structurée s'allonge au point de risquer la troncature.
+# En lotissant, chaque lot obtient SON extrait, sélectionné sur ses seuls indices.
+MAX_FIELDS_PER_CALL = 12
+
+
+def _batch_fields(fields: list[ExtractionField]) -> list[list[ExtractionField]]:
+    """Découpe les champs d'un même document en lots de `MAX_FIELDS_PER_CALL`, en préservant leur
+    ordre (donc leur regroupement par section, cf. `extraction_schema.yaml`) : les champs d'un même
+    lot partagent ainsi un champ lexical proche, ce qui rend leur extrait commun plus pertinent."""
+    return [fields[i : i + MAX_FIELDS_PER_CALL] for i in range(0, len(fields), MAX_FIELDS_PER_CALL)]
+
 
 @dataclass
 class ExtractionOutcome:
@@ -76,6 +93,26 @@ class DocumentExtractionResult:
     error: str | None = None
 
 
+def merge_document_results(
+    existing: DocumentExtractionResult | None, new: DocumentExtractionResult
+) -> DocumentExtractionResult:
+    """Fusionne les résultats de plusieurs LOTS de champs portant sur le MÊME document
+    (§`_batch_fields`). Les lots couvrent des champs disjoints : leurs décisions s'additionnent
+    sans jamais se contredire.
+
+    L'échec d'un lot ne doit pas emporter les décisions des lots voisins : l'erreur est conservée
+    (elle sert à distinguer « champ absent du document » de « champ jamais analysé », cf.
+    `resolve_field`) mais les décisions déjà obtenues restent exploitables."""
+    if existing is None:
+        return new
+    return DocumentExtractionResult(
+        document_id=existing.document_id,
+        decisions={**existing.decisions, **new.decisions},
+        model_name=new.model_name or existing.model_name,
+        error=existing.error or new.error,
+    )
+
+
 def reference_candidates(extraction_field: ExtractionField, documents: list[DocumentSignal]) -> list[DocumentSignal]:
     """Documents de référence pour ce champ, dans l'ordre de priorité de `reference_categories`."""
     candidates: list[DocumentSignal] = []
@@ -87,8 +124,9 @@ def reference_candidates(extraction_field: ExtractionField, documents: list[Docu
 def plan_reference_document_calls(
     schema_fields: list[ExtractionField], documents: list[DocumentSignal]
 ) -> list[tuple[DocumentSignal, list[ExtractionField]]]:
-    """Un appel par document de référence distinct, regroupant tous les champs dont ce document
-    couvre la catégorie."""
+    """Appels par document de référence distinct, regroupant tous les champs dont ce document
+    couvre la catégorie — lotis à `MAX_FIELDS_PER_CALL`, donc plusieurs appels pour un même
+    document quand il est référence de beaucoup de champs."""
     calls: list[tuple[DocumentSignal, list[ExtractionField]]] = []
     for doc in documents:
         if not doc.final_category:
@@ -97,8 +135,7 @@ def plan_reference_document_calls(
         # été extrait (OCR différé, §5 OPTIMISATION.md) : `ensure_document_ocr` le comble juste
         # avant l'appel ; `analyze_document` gère proprement le cas où il reste vide malgré tout.
         fields_for_doc = [f for f in schema_fields if doc.final_category in f.reference_categories]
-        if fields_for_doc:
-            calls.append((doc, fields_for_doc))
+        calls.extend((doc, batch) for batch in _batch_fields(fields_for_doc))
     return calls
 
 
@@ -109,7 +146,7 @@ def plan_manual_calls(
     l'arborescence organisée) : chaque document sélectionné est interrogé pour TOUS les champs
     du schéma, sans filtrage par catégorie de référence — le périmètre a déjà été choisi par
     l'utilisateur, inutile de le re-filtrer par `reference_categories`."""
-    return [(doc, schema_fields) for doc in documents if doc.content_excerpt]
+    return [(doc, batch) for doc in documents if doc.content_excerpt for batch in _batch_fields(schema_fields)]
 
 
 def _score_candidate(doc: DocumentSignal, extraction_field: ExtractionField) -> int:
@@ -141,7 +178,11 @@ def plan_layer2_calls(
                 doc_to_fields[d.document_id] = []
                 order.append(d.document_id)
             doc_to_fields[d.document_id].append(extraction_field)
-    return [(doc_by_id[doc_id], doc_to_fields[doc_id]) for doc_id in order]
+    return [
+        (doc_by_id[doc_id], batch)
+        for doc_id in order
+        for batch in _batch_fields(doc_to_fields[doc_id])
+    ]
 
 
 # --- Sélection de contexte par pertinence (§3 OPTIMISATION.md, sans embeddings) -----------------
@@ -367,14 +408,18 @@ def resolve_field(
         result = results_by_document.get(doc.document_id)
         if result is None:
             continue
+        decision = result.decisions.get(extraction_field.id)
+        if decision is not None:
+            # Une décision prime toujours sur l'erreur du document : depuis le lotissement des
+            # champs (`_batch_fields`), un même document peut avoir un lot en échec et un lot
+            # réussi — l'erreur du premier ne doit pas invalider les décisions du second.
+            if decision.found:
+                found.append((doc, decision, result.model_name))
+                if not cross_check_required:
+                    break  # premier document confirmant suffit hors recoupement
+            continue
         if result.error:
             any_error = True
-            continue
-        decision = result.decisions.get(extraction_field.id)
-        if decision is not None and decision.found:
-            found.append((doc, decision, result.model_name))
-            if not cross_check_required:
-                break  # premier document confirmant suffit hors recoupement
 
     if found:
         if cross_check_required:

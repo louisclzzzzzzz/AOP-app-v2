@@ -68,9 +68,9 @@ Deux modes de génération selon le thème (`source` dans le schéma) :
 - **`extraction_fields`** (1 thème : identité de l'opération) — aucun appel LLM, simple
   reformatage déterministe de valeurs déjà résolues et validées à l'étape 3 (`nom_moa`,
   `adresse_moa`, etc.).
-- **`documents`** (12 thèmes) — un **appel LLM dédié par thème**, qui relit le texte intégral
-  (natif ou OCR) des documents *pivots* du thème, listés dans `pivot_categories` (chemins de la
-  taxonomie de classification, ex. `TECH/ETUDE DE SOL`, `TECH/RICT`, `TECH/NOTICE`). C'est la
+- **`documents`** (12 thèmes) — le texte intégral (natif ou OCR) des documents *pivots* du thème,
+  listés dans `pivot_categories` (chemins de la taxonomie de classification, ex.
+  `TECH/ETUDE DE SOL`, `TECH/RICT`, `TECH/NOTICE`), est relu en **map-reduce** (§2.2). C'est la
   différence fondamentale avec l'étape 3 (extraction) : là où l'extraction relève une valeur
   atomique courte, la synthèse produit un texte rédigé qui **relit les documents sources
   directement**, pas une reformulation des valeurs déjà extraites.
@@ -82,54 +82,113 @@ LLM de recouper explicitement CCTP / notice / RICT contre une donnée déjà cer
 
 ### 2.2 Pipeline d'exécution (`synthesis/pipeline.py`)
 
+Trois phases, toutes dédupliquées **par document** (jamais par couple document × thème) et toutes
+en concurrence bornée :
+
 ```
 run_project_synthesis_pipeline(dossier_id)
   │
   ├─ 1. OCR à la demande, dédupliqué
   │     Union de tous les documents candidats de TOUS les thèmes (ensure_document_ocr).
-  │     Un document pivot partagé par plusieurs thèmes (ex. le RICT, utilisé par 4 thèmes)
+  │     Un document pivot partagé par plusieurs thèmes (ex. le RICT, pivot de 7 thèmes)
   │     n'est OCRisé qu'une seule fois, avant la génération, pas une fois par thème.
   │
-  └─ 2. Génération des 13 thèmes en concurrence bornée
-        asyncio.Semaphore(4) — les thèmes sont indépendants entre eux, donc parallélisés
-        plutôt qu'exécutés en séquence (le temps de synthèse était auparavant la somme de
-        12 appels LLM indépendants, 190-400s par dossier). Le sémaphore reste prudent
-        vis-à-vis d'un éventuel rate limit Mistral (tokens/minute) ; un 429 isolé est de
-        toute façon absorbé par un backoff exponentiel côté client Mistral.
+  ├─ 2. "map" — un appel LLM par DOCUMENT pivot (summarize_document)
+  │     Chaque document est relu INTÉGRALEMENT, sans troncature, en un seul appel qui
+  │     couvre d'un coup tous les thèmes dont il est pivot (topics_for_document). Il en
+  │     sort un relevé factuel par thème concerné, ou l'absence explicite d'information.
+  │     Même dédup que l'OCR : le RICT est lu une fois et son relevé est réutilisé par
+  │     les 7 thèmes qui s'appuient dessus.
+  │
+  └─ 3. "reduce" — un appel LLM par thème (generate_topic)
+        Inchangé dans l'esprit, mais alimenté par les relevés de l'étape 2 au lieu des
+        textes bruts tronqués. asyncio.Semaphore(4) partagé avec l'étape 2 : les thèmes
+        sont indépendants entre eux, donc parallélisés plutôt qu'exécutés en séquence (le
+        temps de synthèse était auparavant la somme de 12 appels LLM indépendants,
+        190-400s par dossier). Le sémaphore reste prudent vis-à-vis d'un éventuel rate
+        limit Mistral (tokens/minute) ; un 429 isolé est de toute façon absorbé par un
+        backoff exponentiel côté client Mistral.
 ```
+
+Le nombre d'appels LLM passe donc de 12 à *N documents pivots + 12* — c'est le prix payé pour ne
+plus jamais tronquer ni exclure un document pivot (§2.3).
 
 À la fin, le rapport assemblé (cartographie + 13 sections) est stocké dans
 `Dossier.synthese_projet_md`, avec le statut `done` et l'horodatage de génération.
 
-### 2.3 Sélection des documents et budget de contexte
+### 2.3 Sélection des documents : pourquoi le map-reduce
 
-`select_topic_documents` (`synthesis/engine.py`) parcourt les `pivot_categories` du thème **dans
-l'ordre déclaré dans le YAML** et retient tous les documents classifiés sous ces catégories.
-`_build_documents_context` assemble ensuite le contexte envoyé au LLM en respectant deux
-plafonds :
+`select_topic_documents` (`synthesis/engine.py`) parcourt les `pivot_categories` du thème dans
+l'ordre déclaré dans le YAML et retient tous les documents classifiés sous ces catégories.
 
-- `SYNTHESIS_PER_DOCUMENT_MAX_CHARS = 60 000` caractères par document,
-- `SYNTHESIS_TOTAL_CONTEXT_MAX_CHARS = 300 000` caractères au total par thème (calibré sur la
-  fenêtre de ~128k tokens de `mistral-large-2512`, à ~3 caractères/token sur du texte technique
-  français).
+**Avant** (concaténation des textes bruts dans un unique prompt par thème), deux plafonds
+s'appliquaient — `SYNTHESIS_PER_DOCUMENT_MAX_CHARS = 60 000` caractères par document et
+`SYNTHESIS_TOTAL_CONTEXT_MAX_CHARS = 300 000` caractères par thème — avec deux conséquences :
 
-**L'ordre des catégories dans le YAML est donc significatif** : au-delà du budget, un document
-candidat supplémentaire est simplement absent du prompt (jamais vu par le LLM). Le commentaire du
-thème `destination_ambition` dans `synthese_projet_schema.yaml` documente un cas réel où
-inverser l'ordre a cassé le thème (le CCTP, volumineux, épuisait le budget avant d'atteindre
-l'arrêté de PC, qui porte pourtant l'information recherchée).
+1. au-delà de 60 000 caractères, un document était **tronqué à plat depuis le début**, sans aucune
+   sélection par pertinence (contrairement à l'étape 3, qui score les extraits par mots-clés) ;
+2. une fois les 300 000 caractères épuisés, les documents pivots restants étaient **purement et
+   simplement absents du prompt**, jamais vus par le LLM — jusqu'à 69 documents CCTP candidats
+   pour 3 réellement envoyés (§`data/resultats_synthese_test/RAPPORT_TECHNIQUE_ANALYSE.md`).
 
-### 2.4 Prompt système (extrait, `synthesis/engine.py`)
+**Depuis**, aucun budget ne s'applique au cas nominal : chaque document pivot est relu
+intégralement à l'étape de map, et son relevé est toujours présent dans le prompt du thème.
+L'ordre des catégories dans le YAML n'a donc plus qu'un rôle rédactionnel (l'ordre d'apparition
+des relevés), là où il était auparavant critique — le commentaire du thème `destination_ambition`
+documente un cas réel où l'inverser cassait le thème, le CCTP volumineux épuisant le budget avant
+d'atteindre l'arrêté de PC.
+
+Le seul chemin qui reste borné (`SYNTHESIS_FALLBACK_*_MAX_CHARS`) est le **repli best-effort** :
+si le relevé d'un document n'a pas pu être produit (échec LLM, thème absent de la réponse), son
+texte brut tronqué est réinjecté dans le prompt du thème plutôt que de perdre le document. Le
+rapport final le signale (`relevé indisponible, extrait brut tronqué utilisé pour : …`).
+
+### 2.4 Prompts système (extraits, `synthesis/engine.py`)
+
+**Map** (`_MAP_SYSTEM_PROMPT`) — relevé factuel d'un document pour chacun de ses thèmes :
+
+> N'utiliser QUE le contenu du document fourni (aucune déduction, aucune estimation) ; conserver
+> les données telles qu'écrites (chiffres, unités, montants, classements réglementaires) ainsi que
+> les références internes (numéro d'article, d'avis, de lot, de mission) ; **reprendre entre
+> guillemets la formulation exacte** de toute affirmation qu'un autre document pourrait contredire
+> (classement ERP, nombre de niveaux, surfaces, avis émis) ; marquer explicitement l'absence
+> d'information plutôt que de meubler.
+
+Pas de citation par phrase dans les relevés (c'était un besoin de vérification en phase de test) :
+en production, la traçabilité repose sur la liste des fichiers exploités par thème
+(`TopicOutcome.documents_used`, rendue sous chaque section). Le `grounding` n'est volontairement
+**pas** injecté au map, pour que le relevé rapporte ce que le document dit vraiment plutôt que de
+confirmer la valeur déjà connue — et que le reduce puisse encore voir les divergences.
+
+**Reduce** (`_TOPIC_SYSTEM_PROMPT`) — rédaction de la section :
 
 > *Tu es un expert en audit technique et souscription assurance construction (SMABTP)…*
-> Règles impératives : n'utiliser que les informations des documents fournis ou déjà validées,
-> jamais rien inventer ; signaler explicitement une information absente plutôt que de l'omettre ;
-> citer systématiquement le document source entre parenthèses après chaque donnée factuelle ;
-> respecter le format demandé (prose / tableau / liste).
+> Le contexte fourni est un relevé factuel **par document**, chacun attribué à son fichier source.
+> Règles impératives : n'utiliser que ces relevés et les données déjà validées, jamais rien
+> inventer ; signaler explicitement une information absente ; **confronter les relevés entre eux
+> et signaler toute divergence en nommant les deux fichiers sources**, sans trancher en silence ;
+> citer le document source entre parenthèses après chaque donnée factuelle ; respecter le format
+> demandé (prose / tableau / liste).
 
-Le LLM répond avec un objet structuré (`_TopicResponse { contenu: str }`) via
-`call_structured_chat` (Structured Outputs Mistral, `app/mistral/client.py`) — un seul champ texte
-Markdown, sans le titre de section (déjà géré côté assemblage).
+C'est l'attribution de chaque relevé à son fichier qui préserve la détection de contradictions
+inter-documents (cas réel : classement ERP différent entre le CCTP et l'arrêté de PC).
+
+Les deux étapes répondent avec un objet structuré via `call_structured_chat` (Structured Outputs
+Mistral, `app/mistral/client.py`) : `_DocumentSummaryResponse { resumes: [{ theme_id,
+apporte_des_informations, constats: [str] }] }` pour le map, `_TopicResponse { contenu: str }` pour
+le reduce — un seul champ texte Markdown, sans le titre de section (déjà géré côté assemblage).
+
+**Pourquoi `constats` est une liste et non un texte multi-lignes** : demander des puces séparées
+par des `\n` *à l'intérieur* d'une chaîne JSON déclenche une pathologie du décodage contraint. Une
+fois la chaîne refermée, le whitespace est toujours licite entre deux tokens JSON — la grammaire
+n'oblige donc jamais le modèle à en sortir, et il peut boucler indéfiniment sur des espaces et
+tabulations sans jamais atteindre la virgule suivante. La génération finit avortée par le serveur
+(`finish_reason="error"`) ou coupée par `max_tokens`, laissant un JSON tronqué non parsable.
+**9 des 30 appels de map du run e2e du 2026-07-29 sont tombés là-dedans**, sans jamais rattraper en
+3 tentatives (le même document rejoué à T=0.7 bouclait encore : ce n'est pas un aléa de tirage).
+Avec une liste, la grammaire attend `,` ou `]` après chaque élément : le modèle a un signal de
+sortie fort au lieu d'une zone de whitespace libre. Rejeu des 9 documents avec ce schéma : 9/9
+valides du premier coup.
 
 ### 2.5 Assemblage du rapport (`assemble_report`)
 
@@ -138,15 +197,21 @@ Markdown, sans le titre de section (déjà géré côté assemblage).
 ## Cartographie des documents pivots        (tableau déterministe : type de document × nb fichiers × pivot ?)
 ## <Titre thème 1>
 <contenu Markdown généré ou reformaté>
-_Sources consultées : ..._
+_Sources consultées : ..._ _(+N document(s) pivot(s) lu(s) sans information utile pour ce thème)_
 ## <Titre thème 2>
 ...
 ```
 
-Un thème en échec (exception LLM) n'interrompt pas le pipeline : sa section affiche
-`_Section non générée (erreur : …)_` et les 12 autres thèmes restent générés normalement (statut
-best-effort — `synthese_projet_status="error"` n'est réservé qu'à une exception non rattrapée par
-le pipeline lui-même).
+Le comportement est best-effort à chaque étape, sans jamais faire échouer la Phase 1 :
+
+- un **document** dont le relevé échoue (étape de map) retombe sur son extrait brut tronqué dans
+  les thèmes concernés, et la section le signale ;
+- un **thème** en échec (exception LLM à l'étape de reduce) n'interrompt pas le pipeline : sa
+  section affiche `_Section non générée (erreur : …)_` et les 12 autres restent générées
+  normalement.
+
+`synthese_projet_status="error"` n'est réservé qu'à une exception non rattrapée par le pipeline
+lui-même.
 
 ## 3. Phase 2 — Audit des risques (DO / TRC)
 
@@ -174,7 +239,16 @@ Chaque risque identifié par le LLM est un objet structuré (`RiskItem`, `audit/
 `statut` (🔴 critique / 🟠 modéré / 🟡 faible / 🟢 maîtrisé), `element_ouvrage`, `risque`, `alea`,
 une description et une préconisation courtes (pour le tableau synoptique), puis pour l'analyse
 détaillée : `expose_situation`, `analyse_expert` (référencée DTU/Eurocodes), `impact_assurabilite`,
-`recommandation` (actions/documents à réclamer) et `source` (fichiers/articles cités).
+`recommandations` (actions/documents à réclamer) et `source` (fichiers/articles cités).
+
+`analyse_expert` et `recommandations` sont des **listes de chaînes** — un point de vérification /
+une action par élément, chaque élément restant un paragraphe dense. Ce n'est pas un choix de style
+mais la même précaution qu'en Phase 1 (§2.4, `constats`) : des puces séparées par des `\n` *à
+l'intérieur* d'une chaîne JSON exposent le décodage contraint à une boucle dégénérée sur du
+whitespace, qui tronque la réponse. La Phase 2 n'avait pas encore cassé, mais elle produisait déjà
+le motif déclencheur — sur le run du 2026-07-29, 30/30 `recommandation` et 20/30 `analyse_expert`
+contenaient des sauts de ligne, jusqu'à 19 dans un seul champ. Le passage en liste ne raccourcit
+rien : ces deux champs *étaient* déjà des listes, écrasées dans une chaîne.
 
 Le prompt système cadre explicitement le rôle : *« Expert Senior en Ingénierie des Risques
 Construction, en charge de la souscription des polices Dommages-Ouvrage (DO) et Tous Risques
@@ -197,8 +271,15 @@ run_audit_pipeline(dossier_id)
   ├─ 2. Géocodage + interrogation Géorisques (best-effort, cf. 3.4)
   │     Adresse chantier → géocodage BAN → 6 endpoints Géorisques.
   │
-  └─ 3. Génération des sections A→G en concurrence bornée
-        asyncio.Semaphore(4), même logique que la Phase 1.
+  ├─ 3. "map" — un appel LLM par DOCUMENT pivot (summarize_document_for_audit)
+  │     Chaque document est relu INTÉGRALEMENT, sans troncature, en un seul appel qui
+  │     couvre d'un coup toutes les sections dont il est pivot (sections_for_document).
+  │     Il en sort la liste de ses prescriptions, réserves et LACUNES pour chaque section.
+  │     Le RICT, pivot de 6 sections sur le dossier de test, est lu une fois et rend
+  │     ~157 constats répartis entre elles.
+  │
+  └─ 4. "reduce" — un appel LLM par section A→G en concurrence bornée
+        asyncio.Semaphore(4) partagé avec l'étape 3, même logique que la Phase 1.
 ```
 
 Le rapport assemblé (contexte Géorisques + tableau synoptique + analyse détaillée) est stocké dans
@@ -206,19 +287,38 @@ Le rapport assemblé (contexte Géorisques + tableau synoptique + analyse détai
 
 ### 3.3 Sélection des documents par section
 
-`select_section_documents` reprend le principe de la Phase 1 (parcours ordonné des
-`pivot_categories`), avec un filtre supplémentaire sur les catégories « par lot »
-(`LOT_FILTERED_CATEGORIES = {TECH/CCTP TRAVAUX, TECH/DPGF}`) : un gros dossier compte souvent
-15 à 25 CCTP (un par corps d'état), et un audit d'étanchéité n'a besoin que du ou des CCTP
-étanchéité/couverture — pas des 25. Chaque section déclare une liste `cctp_keywords`
+`document_matches_section` apparie un document et une section : catégorie pivot, plus un filtre sur
+les catégories « par lot » (`LOT_FILTERED_CATEGORIES = {TECH/CCTP TRAVAUX, TECH/DPGF}`). Un gros
+dossier compte souvent 15 à 25 CCTP (un par corps d'état), et un audit d'étanchéité n'a besoin que
+du ou des CCTP étanchéité/couverture — pas des 25. Chaque section déclare une liste `cctp_keywords`
 (insensible à la casse et aux accents, via normalisation Unicode NFKD) appliquée au nom de fichier
-et au lot détecté ; sans correspondance, le document est écarté pour cette section. Les autres
-catégories pivots (RICT, étude de sol, notice) ne sont jamais filtrées.
+et au lot détecté. Les autres catégories pivots (RICT, étude de sol, notice) ne sont jamais filtrées.
 
-Budgets de contexte : `AUDIT_PER_DOCUMENT_MAX_CHARS = 60 000`,
-`AUDIT_TOTAL_CONTEXT_MAX_CHARS = 280 000` — même logique que la Phase 1, mais en pratique rarement
-saturés grâce au filtrage par mots-clés (le plafond n'est qu'un garde-fou contre un dossier au
-corpus aberrant).
+Cet appariement sert dans les deux sens, à partir du même prédicat : `select_section_documents`
+(les documents d'une section, pour le reduce) et `sections_for_document` (les sections d'un
+document, pour le map et pour décider quoi OCRiser). Il ne porte que sur le nom de fichier et le
+lot, disponibles **avant** l'OCR — c'est ce qui permet de ne jamais OCRiser un CCTP hors sujet.
+
+**Pourquoi le map-reduce ici aussi.** L'ancien assemblage concaténait les textes bruts dans le
+prompt de chaque section, sous les mêmes plafonds que la Phase 1 — et ils saturaient pour de bon :
+sur le run du 2026-07-29, **369 661 caractères perdus en 10 troncatures**, le RICT rogné de 84 423 à
+60 000 caractères dans **cinq** sections et purement absent d'une sixième (budget total épuisé),
+l'étude de sol G2PRO ramenée de 180 562 à 60 000. Le map-reduce supprime ces pertes **et envoie
+moins** : 940 281 caractères d'entrée contre 1 203 026 (-22 %), le RICT n'étant plus renvoyé cinq
+fois tronqué mais lu une seule fois en entier. Seul le chemin de repli reste borné
+(`AUDIT_FALLBACK_*_MAX_CHARS`), pour un document dont le relevé n'a pas pu être produit.
+
+Deux réglages que le rejeu sur documents réels a rendus nécessaires, et qui valent comme mise en
+garde générale sur les étapes de map :
+
+- **le plafond de sortie doit être propre au map** (`llm.max_tokens_document_summary = 16000`) : un
+  relevé couvrant 6 sections dépasse les 8000 tokens des autres appels. La réponse était alors
+  coupée en plein JSON, et le rattrapage renvoyait un relevé de 6 constats au lieu de 157 — un
+  appauvrissement massif que rien ne signalait, puisque l'appel finissait par « réussir » ;
+- **le prompt doit calibrer le volume attendu et interdire les constats « méta »**. Sans consigne
+  explicite (« compte en dizaines de constats », « ne relève jamais l'absence d'un sujet étranger à
+  l'objet du document »), le modèle rendait un unique constat de synthèse sur des CCTP de lot —
+  un CCTP Fondations spéciales passait de 1 à 65 constats une fois la consigne ajoutée.
 
 ### 3.4 Intégration Géorisques (`audit/georisques.py`)
 

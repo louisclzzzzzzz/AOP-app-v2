@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import logging
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Response
 
 from app.api.dossiers import dossier_to_out, reopen_stage
 from app.api.schemas import (
@@ -16,6 +16,7 @@ from app.api.schemas import (
     ExtractionRunIn,
     DossierOut,
 )
+from app.extraction.excel_export import build_extraction_workbook, extraction_workbook_filename
 from app.extraction.extraction_schema import load_extraction_schema
 from app.extraction.pipeline import ensure_results_initialized, run_extraction_pipeline
 from app.extraction.report import REPORT_JSON_FILENAME, validate_extraction
@@ -42,12 +43,14 @@ _RUNNABLE_STATUSES = (DossierStatus.COMPLETENESS_VALIDATED.value, DossierStatus.
 
 
 def _entry_to_out(result: ExtractionResult) -> ExtractionEntryOut:
-    f = load_extraction_schema().by_id(result.field_id)
+    schema = load_extraction_schema()
+    f = schema.by_id(result.field_id)
     assert f is not None
     return ExtractionEntryOut(
         field_id=result.field_id,
         libelle=f.libelle,
         section=f.section,
+        section_libelle=schema.section_label(f.section),
         resultat_attendu=f.resultat_attendu,
         status=result.status,
         extraction_error=result.extraction_error,
@@ -81,6 +84,7 @@ async def get_extraction_schema() -> list[ExtractionFieldOut]:
             id=f.id,
             libelle=f.libelle,
             section=f.section,
+            section_libelle=schema.section_label(f.section),
             resultat_attendu=f.resultat_attendu,
             reference_categories=f.reference_categories,
         )
@@ -95,6 +99,11 @@ async def get_extraction(dossier_id: str) -> list[ExtractionEntryOut]:
         if dossier is None:
             raise HTTPException(404, "Dossier introuvable")
         results = ensure_results_initialized(s, dossier_id)
+        # Ordre du schéma, et non l'ordre alphabétique de `field_id` que rend le dépôt : c'est lui
+        # qui porte le regroupement thématique par section (`extraction_schema.yaml`), et le client
+        # se contente de préserver l'ordre reçu.
+        order = {f.id: i for i, f in enumerate(load_extraction_schema().fields)}
+        results = sorted(results, key=lambda r: order.get(r.field_id, len(order)))
         return [_entry_to_out(r) for r in results]
 
 
@@ -202,3 +211,28 @@ async def get_extraction_report(dossier_id: str) -> dict:
     if not report_path.exists():
         raise HTTPException(404, "Fichier de rapport introuvable sur disque")
     return json.loads(report_path.read_text(encoding="utf-8"))
+
+
+@router.get("/{dossier_id}/extraction/export.xlsx")
+async def export_extraction_xlsx(dossier_id: str) -> Response:
+    """Tableau d'extraction au format Excel (Feuil2 de `donnes_ref_v2.md`).
+
+    Régénéré à chaque appel depuis l'état courant en base — donc disponible dès que l'extraction a
+    tourné, sans attendre la validation du checkpoint, et toujours à jour des corrections
+    manuelles. C'est la différence avec les rapports JSON/Markdown, figés à la validation."""
+    with session_scope() as s:
+        dossier = get_dossier(s, dossier_id)
+        if dossier is None:
+            raise HTTPException(404, "Dossier introuvable")
+        # `ensure_results_initialized` garantit une ligne par champ du schéma : le classeur
+        # exporte alors la Feuil2 complète, champs non trouvés compris (l'absence d'une donnée de
+        # souscription est une information, pas une ligne à omettre).
+        ensure_results_initialized(s, dossier_id)
+        content = build_extraction_workbook(s, dossier)
+        filename = extraction_workbook_filename(dossier)
+
+    return Response(
+        content=content,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )

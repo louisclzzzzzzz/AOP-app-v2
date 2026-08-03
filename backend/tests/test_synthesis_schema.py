@@ -9,7 +9,7 @@ def test_synthesis_schema_loads_and_has_unique_ids():
     schema = load_synthesis_schema()
     ids = [t.id for t in schema.topics]
     assert len(ids) == len(set(ids)), "ids de thème dupliqués dans synthese_projet_schema.yaml"
-    assert len(ids) == 13
+    assert len(ids) == 15
 
 
 def test_extraction_field_ids_are_valid():
@@ -36,7 +36,31 @@ def test_extraction_fields_topic_has_no_pivot_categories_requirement():
     identite = schema.by_id("identite_operation")
     assert identite is not None
     assert identite.source == "extraction_fields"
-    assert identite.extraction_field_ids == ["nom_moa", "adresse_moa", "nom_chantier", "adresse_chantier"]
+    assert not identite.pivot_categories
+    # Carte d'identité : rendue en tableau, sans aucun appel LLM.
+    assert identite.format == "tableau"
+    assert identite.extraction_field_ids[:4] == ["nom_moa", "adresse_moa", "nom_chantier", "adresse_chantier"]
+    # Données de souscription ajoutées par la Feuil2 v2, qui n'existaient dans aucun thème avant.
+    for field_id in ("localisation", "type_zone", "montants_garanties_demandes", "duree_chantier_mois"):
+        assert field_id in identite.extraction_field_ids
+
+
+def test_max_lignes_caps_every_llm_generated_topic():
+    """Le plafond de volume est le levier chiffré de la réduction de la Phase 1 : un thème appelant
+    le LLM sans plafond est un thème qui peut repartir en essai de 10 000 caractères."""
+    schema = load_synthesis_schema()
+    for topic in schema.topics:
+        if topic.source == "documents":
+            assert topic.max_lignes, f"{topic.id} : thème LLM sans max_lignes"
+            assert topic.max_lignes <= 40, f"{topic.id} : max_lignes trop permissif"
+
+
+def test_tables_are_the_default_form():
+    """Doctrine de forme : la prose reste l'exception. On borne le nombre de thèmes en prose pure
+    pour qu'un ajout futur de thème narratif soit un choix conscient, pas une dérive."""
+    schema = load_synthesis_schema()
+    prose_only = [t.id for t in schema.topics if t.format == "prose"]
+    assert set(prose_only) == {"description_operation", "diagnostic_existant"}
 
 
 def test_document_sourced_topics_have_pivot_categories_and_instructions():
@@ -52,13 +76,17 @@ def test_by_id_returns_none_for_unknown_topic():
     assert schema.by_id("inexistant") is None
 
 
-def test_destination_ambition_sees_cctp_travaux_and_flags_contradictions():
+def test_nature_fonction_ouvrage_sees_cctp_travaux_and_flags_contradictions():
     """Cas réel trouvé sur dce_grand_pic2 (§ANALYSE_ORIGINE_ERREURS.md) : le classement ERP
     était donné différemment par un CCTP (TECH/CCTP TRAVAUX) et par un rapport SDIS embarqué dans
-    l'arrêté PC — mais destination_ambition ne regardait pas TECH/CCTP TRAVAUX, donc ne pouvait
-    jamais voir la contradiction ni la signaler."""
+    l'arrêté PC — mais le thème ne regardait pas TECH/CCTP TRAVAUX, donc ne pouvait jamais voir la
+    contradiction ni la signaler.
+
+    Le thème s'appelait `destination_ambition` ; la Feuil2 v2 l'a scindé en trois
+    (`nature_fonction_ouvrage`, `description_operation`, `objectifs_specifiques`) et c'est le
+    premier qui porte désormais la qualification réglementaire — donc cette garantie."""
     schema = load_synthesis_schema()
-    topic = schema.by_id("destination_ambition")
+    topic = schema.by_id("nature_fonction_ouvrage")
     assert topic is not None
     categories = topic.pivot_categories
     assert "TECH/CCTP TRAVAUX" in categories
@@ -70,7 +98,10 @@ def test_destination_ambition_sees_cctp_travaux_and_flags_contradictions():
     # rester prioritaire (plus tôt dans la liste) sur TECH/CCTP TRAVAUX.
     assert categories.index("TECH/ARRETE PC") < categories.index("TECH/CCTP TRAVAUX")
     assert topic.cross_document is True
-    assert "contredis" in topic.instructions
+    # La consigne doit continuer d'exiger que la divergence soit rendue visible plutôt qu'arbitrée
+    # en silence — c'est le fond de la régression protégée ici, indépendamment de sa formulation.
+    assert "divergence" in topic.instructions
+    assert "ne tranche pas en silence" in topic.instructions
 
     # Comparaison avec le rapport de référence validé (Le Grand Pic) : le RICT contient la
     # formulation qui réconcilie arrêté PC et CCTP ("bâtiments d'habitation (3ème famille B)...

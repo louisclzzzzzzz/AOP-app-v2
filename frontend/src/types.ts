@@ -242,7 +242,10 @@ export interface CompletenessApplyResult {
 export interface ExtractionFieldItem {
   id: string
   libelle: string
-  section: 'principal' | 'complementaire'
+  // Section thématique du schéma (`extraction_schema.yaml`) — un id libre, pas une union figée :
+  // la Feuil2 des données de référence en fait évoluer la liste.
+  section: string
+  section_libelle: string
   resultat_attendu: string | null
   reference_categories: string[]
 }
@@ -257,7 +260,10 @@ export interface ExtractionSource {
 export interface ExtractionEntry {
   field_id: string
   libelle: string
-  section: 'principal' | 'complementaire'
+  // Section thématique du schéma (`extraction_schema.yaml`) — un id libre, pas une union figée :
+  // la Feuil2 des données de référence en fait évoluer la liste.
+  section: string
+  section_libelle: string
   resultat_attendu: string | null
 
   status: 'pending' | 'proposed' | 'corrected' | 'error'

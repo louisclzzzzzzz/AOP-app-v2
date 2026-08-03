@@ -33,6 +33,13 @@ llm:
   # défaut du modèle donne un JSON invalide (JSONDecodeError). Généreux pour laisser passer une
   # section entière de risques développés.
   max_tokens: 8000
+  # Plafond spécifique aux étapes « map » des deux phases d'analyse (un relevé factuel par document
+  # pivot, couvrant d'un coup tous les thèmes/sections dont il est pivot). Ces appels produisent
+  # bien plus de sortie qu'un thème ou une section : le RICT du dossier de test rend ~117 constats
+  # répartis sur 6 sections, ce qui dépasse les 8000 tokens ci-dessus. La réponse était alors
+  # tronquée en plein JSON, et le rattrapage renvoyait un relevé beaucoup plus pauvre (6 constats
+  # au lieu de 117) sans que rien ne le signale comme une perte.
+  max_tokens_document_summary: 16000
   # Nombre de re-tentatives quand la réponse structurée n'est pas un JSON parsable (distinct de
   # max_retries qui couvre les erreurs réseau/API). Chaque re-tentative relève la température.
   parse_retries: 2

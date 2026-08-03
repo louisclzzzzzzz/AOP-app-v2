@@ -5,11 +5,20 @@ explicitement par l'expert (`POST .../audit-risques/generate`), best-effort et j
 (un échec ne touche jamais `Dossier.status`, seul `Dossier.audit_risques_status` en rend compte),
 pas diffusée sur le WebSocket de progression partagé.
 
-Trois phases : (1) OCR à la demande, dédupliqué sur l'union des documents réellement dans le
-périmètre d'au moins une section (les CCTP hors sujet ne sont pas OCRisés inutilement) ; (2)
-géocodage de l'adresse du chantier + interrogation Géorisques (best-effort) ; (3) génération LLM
-des sections A→G en concurrence bornée, puis assemblage du rapport (tableau synoptique + analyse
-détaillée).
+Quatre phases, toutes dédupliquées par DOCUMENT (jamais par couple document × section) :
+
+1. OCR à la demande, sur l'union des documents réellement dans le périmètre d'au moins une section
+   (les CCTP hors sujet ne sont pas OCRisés inutilement) ;
+2. géocodage de l'adresse du chantier + interrogation Géorisques (best-effort) ;
+3. « map » — un appel LLM par document pivot (§summarize_document_for_audit), qui relève d'un coup
+   ses prescriptions, réserves et lacunes pour chacune des sections dont il est pivot ;
+4. « reduce » — un appel LLM par section (§generate_section), alimenté par ces relevés, puis
+   assemblage du rapport (tableau synoptique + analyse détaillée).
+
+Le map-reduce (phases 3-4) remplace la concaténation des textes bruts dans le prompt de chaque
+section, qui tronquait et excluait : sur le run e2e du 2026-07-29, 369 661 caractères perdus, dont
+le RICT rogné dans 5 sections et absent d'une sixième. Il envoie aussi MOINS de contexte au total
+(-16 % sur ce dossier), le RICT n'étant plus renvoyé 5 fois tronqué mais lu une fois en entier.
 """
 from __future__ import annotations
 
@@ -18,10 +27,17 @@ import datetime as dt
 import logging
 import time
 
-from app.audit.engine import SectionOutcome, assemble_report, extract_chantier_address, generate_section
+from app.audit.engine import (
+    DocumentAuditSummary,
+    SectionOutcome,
+    assemble_report,
+    extract_chantier_address,
+    generate_section,
+    sections_for_document,
+    summarize_document_for_audit,
+)
 from app.audit.georisques import GeorisquesReport, build_georisques_report
-from app.audit.schema import LOT_FILTERED_CATEGORIES, AuditSchema, load_audit_schema
-from app.audit.engine import _normalize  # helper d'appariement de mots-clés (accents/casse)
+from app.audit.schema import AuditSection, load_audit_schema
 from app.ingestion.document_signal import DocumentSignal, build_document_signal, ensure_document_ocr
 from app.store.db import session_scope
 from app.store.repository import get_dossier, list_documents, list_extraction_results
@@ -63,21 +79,6 @@ def _chantier_address(dossier_id: str) -> str | None:
     return None
 
 
-def _document_in_scope(doc: DocumentSignal, schema: AuditSchema) -> bool:
-    """True si ce document sera candidat pour au moins une section (donc à OCRiser). L'appariement
-    de mots-clés se fait sur le nom de fichier/lot, disponible AVANT l'OCR — on évite ainsi
-    d'OCRiser les CCTP de lots hors sujet."""
-    for section in schema.sections:
-        if doc.final_category not in section.pivot_categories:
-            continue
-        if doc.final_category in LOT_FILTERED_CATEGORIES and section.cctp_keywords:
-            haystack = _normalize(f"{doc.filename} {doc.final_lot or ''}")
-            if not any(_normalize(k) in haystack for k in section.cctp_keywords):
-                continue
-        return True
-    return False
-
-
 def _persist_status(dossier_id: str, *, status: str, error: str | None = None) -> None:
     with session_scope() as s:
         dossier = get_dossier(s, dossier_id)
@@ -97,7 +98,11 @@ async def run_audit_pipeline(dossier_id: str) -> None:
 
     # Phase 1 — OCR à la demande, dédupliqué sur l'union des documents dans le périmètre d'au moins
     # une section (un document partagé par plusieurs sections n'est OCRisé qu'une fois).
-    candidate_doc_ids = [d.document_id for d in signals_by_id.values() if _document_in_scope(d, schema)]
+    # `sections_for_document` n'apparie que sur le nom de fichier/lot, disponible AVANT l'OCR : les
+    # CCTP de lots hors sujet ne sont donc jamais OCRisés.
+    candidate_doc_ids = [
+        d.document_id for d in signals_by_id.values() if sections_for_document(d, schema)
+    ]
     if candidate_doc_ids:
         ocr_results = await asyncio.gather(
             *(asyncio.to_thread(ensure_document_ocr, dossier_id, signals_by_id[doc_id]) for doc_id in candidate_doc_ids)
@@ -123,20 +128,61 @@ async def run_audit_pipeline(dossier_id: str) -> None:
     else:
         logger.info("Audit risques %s : aucune adresse de chantier — Géorisques non interrogé", dossier_id)
 
-    # Phase 3 — génération des sections A→G en concurrence bornée.
     semaphore = asyncio.Semaphore(_AUDIT_LLM_CONCURRENCY)
 
+    # Phase 3 — « map » : un appel LLM par DOCUMENT pivot, couvrant d'un coup toutes les sections
+    # dont il est pivot. Même dédup que l'OCR ci-dessus : le RICT, pivot de 5 sections sur le
+    # dossier de test, n'est lu qu'une fois au lieu d'être renvoyé 5 fois tronqué.
+    map_jobs: list[tuple[DocumentSignal, list[AuditSection]]] = []
+    for doc in documents:
+        if not doc.content_excerpt:
+            continue
+        doc_sections = sections_for_document(doc, schema)
+        if doc_sections:
+            map_jobs.append((doc, doc_sections))
+
+    async def _run_map(doc: DocumentSignal, doc_sections: list[AuditSection]) -> DocumentAuditSummary:
+        async with semaphore:
+            doc_started_at = time.monotonic()
+            summary = await asyncio.to_thread(summarize_document_for_audit, doc, doc_sections)
+            logger.info(
+                "Audit risques %s : relevé du document %r terminé en %.1fs "
+                "(sections=%d, documentées=%d, modele=%s, erreur=%s)",
+                dossier_id, doc.filename, time.monotonic() - doc_started_at,
+                len(doc_sections), len(summary.constats_by_section), summary.model_name, summary.error,
+            )
+            return summary
+
+    map_started_at = time.monotonic()
+    summaries_by_document: dict[str, DocumentAuditSummary] = {}
+    if map_jobs:
+        results = await asyncio.gather(*(_run_map(doc, secs) for doc, secs in map_jobs))
+        summaries_by_document = {s.document_id: s for s in results}
+        failed = [s.filename for s in results if s.error]
+        logger.info(
+            "Audit risques %s : %d relevé(s) de document produit(s) en %.1fs (%d en échec%s)",
+            dossier_id, len(results), time.monotonic() - map_started_at, len(failed),
+            f" : {failed}" if failed else "",
+        )
+
+    # Phase 4 — « reduce » : génération des sections A→G en concurrence bornée, sur les relevés.
     async def _run_section(section, index: int) -> SectionOutcome:
         async with semaphore:
             section_started_at = time.monotonic()
             outcome = await asyncio.to_thread(
-                generate_section, section, documents=documents, georisques=georisques
+                generate_section,
+                section,
+                documents=documents,
+                georisques=georisques,
+                summaries=summaries_by_document,
             )
             elapsed = time.monotonic() - section_started_at
             logger.info(
-                "Audit risques %s : section %r terminée (%d/%d) en %.1fs (%d risques, documents=%d/%d, modele=%s)",
+                "Audit risques %s : section %r terminée (%d/%d) en %.1fs "
+                "(%d risques, documents exploités=%d/%d, dont %d en repli brut, modele=%s)",
                 dossier_id, section.id, index, len(schema.sections), elapsed,
-                len(outcome.risks), len(outcome.documents_used), outcome.candidates_count, outcome.model_name,
+                len(outcome.risks), len(outcome.documents_used), outcome.candidates_count,
+                len(outcome.documents_degraded), outcome.model_name,
             )
             return outcome
 
@@ -146,12 +192,15 @@ async def run_audit_pipeline(dossier_id: str) -> None:
     total_elapsed = time.monotonic() - pipeline_started_at
     total_risks = sum(len(o.risks) for o in outcomes)
     logger.info(
-        "Audit risques %s : rapport complet généré en %.1fs (%d sections, %d risques)",
-        dossier_id, total_elapsed, len(schema.sections), total_risks,
+        "Audit risques %s : rapport complet généré en %.1fs (%d relevés de documents + %d sections, %d risques)",
+        dossier_id, total_elapsed, len(map_jobs), len(schema.sections), total_risks,
     )
 
     report_md = assemble_report(outcomes, schema, georisques=georisques)
+    # Les deux étapes comptent : `audit_risques_model` doit refléter tous les modèles ayant
+    # réellement contribué au rapport, pas seulement ceux de l'appel final.
     model_names = {o.model_name for o in outcomes if o.model_name}
+    model_names |= {s.model_name for s in summaries_by_document.values() if s.model_name}
 
     def _persist_result() -> None:
         with session_scope() as s:

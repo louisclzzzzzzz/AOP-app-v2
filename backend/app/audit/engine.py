@@ -18,6 +18,7 @@ saturé par des lots hors sujet et l'analyse diluée).
 from __future__ import annotations
 
 import logging
+import re
 import unicodedata
 from dataclasses import dataclass, field
 from typing import Literal
@@ -27,16 +28,25 @@ from pydantic import BaseModel
 from app.audit.georisques import GeorisquesReport, format_aspects_grounding, format_full_md
 from app.audit.schema import LOT_FILTERED_CATEGORIES, AuditSchema, AuditSection
 from app.ingestion.document_signal import DocumentSignal
-from app.mistral.client import call_structured_chat
+from app.mistral.client import call_structured_chat, document_summary_max_tokens
 
 logger = logging.getLogger(__name__)
 
-# Même logique de budget que la Phase 1 (§synthesis/engine.py) : calibré sur la fenêtre de
-# ~128k tokens de mistral-large, ~3 caractères/token sur du technique français. Chaque section
-# n'envoie que ses documents pivots FILTRÉS (cctp_keywords), donc en pratique bien moins que le
-# plafond — le plafond n'est là que comme garde-fou contre un dossier au corpus aberrant.
-AUDIT_TOTAL_CONTEXT_MAX_CHARS = 280_000
-AUDIT_PER_DOCUMENT_MAX_CHARS = 60_000
+# Plafonds du SEUL chemin de repli (§_build_section_context) : quand le relevé d'un document n'a pas
+# pu être produit à l'étape de map, on réinjecte son texte brut tronqué plutôt que de le perdre.
+#
+# C'était auparavant le régime nominal, et il coûtait cher : sur le run e2e du 2026-07-29, la Phase 2
+# a perdu 369 661 caractères en 10 troncatures — le RICT rogné de 84 423 à 60 000 caractères dans
+# CINQ sections, et purement absent d'une sixième (budget total épuisé), l'étude de sol G2PRO
+# ramenée de 180 562 à 60 000. Le map-reduce supprime ces pertes ET envoie moins : le RICT était
+# renvoyé 5 fois tronqué (5 × 60 000) au lieu d'une fois en entier, d'où 1 007 762 caractères
+# d'entrée contre 1 203 026 auparavant sur ce dossier (-16 %).
+AUDIT_FALLBACK_TOTAL_MAX_CHARS = 180_000
+AUDIT_FALLBACK_PER_DOCUMENT_MAX_CHARS = 60_000
+
+# Seuil indicatif : au-delà, un document seul commence à peser dans la fenêtre du modèle. On ne
+# tronque PAS pour autant (c'est le défaut corrigé ici), on veut juste le voir dans les logs.
+AUDIT_LARGE_DOCUMENT_WARN_CHARS = 350_000
 
 _STATUTS = ("🔴", "🟠", "🟡", "🟢")
 
@@ -49,14 +59,222 @@ class RiskItem(BaseModel):
     synoptique_description: str
     synoptique_preconisation: str
     expose_situation: str
-    analyse_expert: str
+    # Listes, et non de longs textes multi-lignes : demander des puces séparées par des \n À
+    # L'INTÉRIEUR d'une chaîne JSON déclenche une boucle dégénérée du décodage contraint — une fois
+    # la chaîne refermée, le whitespace reste licite entre deux tokens JSON, donc la grammaire
+    # n'oblige jamais le modèle à en sortir, et la génération part en espaces/tabulations jusqu'à
+    # être avortée par le serveur (finish_reason='error') ou coupée par max_tokens, laissant un JSON
+    # tronqué. C'est ce qui a fait tomber 9 des 30 appels "map" de la Phase 1 (§synthesis/engine.py
+    # `constats`, run e2e du 2026-07-29). La Phase 2 n'avait pas encore cassé, mais elle produisait
+    # déjà le motif déclencheur : sur ce même run, 30/30 `recommandation` et 20/30 `analyse_expert`
+    # contenaient des sauts de ligne (jusqu'à 19 dans un seul champ).
+    #
+    # Le passage en liste ne raccourcit rien : ces deux champs SONT déjà des listes (un point de
+    # vérification « → … » / une action par élément), chaque élément restant un paragraphe dense.
+    # On ne supprime que les \n ENTRE les items — et la grammaire attend « , » ou « ] » après
+    # chacun, ce qui donne au modèle un signal de sortie fort au lieu d'une zone de whitespace libre.
+    analyse_expert: list[str]
     impact_assurabilite: str
-    recommandation: str
+    recommandations: list[str]
     source: str
 
 
 class SectionRisks(BaseModel):
     risques: list[RiskItem]
+
+
+# --- Étape « map » : un relevé par document pivot ----------------------------------------------
+
+
+class _SectionConstats(BaseModel):
+    section_id: str
+    concerne_cette_section: bool
+    constats: list[str]
+
+
+class _DocumentAuditResponse(BaseModel):
+    releves: list[_SectionConstats]
+
+
+@dataclass(frozen=True)
+class DocumentAuditSummary:
+    """Résultat de l'étape « map » pour UN document pivot : ce qu'il apporte à chacune des sections
+    d'audit dont il est pivot.
+
+    `constats_by_section` ne contient que les sections réellement documentées ;
+    `covered_section_ids` liste celles que le LLM a traitées — la différence, c'est « ce document
+    n'a rien à dire sur cette section » (information en soi) et non « ce document n'a pas pu être
+    analysé » (repli sur extrait brut)."""
+
+    document_id: str
+    filename: str
+    final_category: str | None
+    final_lot: str | None = None
+    constats_by_section: dict[str, str] = field(default_factory=dict)
+    covered_section_ids: frozenset[str] = frozenset()
+    model_name: str | None = None
+    error: str | None = None
+
+
+_MAP_SYSTEM_PROMPT = """Tu es un Expert Senior en Ingénierie des Risques Construction (souscription \
+Dommages-Ouvrage et Tous Risques Chantier, SMABTP). On te donne le texte intégral d'UN document \
+d'un dossier de consultation des entreprises (DCE), et les sections d'audit pour lesquelles ce \
+document fait référence.
+
+Ta tâche : pour CHAQUE section demandée, relever ce que CE document — et lui seul — apporte à \
+l'évaluation des risques de cette section. Ces relevés seront ensuite confrontés entre documents \
+pour identifier les risques : ils doivent être fidèles et vérifiables, pas rédigés.
+
+Ce document a DÉJÀ été rattaché au périmètre de chacune des sections listées ci-dessous, par la \
+classification du dossier. Ne remets pas ce rattachement en cause et ne juge pas de sa pertinence : \
+ta question n'est pas « ce document concerne-t-il cette section ? » mais « que contient-il qui \
+intéresse cette section ? ». Si l'ouvrage traité par le document relève du domaine de la section \
+sans correspondre exactement à ses points de vérification, relève quand même ce qu'il prescrit sur \
+le thème de la section — matériaux et produits, performances, dispositions constructives, \
+exigences de maintenance et d'exploitation, procédés sous avis technique, et les lacunes.
+
+Commence TOUJOURS par ce que le document dit, avant de regarder ce qu'il ne dit pas :
+- les prescriptions et spécifications techniques : matériaux, produits nommés, classes de \
+performance, épaisseurs, cotes, résistances, dispositions constructives, référentiels invoqués \
+(DTU, Eurocodes, normes NF) ;
+- les exigences d'exécution, d'essai, de réception, de maintenance et d'exploitation ;
+- les procédés sous Avis Technique (ATec), ATEx ou Pass'Innovation, et tout procédé inhabituel — \
+ce sont des Techniques Non Courantes potentielles pour l'assureur ;
+- les réserves, avis suspendus ou défavorables, points de vigilance et prescriptions du contrôleur \
+technique, avec leur numéro.
+
+Puis, seulement ensuite, les LACUNES — et uniquement sur ce que CE document aurait dû préciser au \
+vu de son PROPRE objet : performance annoncée mais non chiffrée, détail d'exécution renvoyé à une \
+étude ultérieure, prescription attendue pour l'ouvrage qu'il décrit et absente. Une telle lacune \
+est un signal de risque aussi important qu'une prescription.
+
+Ne relève JAMAIS l'absence d'un sujet étranger à l'objet du document. Qu'un CCTP Ascenseurs ne \
+parle pas de photovoltaïque n'est pas une lacune : c'est hors de son périmètre, et un constat de ce \
+genre est du bruit qui noiera les vrais signaux. Les points de vérification de la section te disent \
+sous quel angle lire le document, ils ne sont pas une liste de questions à cocher.
+
+Règles impératives :
+- N'utilise QUE le contenu du document fourni. Aucune connaissance extérieure, aucune déduction, \
+aucune valeur « habituelle », aucune complétion de ce qui manque.
+- Conserve les données telles qu'écrites : chiffres, unités, classes, épaisseurs, noms de produits \
+et de sociétés, ainsi que les références internes du document (numéro d'article, d'avis, de lot, \
+titre de section) chaque fois qu'il les donne.
+- Ne conclus pas, ne qualifie pas le risque, ne recommande rien : c'est l'étape suivante qui le \
+fera en confrontant tous les documents. Relève les faits.
+- Ne cite pas le nom du document dans tes constats : il est déjà attribué à sa source.
+- `constats` est une LISTE : un élément = un fait. Chaque élément tient sur une seule ligne, sans \
+retour à la ligne et sans puce (« - ») en tête. N'utilise pas de guillemet droit (") : pour citer \
+un passage, encadre-le par des guillemets français « … ».
+- Sois EXHAUSTIF : ce relevé remplace le document pour la suite de l'analyse, tout ce que tu \
+n'écris pas sera perdu. Compte en dizaines de constats, pas en unités — de l'ordre de 15 à 40 pour \
+un CCTP de lot, davantage pour un rapport de contrôle technique ou une étude géotechnique. Un \
+relevé d'un ou deux constats sur un document de plusieurs dizaines de milliers de caractères \
+signifie que tu n'as pas fait le travail.
+- Ne produis jamais de constat « méta » sur le document (« ce document traite des ascenseurs », \
+« aucun équipement ENR n'est mentionné ») : relève son CONTENU technique.
+- Énonce chaque fait seul, sans le commenter au regard des points de vérification. N'ajoute jamais \
+de clause du type « … sans mention de X » ou « … sans rapport avec Y » à la fin d'un constat \
+factuel : ce commentaire est du bruit, et c'est l'étape suivante qui jugera de ce qui manque.
+- `concerne_cette_section` à false est un cas RARE et un dernier recours : réserve-le au document \
+qui, après lecture complète, ne contient objectivement rien d'exploitable pour la section (ex. une \
+pièce purement administrative). Un document dont l'objet relève du domaine de la section en \
+contient forcément quelque chose — au minimum ses prescriptions techniques et ses lacunes.
+- Réponds avec exactement une entrée par section demandée, en reprenant son `section_id` à \
+l'identique."""
+
+
+def _build_map_user_prompt(*, doc: DocumentSignal, sections: list[AuditSection]) -> str:
+    section_blocks = "\n\n".join(
+        f"- section_id : {s.id}\n"
+        f"  Section : {s.titre}\n"
+        f"  Périmètre : {(s.instructions or '').strip()}"
+        + (f"\n  Points de vérification (→) : {s.points_verification.strip()}" if s.points_verification else "")
+        for s in sections
+    )
+    lot = f", lot : {doc.final_lot}" if doc.final_lot else ""
+    return f"""Document analysé : {doc.filename} (catégorie : {doc.final_category or 'inconnue'}{lot})
+
+Sections d'audit pour lesquelles ce document fait référence ({len(sections)}) :
+{section_blocks}
+
+Texte intégral du document (natif ou OCR) :
+---
+{doc.content_excerpt}
+---
+
+Produis un relevé factuel par section."""
+
+
+def summarize_document_for_audit(doc: DocumentSignal, sections: list[AuditSection]) -> DocumentAuditSummary:
+    """Étape « map » : un seul appel LLM pour ce document, couvrant d'un coup toutes les sections
+    dont il est pivot, sur son texte INTÉGRAL et sans troncature.
+
+    Best-effort : un échec ne lève jamais — il renseigne `error`, et l'étape « reduce » retombe
+    alors sur un extrait brut tronqué (§_build_section_context) plutôt que de perdre le document."""
+    assert sections, "summarize_document_for_audit appelé sans section"
+
+    if len(doc.content_excerpt) > AUDIT_LARGE_DOCUMENT_WARN_CHARS:
+        logger.warning(
+            "Audit risques — document %s : %d caractères envoyés en un seul appel (seuil d'alerte %d)",
+            doc.filename,
+            len(doc.content_excerpt),
+            AUDIT_LARGE_DOCUMENT_WARN_CHARS,
+        )
+
+    try:
+        parsed, api_model_name = call_structured_chat(
+            system_prompt=_MAP_SYSTEM_PROMPT,
+            user_prompt=_build_map_user_prompt(doc=doc, sections=sections),
+            response_model=_DocumentAuditResponse,
+            what=f"audit risques — relevé du document {doc.filename}",
+            max_tokens=document_summary_max_tokens(),
+        )
+    except Exception as exc:
+        logger.exception("Échec du relevé du document %s (audit risques)", doc.filename)
+        return DocumentAuditSummary(
+            document_id=doc.document_id,
+            filename=doc.filename,
+            final_category=doc.final_category,
+            final_lot=doc.final_lot,
+            error=str(exc),
+        )
+
+    requested = {s.id for s in sections}
+    constats_by_section: dict[str, str] = {}
+    covered: set[str] = set()
+    for item in parsed.releves:
+        section_id = item.section_id.strip()
+        if section_id not in requested:
+            logger.warning(
+                "Audit risques — document %s : section_id inattendu %r dans le relevé (ignoré)",
+                doc.filename,
+                item.section_id,
+            )
+            continue
+        covered.add(section_id)
+        constats = _clean_items(item.constats)
+        if item.concerne_cette_section and constats:
+            constats_by_section[section_id] = "\n".join(f"- {c}" for c in constats)
+
+    missing = requested - covered
+    if missing:
+        logger.warning(
+            "Audit risques — document %s : %d section(s) absente(s) du relevé (%s) — repli sur extrait brut",
+            doc.filename,
+            len(missing),
+            sorted(missing),
+        )
+
+    return DocumentAuditSummary(
+        document_id=doc.document_id,
+        filename=doc.filename,
+        final_category=doc.final_category,
+        final_lot=doc.final_lot,
+        constats_by_section=constats_by_section,
+        covered_section_ids=frozenset(covered),
+        model_name=api_model_name,
+        error=None,
+    )
 
 
 class _ChantierAddress(BaseModel):
@@ -117,12 +335,20 @@ class SectionOutcome:
     error: str | None
     documents_used: list[str] = field(default_factory=list)
     candidates_count: int = 0
+    documents_degraded: list[str] = field(default_factory=list)
 
 
 _SYSTEM_PROMPT = """Tu es un Expert Senior en Ingénierie des Risques Construction, en charge de \
 la souscription des polices Dommages-Ouvrage (DO) et Tous Risques Chantier (TRC) chez SMABTP. Tu \
 réalises la Phase 2 (évaluation des risques) d'un audit technique de dossier de consultation des \
 entreprises (DCE).
+
+Le contexte fourni n'est pas le texte brut du dossier : c'est, pour chaque document pivot de la \
+section, un relevé factuel de ses prescriptions, réserves et LACUNES, établi lors d'une première \
+passe de lecture intégrale, document par document. Chaque relevé reste attribué à son fichier \
+source — c'est ce qui te permet de confronter les lots entre eux et de nommer précisément la \
+source de chaque contradiction. Une lacune relevée (prescription absente, performance non \
+chiffrée, détail non défini) est un signal de risque à part entière, à traiter comme tel.
 
 Méthode et raisonnement :
 - Approche narrative : ne te limite pas à des constats brefs. Développe ton raisonnement, explique \
@@ -160,14 +386,21 @@ SUPERSTRUCTURE, COUVERTURE, FAÇADES, ÉQUIPEMENTS, AMÉNAGEMENTS, ENVIRONNEMENT
 - synoptique_description : UNE phrase concise décrivant le problème (pour le tableau récapitulatif).
 - synoptique_preconisation : UNE phrase concise décrivant l'action attendue (pour le tableau).
 - expose_situation : résumé détaillé des prescriptions relevées dans les CCTP, l'étude de sol et le \
-RICT.
-- analyse_expert : analyse approfondie au regard des DTU / Eurocodes / règles de l'art ; rappelle \
-les points de vérification (→) concernés.
+RICT, en un seul paragraphe continu.
+- analyse_expert : LISTE des points de vérification, un élément par point. Chaque élément est un \
+paragraphe dense (2 à 4 phrases) qui analyse le point au regard des DTU / Eurocodes / règles de \
+l'art — commence-le par « → » suivi du titre du point en gras.
 - impact_assurabilite : nature du désordre potentiel (décennal, esthétique, fonctionnel, \
 impropriété à destination) et avis sur l'acceptation du risque en souscription.
-- recommandation : actions précises ou documents complémentaires à réclamer (plans d'exécution, \
-notes de calcul, certificats, essais, avis du bureau de contrôle).
+- recommandations : LISTE d'actions, une action par élément (plans d'exécution, notes de calcul, \
+certificats, essais, avis du bureau de contrôle à réclamer). Chaque élément est précis et \
+actionnable, et se suffit à lui-même.
 - source : nom des fichiers sources et articles/avis cités.
+
+Format des valeurs texte (impératif) : n'insère JAMAIS de retour à la ligne, de puce (« - ») en \
+tête ni de numérotation (« 1. ») à l'intérieur d'une valeur — ce sont les listes `analyse_expert` \
+et `recommandations` qui structurent le propos, un élément par point. N'utilise pas non plus de \
+guillemet droit (") : pour citer un passage, encadre-le par des guillemets français « … ».
 
 N'invente jamais une prescription absente des documents fournis."""
 
@@ -179,51 +412,120 @@ def _normalize(text: str) -> str:
     return "".join(c for c in decomposed if not unicodedata.combining(c))
 
 
+def document_matches_section(doc: DocumentSignal, section: AuditSection) -> bool:
+    """Appariement document ↔ section : la catégorie doit être pivot de la section et, pour les
+    catégories « par lot » (§schema.LOT_FILTERED_CATEGORIES), le nom de fichier ou le lot doit
+    contenir l'un des `cctp_keywords`. Les autres pivots (RICT, étude de sol, notice) passent
+    entiers.
+
+    Volontairement sans condition sur `content_excerpt` : le pipeline s'en sert AVANT l'OCR pour
+    décider quels documents OCRiser, et l'appariement ne porte que sur le nom de fichier/lot,
+    disponible dès la classification."""
+    if doc.final_category not in section.pivot_categories:
+        return False
+    if doc.final_category in LOT_FILTERED_CATEGORIES and section.cctp_keywords:
+        haystack = _normalize(f"{doc.filename} {doc.final_lot or ''}")
+        return any(_normalize(k) in haystack for k in section.cctp_keywords)
+    return True
+
+
+def sections_for_document(doc: DocumentSignal, schema: AuditSchema) -> list[AuditSection]:
+    """Sections dont ce document est pivot — l'inverse de `select_section_documents`. C'est ce qui
+    permet à l'étape « map » de ne lire chaque document qu'UNE fois quel que soit le nombre de
+    sections qu'il alimente (le RICT alimentait 5 sections sur le dossier de test)."""
+    return [s for s in schema.sections if document_matches_section(doc, s)]
+
+
 def select_section_documents(section: AuditSection, documents: list[DocumentSignal]) -> list[DocumentSignal]:
-    """Documents pivots de la section, dans l'ordre de priorité de `pivot_categories`. Les
-    catégories « par lot » (§schema.LOT_FILTERED_CATEGORIES) sont restreintes aux documents dont le
-    nom de fichier ou le lot contient l'un des `cctp_keywords` de la section ; les autres pivots
-    (RICT, étude de sol, notice) sont pris en entier."""
-    normalized_keywords = [_normalize(k) for k in section.cctp_keywords]
+    """Documents pivots de la section, dans l'ordre de priorité de `pivot_categories`."""
     selected: list[DocumentSignal] = []
     seen: set[str] = set()
     for category in section.pivot_categories:
         for d in documents:
             if d.final_category != category or not d.content_excerpt or d.document_id in seen:
                 continue
-            if category in LOT_FILTERED_CATEGORIES and normalized_keywords:
-                haystack = _normalize(f"{d.filename} {d.final_lot or ''}")
-                if not any(k in haystack for k in normalized_keywords):
-                    continue
+            if not document_matches_section(d, section):
+                continue
             selected.append(d)
             seen.add(d.document_id)
     return selected
 
 
-def _build_documents_context(
-    documents: list[DocumentSignal],
+def _document_header(doc: DocumentSignal) -> str:
+    return (
+        f"### Document : {doc.filename} (catégorie : {doc.final_category or 'inconnue'}"
+        + (f", lot : {doc.final_lot}" if doc.final_lot else "")
+        + ")"
+    )
+
+
+@dataclass(frozen=True)
+class _SectionContext:
+    text: str
+    documents_used: list[str]
+    documents_degraded: list[str]
+    documents_without_info: list[str]
+
+
+def _build_section_context(
+    section: AuditSection,
+    candidates: list[DocumentSignal],
+    summaries: dict[str, DocumentAuditSummary],
     *,
-    total_budget: int = AUDIT_TOTAL_CONTEXT_MAX_CHARS,
-    per_document_budget: int = AUDIT_PER_DOCUMENT_MAX_CHARS,
-) -> tuple[str, list[str]]:
-    """Contexte assemblé + liste des documents réellement inclus (distincte des candidats : au-delà
-    du budget, un document candidat est purement absent du prompt — cf. Phase 1)."""
+    fallback_total_budget: int = AUDIT_FALLBACK_TOTAL_MAX_CHARS,
+    fallback_per_document_budget: int = AUDIT_FALLBACK_PER_DOCUMENT_MAX_CHARS,
+) -> _SectionContext:
+    """Contexte de l'étape « reduce » : un bloc de relevés par document pivot, toujours nommé par
+    son fichier source — indispensable pour que la section puisse continuer à confronter les lots
+    entre eux et signaler une contradiction (ex. une prescription du CCTP Étanchéité qui contredit
+    une attente du Gros-Œuvre), ce que le prompt système exige explicitement.
+
+    Aucun budget ne s'applique aux relevés : tous les documents pivots sont représentés. Le budget
+    ne cadre que le repli « extrait brut », emprunté quand le relevé n'a pas pu être produit."""
     blocks: list[str] = []
-    included: list[str] = []
-    remaining = total_budget
-    for doc in documents:
-        if remaining <= 0:
-            break
-        cap = min(per_document_budget, remaining)
-        excerpt = doc.content_excerpt[:cap]
-        blocks.append(
-            f"### Document : {doc.filename} (catégorie : {doc.final_category or 'inconnue'}"
-            + (f", lot : {doc.final_lot}" if doc.final_lot else "")
-            + f")\n{excerpt}"
-        )
-        included.append(doc.filename)
+    used: list[str] = []
+    degraded: list[str] = []
+    without_info: list[str] = []
+    remaining = fallback_total_budget
+
+    for doc in candidates:
+        summary = summaries.get(doc.document_id)
+        header = _document_header(doc)
+
+        if summary is not None and section.id in summary.constats_by_section:
+            blocks.append(f"{header}\n{summary.constats_by_section[section.id]}")
+            used.append(doc.filename)
+            continue
+
+        if summary is not None and section.id in summary.covered_section_ids:
+            without_info.append(doc.filename)
+            continue
+
+        cap = min(fallback_per_document_budget, remaining)
+        excerpt = doc.content_excerpt[:cap] if cap > 0 else ""
+        if not excerpt:
+            logger.warning(
+                "Audit risques — section %s : document %s sans relevé ET budget de repli épuisé, absent du prompt",
+                section.id,
+                doc.filename,
+            )
+            continue
+        blocks.append(f"{header} — relevé indisponible, extrait brut du document (tronqué) :\n{excerpt}")
+        used.append(doc.filename)
+        degraded.append(doc.filename)
         remaining -= len(excerpt)
-    return "\n\n".join(blocks), included
+
+    if without_info:
+        blocks.append(
+            "### Documents pivots lus sans élément pertinent pour cette section\n" + ", ".join(without_info)
+        )
+
+    return _SectionContext(
+        text="\n\n".join(blocks),
+        documents_used=used,
+        documents_degraded=degraded,
+        documents_without_info=without_info,
+    )
 
 
 def _build_user_prompt(*, section: AuditSection, grounding: str, context: str) -> str:
@@ -234,7 +536,7 @@ def _build_user_prompt(*, section: AuditSection, grounding: str, context: str) -
 Consigne de périmètre :
 {section.instructions}
 {points}{grounding_block}
-Documents pivots fournis (texte natif ou OCR) :
+Relevés factuels établis document par document sur l'ensemble des documents pivots de cette section :
 ---
 {context}
 ---
@@ -250,8 +552,10 @@ def generate_section(
     *,
     documents: list[DocumentSignal],
     georisques: GeorisquesReport | None,
+    summaries: dict[str, DocumentAuditSummary],
 ) -> SectionOutcome:
-    """Un seul appel LLM par section → liste de risques structurés."""
+    """Étape « reduce » : un seul appel LLM par section → liste de risques structurés, alimenté par
+    les relevés produits en amont par `summarize_document_for_audit` (indexés par `document_id`)."""
     candidates = select_section_documents(section, documents)
     grounding = format_aspects_grounding(georisques, section.georisques_aspects)
 
@@ -260,22 +564,22 @@ def generate_section(
             section_id=section.id, risks=[], model_name=None, error=None, documents_used=[], candidates_count=0
         )
 
-    context, documents_used = _build_documents_context(candidates)
-    if not context:
-        context = "_Aucun document pivot dans le corpus pour cette section — statue uniquement à partir des données publiques Géorisques fournies ci-dessus, si présentes._"
-    if len(documents_used) < len(candidates):
+    context = _build_section_context(section, candidates, summaries)
+    context_text = context.text
+    if not context_text:
+        context_text = "_Aucun document pivot dans le corpus pour cette section — statue uniquement à partir des données publiques Géorisques fournies ci-dessus, si présentes._"
+    if context.documents_degraded:
         logger.warning(
-            "Audit risques — section %s : %d document(s) candidat(s) mais %d envoyé(s) (budget atteint) : %s ignoré(s)",
+            "Audit risques — section %s : %d document(s) sans relevé exploitable, repli sur extrait brut tronqué : %s",
             section.id,
-            len(candidates),
-            len(documents_used),
-            [d.filename for d in candidates if d.filename not in documents_used],
+            len(context.documents_degraded),
+            context.documents_degraded,
         )
 
     try:
         parsed, api_model_name = call_structured_chat(
             system_prompt=_SYSTEM_PROMPT,
-            user_prompt=_build_user_prompt(section=section, grounding=grounding, context=context),
+            user_prompt=_build_user_prompt(section=section, grounding=grounding, context=context_text),
             response_model=SectionRisks,
             what=f"audit risques — section {section.id}",
         )
@@ -286,8 +590,9 @@ def generate_section(
             risks=[],
             model_name=None,
             error=str(exc),
-            documents_used=documents_used,
+            documents_used=context.documents_used,
             candidates_count=len(candidates),
+            documents_degraded=context.documents_degraded,
         )
 
     return SectionOutcome(
@@ -295,8 +600,9 @@ def generate_section(
         risks=list(parsed.risques),
         model_name=api_model_name,
         error=None,
-        documents_used=documents_used,
+        documents_used=context.documents_used,
         candidates_count=len(candidates),
+        documents_degraded=context.documents_degraded,
     )
 
 
@@ -323,15 +629,53 @@ def _synoptic_table(outcomes: list[SectionOutcome]) -> str:
     return "\n".join(lines)
 
 
+def _clean_items(items: list[str]) -> list[str]:
+    """Nettoie une liste produite par le LLM : puces/numérotations résiduelles en tête d'élément
+    (le prompt les interdit, mais un élément déjà préfixé ne doit pas se retrouver doublé) et
+    éléments vides."""
+    cleaned = []
+    for item in items:
+        text = re.sub(r"^\s*(?:[-•*]|\d+[.)])\s*", "", item).strip()
+        if text:
+            cleaned.append(text)
+    return cleaned
+
+
 def _render_risk_detail(r: RiskItem) -> str:
     header = f"[STATUT : {r.statut}] | [{r.element_ouvrage}] | [{r.risque} / {r.alea}]" if r.alea else f"[STATUT : {r.statut}] | [{r.element_ouvrage}] | [{r.risque}]"
+    # `analyse_expert` : un paragraphe par point de vérification (les éléments commencent déjà par
+    # « → »), donc séparés par une ligne vide plutôt que rendus en puces.
+    analyse = "\n\n".join(_clean_items(r.analyse_expert)) or "_Non renseigné._"
+    recommandations = _clean_items(r.recommandations)
+    reco_block = "\n".join(f"- {item}" for item in recommandations) if recommandations else "_Non renseignée._"
     return (
         f"{header}\n\n"
         f"**Exposé de la situation :** {r.expose_situation}\n\n"
-        f"**Analyse de l'Expert & Référentiel :** {r.analyse_expert}\n\n"
+        f"**Analyse de l'Expert & Référentiel :**\n\n{analyse}\n\n"
         f"**Impact Assurabilité :** {r.impact_assurabilite}\n\n"
-        f"**Recommandation de levée de doute :** {r.recommandation} **Source :** {r.source}"
+        f"**Recommandation de levée de doute :**\n\n{reco_block}\n\n"
+        f"**Source :** {r.source}"
     )
+
+
+def _sources_note(outcome: SectionOutcome) -> str:
+    """Traçabilité sous une section : les fichiers réellement exploités, ceux lus sans élément
+    pertinent, et ceux tombés sur le repli « extrait brut »."""
+    if not outcome.candidates_count:
+        return ""
+    parts: list[str] = []
+    if outcome.documents_used:
+        parts.append("_Sources consultées : " + ", ".join(outcome.documents_used) + "_")
+    without_info = outcome.candidates_count - len(outcome.documents_used)
+    if without_info > 0:
+        parts.append(f"_(+{without_info} document(s) pivot(s) lu(s) sans élément pertinent pour cette section)_")
+    if outcome.documents_degraded:
+        parts.append(
+            "_(relevé indisponible, extrait brut tronqué utilisé pour : "
+            + ", ".join(outcome.documents_degraded)
+            + ")_"
+        )
+    return " ".join(parts)
 
 
 def assemble_report(
@@ -361,11 +705,9 @@ def assemble_report(
         else:
             blocks = [_render_risk_detail(r) for r in outcome.risks]
             body = "\n\n--------------------------------------------------------------------------------\n\n".join(blocks)
-            if outcome.documents_used:
-                body += "\n\n_Sources consultées : " + ", ".join(outcome.documents_used) + "_"
-                skipped = outcome.candidates_count - len(outcome.documents_used)
-                if skipped > 0:
-                    body += f" _(+{skipped} document(s) pivot(s) non envoyé(s) — budget de contexte atteint)_"
+            note = _sources_note(outcome)
+            if note:
+                body += "\n\n" + note
             detail_parts.append(body)
 
     sections.append("\n\n".join(detail_parts))

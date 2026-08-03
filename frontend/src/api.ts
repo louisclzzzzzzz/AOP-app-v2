@@ -210,6 +210,12 @@ export async function getExtractionReport(dossierId: string): Promise<Extraction
   return handle<ExtractionReport>(res)
 }
 
+/** URL de l'export Excel du tableau d'extraction — régénéré côté serveur à chaque appel, donc
+ * toujours à jour des corrections manuelles (pas de rapport figé à télécharger). */
+export function extractionExcelUrl(dossierId: string): string {
+  return `/api/dossiers/${dossierId}/extraction/export.xlsx`
+}
+
 export async function generateProjectSynthesis(dossierId: string): Promise<Dossier> {
   const res = await fetch(`/api/dossiers/${dossierId}/synthese-projet/generate`, { method: 'POST' })
   return handle<Dossier>(res)

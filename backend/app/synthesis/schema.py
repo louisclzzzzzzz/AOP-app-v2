@@ -18,6 +18,10 @@ class SynthesisTopic:
     titre: str
     format: str
     source: str
+    # Plafond de lignes du contenu rendu pour ce thème (lignes de tableau comprises, hors ligne
+    # d'en-tête). `None` = pas de plafond explicite. C'est le levier chiffré de la réduction de
+    # verbosité de la Phase 1 : `format` dit la FORME attendue, `max_lignes` en borne le VOLUME.
+    max_lignes: int | None = None
     extraction_field_ids: list[str] = field(default_factory=list)
     pivot_categories: list[str] = field(default_factory=list)
     grounding_field_ids: list[str] = field(default_factory=list)
@@ -48,6 +52,7 @@ def load_synthesis_schema() -> SynthesisSchema:
             titre=t["titre"],
             format=t["format"],
             source=t["source"],
+            max_lignes=t.get("max_lignes"),
             extraction_field_ids=t.get("extraction_field_ids", []),
             pivot_categories=t.get("pivot_categories", []),
             grounding_field_ids=t.get("grounding_field_ids", []),
@@ -60,6 +65,7 @@ def load_synthesis_schema() -> SynthesisSchema:
     assert len(ids) == len(set(ids)), "des ids de thème sont dupliqués dans synthese_projet_schema.yaml"
     for t in topics:
         assert t.source in VALID_SOURCES, f"{t.id} : source inconnue {t.source!r}"
+        assert t.max_lignes is None or t.max_lignes > 0, f"{t.id} : max_lignes doit être > 0"
         if t.source == "extraction_fields":
             assert t.extraction_field_ids, f"{t.id} : source=extraction_fields sans extraction_field_ids"
         if t.source == "documents":

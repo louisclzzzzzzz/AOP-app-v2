@@ -4,11 +4,14 @@ import app.synthesis.engine as engine
 from app.classify.taxonomy import Taxonomy, TaxonomyCategory
 from app.ingestion.document_signal import DocumentSignal
 from app.synthesis.engine import (
+    DocumentSummary,
     TopicOutcome,
     assemble_report,
     build_documents_cartography,
     generate_topic,
     select_topic_documents,
+    summarize_document,
+    topics_for_document,
 )
 from app.synthesis.schema import SynthesisSchema, SynthesisTopic
 
@@ -43,6 +46,28 @@ def _doc(**overrides) -> DocumentSignal:
     return DocumentSignal(**defaults)
 
 
+def _summary(doc: DocumentSignal, **overrides) -> DocumentSummary:
+    """Relevé de l'étape "map" pour ce document. `summaries_by_topic` ne contient que les thèmes
+    informés ; `covered_topic_ids` tous ceux réellement traités par le LLM."""
+    defaults = dict(
+        document_id=doc.document_id,
+        filename=doc.filename,
+        final_category=doc.final_category,
+        summaries_by_topic={},
+        covered_topic_ids=frozenset(),
+        model_name="mistral-large-test",
+        error=None,
+    )
+    defaults.update(overrides)
+    if "summaries_by_topic" in overrides and "covered_topic_ids" not in overrides:
+        defaults["covered_topic_ids"] = frozenset(overrides["summaries_by_topic"])
+    return DocumentSummary(**defaults)
+
+
+def _index(*summaries: DocumentSummary) -> dict[str, DocumentSummary]:
+    return {s.document_id: s for s in summaries}
+
+
 # --- select_topic_documents : ordre de priorité + exclusion des documents sans texte -----------
 
 def test_select_topic_documents_orders_by_pivot_category_priority():
@@ -65,6 +90,112 @@ def test_select_topic_documents_skips_documents_without_content():
     assert [d.document_id for d in selected] == ["full"]
 
 
+# --- topics_for_document : l'inverse de select_topic_documents, base de la dédup du map ---------
+
+def test_topics_for_document_returns_every_topic_the_document_is_pivot_for():
+    schema = SynthesisSchema(
+        topics=[
+            _topic(id="rict_only", pivot_categories=["TECH/RICT"]),
+            _topic(id="rict_et_sol", pivot_categories=["TECH/ETUDE DE SOL", "TECH/RICT"]),
+            _topic(id="sol_only", pivot_categories=["TECH/ETUDE DE SOL"]),
+        ]
+    )
+    doc = _doc(final_category="TECH/RICT", content_excerpt="Avis suspendu n°12.")
+
+    assert [t.id for t in topics_for_document(doc, schema)] == ["rict_only", "rict_et_sol"]
+
+
+def test_topics_for_document_ignores_extraction_fields_topics_and_empty_documents():
+    schema = SynthesisSchema(
+        topics=[
+            _topic(id="identite", source="extraction_fields", pivot_categories=["TECH/RICT"]),
+            _topic(id="rict", pivot_categories=["TECH/RICT"]),
+        ]
+    )
+    assert [t.id for t in topics_for_document(_doc(final_category="TECH/RICT", content_excerpt="x"), schema)] == ["rict"]
+    assert topics_for_document(_doc(final_category="TECH/RICT", content_excerpt=""), schema) == []
+    assert topics_for_document(_doc(final_category=None, content_excerpt="x"), schema) == []
+
+
+# --- summarize_document : étape "map", un seul appel LLM par document --------------------------
+
+def test_summarize_document_covers_all_topics_in_a_single_untruncated_call(monkeypatch):
+    """Un document pivot de plusieurs thèmes (ex. le RICT) n'est lu qu'UNE fois, et son texte part
+    intégralement — c'est tout l'objet du map-reduce (l'ancien assemblage tronquait à 60 000
+    caractères par document et par thème)."""
+    calls = []
+
+    def _fake(*, system_prompt, user_prompt, response_model, what, **kwargs):
+        calls.append(user_prompt)
+        item = response_model.model_fields["resumes"].annotation.__args__[0]
+        return (
+            response_model(
+                resumes=[
+                    item(
+                        theme_id="synthese_rict",
+                        apporte_des_informations=True,
+                        constats=["Avis suspendu n°12.", "- Mission L confiée à SOCOTEC."],
+                    ),
+                    item(theme_id="recit_sol", apporte_des_informations=False, constats=[]),
+                ]
+            ),
+            "mistral-large-test",
+        )
+
+    monkeypatch.setattr(engine, "call_structured_chat", _fake)
+
+    long_text = "Avis suspendu n°12 sur les fondations. " * 5_000  # ~190 000 caractères
+    doc = _doc(final_category="TECH/RICT", content_excerpt=long_text)
+    topics = [_topic(id="synthese_rict"), _topic(id="recit_sol")]
+
+    summary = summarize_document(doc, topics)
+
+    assert len(calls) == 1  # un appel par document, pas un par (document, thème)
+    assert long_text in calls[0]  # texte intégral, aucune troncature
+    assert summary.error is None
+    assert summary.model_name == "mistral-large-test"
+    # Les constats sont recomposés en puces Markdown, et une puce déjà préfixée n'est pas doublée
+    assert summary.summaries_by_topic == {
+        "synthese_rict": "- Avis suspendu n°12.\n- Mission L confiée à SOCOTEC."
+    }
+    # `recit_sol` est traité mais sans information : à distinguer d'un thème non traité (repli brut)
+    assert summary.covered_topic_ids == frozenset({"synthese_rict", "recit_sol"})
+
+
+def test_summarize_document_ignores_unknown_theme_ids(monkeypatch):
+    def _fake(*, system_prompt, user_prompt, response_model, what, **kwargs):
+        item = response_model.model_fields["resumes"].annotation.__args__[0]
+        return (
+            response_model(
+                resumes=[
+                    item(theme_id="theme_invente", apporte_des_informations=True, constats=["Hors périmètre."]),
+                    item(theme_id=" synthese_rict ", apporte_des_informations=True, constats=["Avis suspendu."]),
+                ]
+            ),
+            "mistral-large-test",
+        )
+
+    monkeypatch.setattr(engine, "call_structured_chat", _fake)
+
+    summary = summarize_document(_doc(final_category="TECH/RICT", content_excerpt="x"), [_topic(id="synthese_rict")])
+
+    assert summary.summaries_by_topic == {"synthese_rict": "- Avis suspendu."}
+    assert "theme_invente" not in summary.covered_topic_ids
+
+
+def test_summarize_document_llm_failure_is_best_effort(monkeypatch):
+    def _boom(**kwargs):
+        raise RuntimeError("API indisponible")
+
+    monkeypatch.setattr(engine, "call_structured_chat", _boom)
+
+    summary = summarize_document(_doc(final_category="TECH/RICT", content_excerpt="x"), [_topic(id="synthese_rict")])
+
+    assert summary.error == "API indisponible"
+    assert summary.summaries_by_topic == {}
+    assert summary.covered_topic_ids == frozenset()
+
+
 # --- generate_topic : source=extraction_fields, aucun appel LLM --------------------------------
 
 def test_generate_topic_extraction_fields_source_never_calls_llm(monkeypatch):
@@ -78,82 +209,191 @@ def test_generate_topic_extraction_fields_source_never_calls_llm(monkeypatch):
         topic,
         documents=[],
         field_values={"nom_moa": ("Nom du MOA", "Commune de Marly"), "adresse_moa": ("Adresse du MOA", "")},
+        summaries={},
     )
 
     assert outcome.error is None
     assert outcome.model_name is None
-    assert "Commune de Marly" in outcome.content_md
-    assert "Adresse du MOA" not in outcome.content_md  # valeur vide, exclue du rendu
+    # Rendu en tableau à 2 colonnes (carte d'identité), pas en lignes « **libellé :** valeur ».
+    assert "| Donnée | Valeur |" in outcome.content_md
+    assert "| Nom du MOA | Commune de Marly |" in outcome.content_md
+    # Un champ sans valeur reste affiché « non trouvé » : l'absence d'une donnée de souscription
+    # est une information, une ligne omise se confondrait avec un champ jamais demandé.
+    assert "| Adresse du MOA | _non trouvé_ |" in outcome.content_md
+
+
+def test_extraction_fields_table_escapes_pipes_and_newlines():
+    """Une valeur d'extraction peut contenir un « | » (champ `montants_garanties_demandes`, dont le
+    résultat attendu est une correspondance garantie → montant) ou un retour à la ligne : les deux
+    casseraient la ligne de tableau Markdown."""
+    topic = _topic(source="extraction_fields", extraction_field_ids=["garanties_demandees"])
+    outcome = generate_topic(
+        topic,
+        documents=[],
+        field_values={"garanties_demandees": ("Garanties", "TRC | 12 M€\nDO | 8 M€")},
+        summaries={},
+    )
+
+    lines = outcome.content_md.splitlines()
+    assert len(lines) == 3  # en-tête + séparateur + une seule ligne de données
+    row = lines[-1]
+    assert row.count("\\|") == 2  # les 2 pipes de la valeur sont échappés
+    # Seuls les 3 délimiteurs d'une ligne à 2 colonnes restent des pipes non échappés.
+    assert row.count("|") - row.count("\\|") == 3
+    assert row.startswith("| Garanties |") and row.endswith("|")
 
 
 def test_generate_topic_extraction_fields_source_handles_no_data():
     topic = _topic(source="extraction_fields", extraction_field_ids=["nom_moa"])
-    outcome = generate_topic(topic, documents=[], field_values={})
+    outcome = generate_topic(topic, documents=[], field_values={}, summaries={})
     assert "Aucune donnée disponible" in outcome.content_md
+
+
+# --- _build_topic_context : étape "reduce", assemblage des relevés -----------------------------
+
+def test_build_topic_context_keeps_every_pivot_document_attributed_to_its_file():
+    """Aucun budget sur les relevés : même avec beaucoup de documents pivots, tous sont présents
+    dans le prompt, chacun nommé par son fichier source — sans quoi le thème ne pourrait plus
+    comparer les documents et signaler une divergence (ex. classement ERP CCTP vs arrêté PC)."""
+    topic = _topic(id="destination_ambition", pivot_categories=["TECH/ARRETE PC", "TECH/CCTP TRAVAUX"])
+    arrete = _doc(document_id="pc", filename="arrete_pc.pdf", final_category="TECH/ARRETE PC", content_excerpt="x")
+    cctps = [
+        _doc(document_id=f"c{i}", filename=f"cctp_{i}.pdf", final_category="TECH/CCTP TRAVAUX", content_excerpt="y")
+        for i in range(30)
+    ]
+    summaries = _index(
+        _summary(arrete, summaries_by_topic={"destination_ambition": 'ERP "type O, catégorie 2".'}),
+        *(_summary(c, summaries_by_topic={"destination_ambition": 'ERP "5e catégorie".'}) for c in cctps),
+    )
+
+    context = engine._build_topic_context(topic, [arrete, *cctps], summaries)
+
+    assert context.documents_used == ["arrete_pc.pdf"] + [c.filename for c in cctps]
+    assert context.documents_degraded == []
+    assert "### Document : arrete_pc.pdf" in context.text
+    assert "### Document : cctp_29.pdf" in context.text
+    assert 'ERP "type O, catégorie 2".' in context.text
+
+
+def test_build_topic_context_groups_documents_without_information():
+    """Un document lu mais muet sur ce thème ne remplit pas le prompt d'un bloc vide, et ne compte
+    pas comme source consultée — il reste signalé en une ligne pour que le LLM puisse conclure à
+    une absence d'information en connaissance de cause."""
+    topic = _topic(id="t1")
+    doc_utile = _doc(document_id="a", filename="a.pdf", final_category="TECH/RICT", content_excerpt="x")
+    doc_muet = _doc(document_id="b", filename="b.pdf", final_category="TECH/RICT", content_excerpt="y")
+    summaries = _index(
+        _summary(doc_utile, summaries_by_topic={"t1": "Avis suspendu n°12."}),
+        _summary(doc_muet, summaries_by_topic={}, covered_topic_ids=frozenset({"t1"})),
+    )
+
+    context = engine._build_topic_context(topic, [doc_utile, doc_muet], summaries)
+
+    assert context.documents_used == ["a.pdf"]
+    assert context.documents_without_info == ["b.pdf"]
+    assert context.documents_degraded == []
+    assert "sans information utile" in context.text
+    assert context.text.count("### Document : ") == 1
+
+
+def test_build_topic_context_falls_back_to_raw_excerpt_when_summary_is_missing():
+    """Repli best-effort : un document dont le relevé a échoué (ou dont le thème est absent de la
+    réponse) est réinjecté en extrait brut tronqué, jamais perdu."""
+    topic = _topic(id="t1")
+    doc_ok = _doc(document_id="a", filename="a.pdf", final_category="TECH/RICT", content_excerpt="x")
+    doc_ko = _doc(document_id="b", filename="b.pdf", final_category="TECH/RICT", content_excerpt="TEXTE BRUT " * 100)
+    doc_absent = _doc(document_id="c", filename="c.pdf", final_category="TECH/RICT", content_excerpt="AUTRE BRUT")
+    summaries = _index(
+        _summary(doc_ok, summaries_by_topic={"t1": "Relevé."}),
+        _summary(doc_ko, error="API indisponible"),
+        # `doc_absent` n'a aucune entrée : le LLM n'a pas traité ce thème pour ce document.
+    )
+
+    context = engine._build_topic_context(topic, [doc_ok, doc_ko, doc_absent], summaries)
+
+    assert context.documents_used == ["a.pdf", "b.pdf", "c.pdf"]
+    assert context.documents_degraded == ["b.pdf", "c.pdf"]
+    assert "relevé indisponible" in context.text
+    assert "TEXTE BRUT" in context.text
+    assert "AUTRE BRUT" in context.text
+
+
+def test_build_topic_context_bounds_the_raw_excerpt_fallback_only():
+    """Le budget résiduel ne borne QUE le chemin de repli : il ne peut jamais évincer un relevé."""
+    topic = _topic(id="t1")
+    doc_resume = _doc(document_id="a", filename="a.pdf", final_category="TECH/RICT", content_excerpt="x" * 100)
+    doc_brut_1 = _doc(document_id="b", filename="b.pdf", final_category="TECH/RICT", content_excerpt="y" * 100)
+    doc_brut_2 = _doc(document_id="c", filename="c.pdf", final_category="TECH/RICT", content_excerpt="z" * 100)
+    summaries = _index(_summary(doc_resume, summaries_by_topic={"t1": "Relevé conservé."}))
+
+    context = engine._build_topic_context(
+        topic,
+        [doc_brut_1, doc_brut_2, doc_resume],
+        summaries,
+        fallback_total_budget=10,
+        fallback_per_document_budget=10,
+    )
+
+    assert "Relevé conservé." in context.text
+    assert context.documents_used == ["b.pdf", "a.pdf"]  # c.pdf évincé, budget de repli épuisé
+    assert context.documents_degraded == ["b.pdf"]
 
 
 # --- generate_topic : source=documents, avec appel LLM ------------------------------------------
 
-def test_generate_topic_documents_source_calls_llm_with_context(monkeypatch):
+def test_generate_topic_documents_source_calls_llm_with_summaries(monkeypatch):
     captured = {}
 
-    def _fake(*, system_prompt, user_prompt, response_model, what):
+    def _fake(*, system_prompt, user_prompt, response_model, what, **kwargs):
         captured["user_prompt"] = user_prompt
         captured["what"] = what
         return response_model(contenu="Contenu généré."), "mistral-large-test"
 
     monkeypatch.setattr(engine, "call_structured_chat", _fake)
 
-    topic = _topic(pivot_categories=["TECH/RICT"], grounding_field_ids=["existence_rict"])
-    doc = _doc(final_category="TECH/RICT", content_excerpt="Avis suspendu n°1 sur les fondations.")
+    topic = _topic(id="synthese_rict", pivot_categories=["TECH/RICT"], grounding_field_ids=["existence_rict"])
+    doc = _doc(final_category="TECH/RICT", content_excerpt="Texte brut intégral du RICT.")
+    summaries = _index(_summary(doc, summaries_by_topic={"synthese_rict": "Avis suspendu n°1 sur les fondations."}))
 
     outcome = generate_topic(
-        topic, documents=[doc], field_values={"existence_rict": ("Existence RICT", "Oui")}
+        topic,
+        documents=[doc],
+        field_values={"existence_rict": ("Existence RICT", "Oui")},
+        summaries=summaries,
     )
 
     assert outcome.content_md == "Contenu généré."
     assert outcome.model_name == "mistral-large-test"
     assert outcome.error is None
     assert outcome.documents_used == ["doc.pdf"]
+    assert outcome.documents_degraded == []
     assert "Avis suspendu n°1" in captured["user_prompt"]
     assert "Existence RICT : Oui" in captured["user_prompt"]
-    assert "test_topic" in captured["what"]
+    assert "synthese_rict" in captured["what"]
+    # Le reduce lit les relevés, plus le texte brut du document
+    assert "Texte brut intégral du RICT." not in captured["user_prompt"]
 
 
-def test_build_documents_context_excludes_documents_beyond_total_budget():
-    doc_a = _doc(document_id="a", filename="a.pdf", content_excerpt="x" * 10)
-    doc_b = _doc(document_id="b", filename="b.pdf", content_excerpt="y" * 10)
-
-    context, included = engine._build_documents_context(
-        [doc_a, doc_b], total_budget=10, per_document_budget=10
-    )
-
-    assert included == ["a.pdf"]
-    assert "b.pdf" not in context
-
-
-def test_generate_topic_documents_used_excludes_candidates_dropped_by_budget(monkeypatch):
-    """documents_used ne doit lister que les documents dont le contenu a réellement été inclus
-    dans le prompt — pas tous les candidats matchés par catégorie (§bug réel trouvé en testant un
-    dossier à 69 candidats CCTP/CCAP dont seuls les 2 premiers tenaient dans le budget)."""
+def test_generate_topic_documents_used_counts_every_candidate_it_could_exploit(monkeypatch):
+    """Plus aucun candidat n'est écarté faute de budget (§bug réel : un dossier à 69 candidats
+    CCTP/CCAP dont seuls les 2 premiers tenaient dans l'ancien budget de contexte)."""
 
     def _fake_chat(*, system_prompt, user_prompt, response_model, what):
         return response_model(contenu="Contenu généré."), "mistral-large-test"
 
-    def _fake_context(candidates):
-        return "contexte tronqué", [candidates[0].filename]
-
     monkeypatch.setattr(engine, "call_structured_chat", _fake_chat)
-    monkeypatch.setattr(engine, "_build_documents_context", _fake_context)
 
-    topic = _topic(pivot_categories=["TECH/RICT"])
-    doc_included = _doc(document_id="a", filename="a.pdf", final_category="TECH/RICT", content_excerpt="x")
-    doc_dropped = _doc(document_id="b", filename="b.pdf", final_category="TECH/RICT", content_excerpt="y")
+    topic = _topic(id="t1", pivot_categories=["TECH/RICT"])
+    docs = [
+        _doc(document_id=str(i), filename=f"{i}.pdf", final_category="TECH/RICT", content_excerpt="x" * 60_000)
+        for i in range(69)
+    ]
+    summaries = _index(*(_summary(d, summaries_by_topic={"t1": "Relevé."}) for d in docs))
 
-    outcome = generate_topic(topic, documents=[doc_included, doc_dropped], field_values={})
+    outcome = generate_topic(topic, documents=docs, field_values={}, summaries=summaries)
 
-    assert outcome.documents_used == ["a.pdf"]
-    assert outcome.candidates_count == 2
+    assert len(outcome.documents_used) == 69
+    assert outcome.candidates_count == 69
 
 
 def test_generate_topic_documents_source_no_candidates_skips_llm_call(monkeypatch):
@@ -163,7 +403,7 @@ def test_generate_topic_documents_source_no_candidates_skips_llm_call(monkeypatc
     monkeypatch.setattr(engine, "call_structured_chat", _boom)
 
     topic = _topic(pivot_categories=["TECH/RICT"])
-    outcome = generate_topic(topic, documents=[], field_values={})
+    outcome = generate_topic(topic, documents=[], field_values={}, summaries={})
 
     assert outcome.error is None
     assert "Aucun document pivot" in outcome.content_md
@@ -175,14 +415,37 @@ def test_generate_topic_documents_source_llm_failure_surfaces_error(monkeypatch)
 
     monkeypatch.setattr(engine, "call_structured_chat", _boom)
 
-    topic = _topic(pivot_categories=["TECH/RICT"])
+    topic = _topic(id="t1", pivot_categories=["TECH/RICT"])
     doc = _doc(final_category="TECH/RICT", content_excerpt="contenu")
+    summaries = _index(_summary(doc, summaries_by_topic={"t1": "Relevé."}))
 
-    outcome = generate_topic(topic, documents=[doc], field_values={})
+    outcome = generate_topic(topic, documents=[doc], field_values={}, summaries=summaries)
 
     assert outcome.content_md is None
     assert outcome.error == "API indisponible"
     assert outcome.documents_used == ["doc.pdf"]
+
+
+def test_generate_topic_still_runs_when_no_summary_could_be_produced(monkeypatch):
+    """Best-effort de bout en bout : un map entièrement en échec ne fait pas échouer le thème, il
+    le fait retomber sur les extraits bruts d'avant."""
+    captured = {}
+
+    def _fake(*, system_prompt, user_prompt, response_model, what, **kwargs):
+        captured["user_prompt"] = user_prompt
+        return response_model(contenu="Contenu dégradé."), "mistral-large-test"
+
+    monkeypatch.setattr(engine, "call_structured_chat", _fake)
+
+    topic = _topic(id="t1", pivot_categories=["TECH/RICT"])
+    doc = _doc(final_category="TECH/RICT", content_excerpt="TEXTE BRUT DU RICT")
+
+    outcome = generate_topic(topic, documents=[doc], field_values={}, summaries={})
+
+    assert outcome.content_md == "Contenu dégradé."
+    assert outcome.documents_used == ["doc.pdf"]
+    assert outcome.documents_degraded == ["doc.pdf"]
+    assert "TEXTE BRUT DU RICT" in captured["user_prompt"]
 
 
 # --- build_documents_cartography ----------------------------------------------------------------
@@ -230,6 +493,76 @@ def test_assemble_report_includes_cartography_and_topics_in_schema_order():
     assert "Contenu 1" in report
     assert "Contenu 2" in report
     assert "| a | b |" in report
+
+
+def test_assemble_report_traces_sources_and_documents_without_information():
+    """La liste des fichiers exploités par thème est la trace de sourcing retenue en production —
+    les relevés du map n'ont plus à porter une citation par phrase."""
+    schema = SynthesisSchema(topics=[_topic(id="t1", titre="Premier")])
+    outcomes = [
+        TopicOutcome(
+            topic_id="t1",
+            content_md="Contenu",
+            model_name="m",
+            error=None,
+            documents_used=["a.pdf"],
+            candidates_count=3,
+            documents_degraded=["b.pdf"],
+        )
+    ]
+
+    report = assemble_report(outcomes, schema)
+
+    assert "_Sources (1) : a.pdf_" in report
+    assert "+2 pivot(s) sans information utile" in report
+    assert "extrait brut tronqué utilisé pour : b.pdf" in report
+
+
+def test_sources_note_truncates_long_file_lists_but_keeps_the_count():
+    """Sur un dossier à 24 CCTP par lot, cette note atteignait ~1 500 caractères PAR SECTION —
+    à elle seule une part majeure du rapport, pour une information de second plan (la source
+    précise de chaque donnée est portée par la colonne "Source" des tableaux)."""
+    filenames = [f"lot{i:02d}.pdf" for i in range(20)]
+    schema = SynthesisSchema(topics=[_topic(id="t1", titre="Premier")])
+    outcomes = [
+        TopicOutcome(
+            topic_id="t1",
+            content_md="Contenu",
+            model_name="m",
+            error=None,
+            documents_used=filenames,
+            candidates_count=len(filenames),
+        )
+    ]
+
+    report = assemble_report(outcomes, schema)
+
+    assert "_Sources (20) : " in report  # le compte total reste affiché, rien n'est masqué
+    assert "lot00.pdf" in report
+    assert "+14 autre(s)" in report
+    assert "lot19.pdf" not in report
+
+
+def test_sources_note_never_truncates_degraded_documents():
+    """La liste dégradée est un signal de qualité : l'expert doit voir TOUS les fichiers concernés
+    pour juger s'il peut se fier à la section, même s'ils sont nombreux."""
+    degraded = [f"deg{i:02d}.pdf" for i in range(20)]
+    schema = SynthesisSchema(topics=[_topic(id="t1", titre="Premier")])
+    outcomes = [
+        TopicOutcome(
+            topic_id="t1",
+            content_md="Contenu",
+            model_name="m",
+            error=None,
+            documents_used=degraded,
+            candidates_count=len(degraded),
+            documents_degraded=degraded,
+        )
+    ]
+
+    report = assemble_report(outcomes, schema)
+
+    assert all(name in report for name in degraded)
 
 
 def test_assemble_report_shows_error_note_for_failed_topic():
