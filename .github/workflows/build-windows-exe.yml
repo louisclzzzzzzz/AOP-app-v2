@@ -7,11 +7,6 @@ on:
   push:
     tags:
       - "v*"
-    # TODO(retirer avant merge): permet de tester le workflow sur cette branche tant que
-    # workflow_dispatch n'est pas dispatchable (nécessite d'être présent sur la branche
-    # par défaut pour être appelable via l'API/CLI gh).
-    branches:
-      - "worktree-windows-exe-packaging"
 
 permissions:
   contents: write
