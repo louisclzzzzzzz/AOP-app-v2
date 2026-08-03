@@ -50,6 +50,13 @@ jobs:
       - name: Build Windows executable with PyInstaller
         working-directory: backend
         run: |
+          # Chemins Windows absolus (pwd -W, pas le style POSIX /d/... de Git Bash) :
+          # PyInstaller résout les chemins relatifs de --add-data par rapport au dossier du
+          # .spec généré (--specpath), pas au cwd d'invocation ; et un chemin POSIX brut
+          # collé à ";config" dans le même argument échapperait à la conversion auto de
+          # Git Bash vers un chemin Windows.
+          CONFIG_SRC="$(pwd -W)/config"
+          FRONTEND_SRC="$(cd ../frontend/dist && pwd -W)"
           uv run --frozen \
             --with pyinstaller \
             --with pyinstaller-hooks-contrib \
@@ -59,8 +66,8 @@ jobs:
               --console \
               --noconfirm \
               --paths . \
-              --add-data "config;config" \
-              --add-data "../frontend/dist;frontend/dist" \
+              --add-data "${CONFIG_SRC};config" \
+              --add-data "${FRONTEND_SRC};frontend/dist" \
               --hidden-import python_multipart \
               --hidden-import multipart \
               --hidden-import sqlalchemy.dialects.sqlite.pysqlite \
