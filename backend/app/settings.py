@@ -1,6 +1,7 @@
 """Configuration de l'application : variables d'environnement (.env) + fichiers YAML de config/."""
 from __future__ import annotations
 
+import sys
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -9,8 +10,21 @@ import yaml
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 BACKEND_DIR = Path(__file__).resolve().parent.parent
-PROJECT_ROOT = BACKEND_DIR.parent
-CONFIG_DIR = BACKEND_DIR / "config"
+
+# Exécutable empaqueté (PyInstaller) : le bootloader pose sys.frozen et sys._MEIPASS pointe
+# vers le dossier d'extraction des ressources en lecture seule (temporaire en mode --onefile,
+# effacé à la fermeture). Les données persistantes (workspace/, .env) doivent au contraire
+# vivre à côté de l'exécutable lui-même, jamais dans ce dossier temporaire.
+_FROZEN_BUNDLE_DIR = Path(getattr(sys, "_MEIPASS")) if getattr(sys, "frozen", False) else None
+
+PROJECT_ROOT = Path(sys.executable).resolve().parent if _FROZEN_BUNDLE_DIR is not None else BACKEND_DIR.parent
+CONFIG_DIR = (_FROZEN_BUNDLE_DIR / "config") if _FROZEN_BUNDLE_DIR is not None else BACKEND_DIR / "config"
+
+
+def get_bundle_dir() -> Path | None:
+    """Dossier des ressources en lecture seule embarquées (config, frontend/dist) si l'app
+    tourne comme exécutable empaqueté, None en exécution normale (uv run)."""
+    return _FROZEN_BUNDLE_DIR
 
 
 class Settings(BaseSettings):

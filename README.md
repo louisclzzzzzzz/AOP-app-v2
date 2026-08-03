@@ -50,6 +50,24 @@ cp .env.example .env
 Build le frontend, installe les dépendances backend, puis sert l'application complète
 (API + WebSocket + frontend) sur **http://localhost:8000**.
 
+## Distribution Windows (exécutable autonome, pour faire tester l'app)
+
+Le workflow GitHub Actions `.github/workflows/build-windows-exe.yml` produit un
+`AOP-v2.exe` autonome (PyInstaller `--onefile`, ne nécessite ni Python ni Node ni `uv` sur
+le poste testeur) : frontend et `backend/config/*.yaml` sont embarqués dans l'exécutable.
+
+- Lancer manuellement : onglet **Actions** du repo → *Build Windows executable* →
+  **Run workflow** (ou `gh workflow run build-windows-exe.yml`), puis récupérer l'artefact
+  `AOP-v2-windows` (contient `AOP-v2.exe`, `.env.example`, `GUIDE_UTILISATEUR.md`).
+- Pousser un tag `vX.Y.Z` publie en plus une Release GitHub avec le zip attaché.
+
+Sur le poste testeur : dézipper, copier `.env.example` en `.env` à côté de `AOP-v2.exe` et
+renseigner `MISTRAL_API_KEY`, puis double-cliquer `AOP-v2.exe` — le navigateur s'ouvre
+automatiquement sur `http://127.0.0.1:8000`. `workspace/` (dossiers traités, cache OCR, DB
+SQLite) et `.env` sont créés à côté de l'exécutable et persistent d'un lancement à l'autre
+(build PyInstaller **ne fait pas** de cross-compilation : ce .exe doit être produit par le
+runner `windows-latest`, pas construit localement depuis macOS/Linux).
+
 ## Développement (hot-reload)
 
 Deux terminaux :
