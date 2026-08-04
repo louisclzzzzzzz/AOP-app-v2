@@ -69,10 +69,13 @@ class Settings(BaseSettings):
     # démarrage : sans conséquence, juste des sessions invalidées à chaque redémarrage.
     secret_key: str = ""
     # Off par défaut : usage local (./start.sh, l'exécutable Windows empaqueté) reste
-    # mono-utilisateur sans friction, comme avant — pas de compte à créer pour un testeur qui
+    # mono-utilisateur sans friction, comme avant — pas de code à saisir pour un testeur qui
     # lance juste AOP-v2.exe sur son poste. À activer explicitement (AOP_REQUIRE_AUTH=true)
     # pour un déploiement public exposé à quiconque a le lien (ex. Railway).
     require_auth: bool = False
+    # Code d'accès à 4 chiffres, seul secret partagé (pas de compte individuel) — donné à la
+    # main aux personnes autorisées. N'a de sens que si require_auth=True.
+    access_code: str = ""
 
     def model_post_init(self, __context: Any) -> None:
         resolved = Path(self.workspace_dir).resolve()

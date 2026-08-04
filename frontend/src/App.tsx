@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { deleteDossier, listDossiers, uploadDossier } from './api'
-import { fetchCurrentUser, logout } from './auth'
-import type { CurrentUser } from './auth'
+import { checkSession, logout } from './auth'
 import type { Dossier } from './types'
 import { UploadDropzone } from './components/UploadDropzone'
 import { DossierList } from './components/DossierList'
@@ -13,9 +12,11 @@ export default function App() {
   // local / exécutable Windows — ou déjà authentifié) ; true = connexion nécessaire.
   // Dérivé de l'API métier elle-même (/api/dossiers), PAS de /api/auth/me : /me exige
   // toujours une session valide même quand AOP_REQUIRE_AUTH est désactivé partout ailleurs —
-  // s'y fier bloquerait à tort l'usage local, qui n'a jamais de compte.
+  // s'y fier bloquerait à tort l'usage local, qui n'a jamais de session.
   const [needsLogin, setNeedsLogin] = useState<boolean | undefined>(undefined)
-  const [user, setUser] = useState<CurrentUser | null>(null)
+  // Pas de compte individuel (juste un code partagé) : ce booléen ne sert qu'à décider
+  // d'afficher le bouton de déconnexion, jamais une identité à afficher.
+  const [hasSession, setHasSession] = useState(false)
   const [dossiers, setDossiers] = useState<Dossier[]>([])
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [isUploading, setIsUploading] = useState(false)
@@ -25,7 +26,7 @@ export default function App() {
     fetch('/api/dossiers')
       .then((res) => setNeedsLogin(res.status === 401))
       .catch(() => setNeedsLogin(false))
-    fetchCurrentUser().then(setUser).catch(() => setUser(null))
+    checkSession().then(setHasSession).catch(() => setHasSession(false))
   }, [])
 
   const refresh = useCallback(() => {
@@ -36,14 +37,14 @@ export default function App() {
     if (needsLogin === false) refresh()
   }, [needsLogin, refresh])
 
-  const handleLoggedIn = useCallback((loggedInUser: CurrentUser) => {
-    setUser(loggedInUser)
+  const handleLoggedIn = useCallback(() => {
+    setHasSession(true)
     setNeedsLogin(false)
   }, [])
 
   const handleLogout = useCallback(async () => {
     await logout()
-    setUser(null)
+    setHasSession(false)
     setNeedsLogin(true)
   }, [])
 
@@ -91,13 +92,10 @@ export default function App() {
             <h1 className="text-xl font-semibold text-slate-800">AOP</h1>
             <p className="text-sm text-slate-400">Analyse de DCE</p>
           </div>
-          {user && (
-            <div className="flex items-center gap-3 text-sm text-slate-500">
-              <span>{user.email}</span>
-              <button onClick={handleLogout} className="text-blue-600 hover:underline">
-                Déconnexion
-              </button>
-            </div>
+          {hasSession && (
+            <button onClick={handleLogout} className="text-sm text-blue-600 hover:underline">
+              Déconnexion
+            </button>
           )}
         </div>
       </header>

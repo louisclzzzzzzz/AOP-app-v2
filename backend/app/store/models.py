@@ -128,20 +128,6 @@ class CrossCheckStatus(str, enum.Enum):
     NOT_APPLICABLE = "not_applicable"  # champ non soumis au recoupement (§ models.yaml)
 
 
-class User(Base):
-    """Compte individuel (email + mot de passe haché) : pas d'auto-inscription — les comptes
-    sont créés par un administrateur (scripts/create_user.py), pour garder l'accès restreint
-    à l'équipe. Aucun scoping par utilisateur ailleurs dans le schéma : tous les comptes
-    voient le même historique de dossiers partagé (§app/api/auth.py)."""
-
-    __tablename__ = "users"
-
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
-    email: Mapped[str] = mapped_column(String(320), unique=True, index=True)
-    password_hash: Mapped[str] = mapped_column(String(255))
-    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_now)
-
-
 class Dossier(Base):
     __tablename__ = "dossiers"
 

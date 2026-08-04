@@ -9,6 +9,7 @@ from typing import Any
 from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
 from app.api.audit import router as audit_router
 from app.api.auth import router as auth_router
@@ -43,6 +44,12 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="AOP v2", lifespan=lifespan)
+
+# Derrière un proxy (Railway, Fly) : réécrit request.client à partir de X-Forwarded-For, sinon
+# toutes les requêtes semblent venir du proxy — casserait le verrouillage anti-brute-force par
+# IP sur /api/auth/login (app/auth/rate_limit.py). trusted_hosts="*" est sûr ici : le conteneur
+# ne reçoit jamais de trafic direct depuis l'internet public, uniquement via ce proxy.
+app.add_middleware(ProxyHeadersMiddleware, trusted_hosts="*")
 
 # Dérivé de settings.frontend_port (AOP_FRONTEND_PORT) plutôt que codé en dur : sinon changer
 # le port frontend via l'env casse silencieusement le CORS (AUDIT_BACKEND.md §7).
