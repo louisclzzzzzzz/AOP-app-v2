@@ -3,11 +3,13 @@ import { deleteDossier, listDossiers, uploadDossier } from './api'
 import { checkSession, getApiKeyStatus, logout } from './auth'
 import type { ApiKeyStatus } from './auth'
 import type { Dossier } from './types'
+import { hasSeenTour } from './tour'
 import { UploadDropzone } from './components/UploadDropzone'
 import { DossierList } from './components/DossierList'
 import { DossierProgress } from './components/DossierProgress'
 import { LoginForm } from './components/LoginForm'
 import { ApiKeyGuide } from './components/ApiKeyGuide'
+import { WelcomeTour } from './components/WelcomeTour'
 
 export default function App() {
   // undefined = vérification en cours ; false = accès ouvert (AOP_REQUIRE_AUTH off — usage
@@ -25,6 +27,7 @@ export default function App() {
   // settings/.env suffit, §backend/app/pipeline_support.py owner_api_key).
   const [keyStatus, setKeyStatus] = useState<ApiKeyStatus | undefined>(undefined)
   const [showApiKeyPanel, setShowApiKeyPanel] = useState(false)
+  const [showTour, setShowTour] = useState(false)
   const [dossiers, setDossiers] = useState<Dossier[]>([])
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [isUploading, setIsUploading] = useState(false)
@@ -40,6 +43,7 @@ export default function App() {
   useEffect(() => {
     if (hasSession) {
       getApiKeyStatus().then(setKeyStatus).catch(() => {})
+      if (!hasSeenTour()) setShowTour(true)
     }
   }, [hasSession])
 
@@ -62,6 +66,7 @@ export default function App() {
     setNeedsLogin(true)
     setKeyStatus(undefined)
     setShowApiKeyPanel(false)
+    setShowTour(false)
   }, [])
 
   const handleFileSelected = useCallback(async (file: File) => {
@@ -100,6 +105,14 @@ export default function App() {
     return <LoginForm onLoggedIn={handleLoggedIn} />
   }
 
+  // Visite guidée avant tout le reste (y compris la clé API) : donner d'abord une vue
+  // d'ensemble de l'application avant de demander une étape technique. « Vue » côté navigateur
+  // (localStorage, §tour.ts), pas côté serveur — enjeu trop faible pour justifier un état par
+  // personne.
+  if (showTour) {
+    return <WelcomeTour onDone={() => setShowTour(false)} />
+  }
+
   // Première connexion (ou clé effacée depuis un autre onglet) sur un déploiement authentifié :
   // pas d'accès aux dossiers tant qu'aucune clé API Mistral personnelle n'est enregistrée
   // (§backend/app/api/dossiers.py, l'upload la refuse de toute façon). N'affecte jamais l'usage
@@ -128,6 +141,9 @@ export default function App() {
           </div>
           {hasSession && (
             <div className="flex items-center gap-4">
+              <button onClick={() => setShowTour(true)} className="text-sm text-slate-500 hover:text-slate-800">
+                Visite guidée
+              </button>
               <button
                 onClick={() => setShowApiKeyPanel(true)}
                 className="text-sm text-slate-500 hover:text-slate-800"
