@@ -6,11 +6,12 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from app.api.audit import router as audit_router
+from app.api.auth import router as auth_router
 from app.api.classification import router as classification_router
 from app.api.classification import taxonomy_router
 from app.api.completeness import pieces_checklist_router
@@ -20,6 +21,7 @@ from app.api.extraction import extraction_schema_router
 from app.api.extraction import router as extraction_router
 from app.api.project_synthesis import router as project_synthesis_router
 from app.api.websocket import router as websocket_router
+from app.auth.dependencies import require_auth, require_auth_ws
 from app.mistral.client import api_slots_health
 from app.settings import get_bundle_dir, get_settings
 from app.store.db import init_db
@@ -56,16 +58,23 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.include_router(dossiers_router)
-app.include_router(classification_router)
-app.include_router(taxonomy_router)
-app.include_router(completeness_router)
-app.include_router(pieces_checklist_router)
-app.include_router(extraction_router)
-app.include_router(extraction_schema_router)
-app.include_router(project_synthesis_router)
-app.include_router(audit_router)
-app.include_router(websocket_router)
+app.include_router(auth_router)
+
+# Off par défaut (AOP_REQUIRE_AUTH) : usage local (./start.sh, l'exécutable Windows) reste
+# mono-utilisateur sans compte à créer, comme avant. Activé pour un déploiement public exposé
+# à quiconque a le lien (ex. Railway) — seuls /api/auth/* et /api/health restent alors publics.
+_auth = [Depends(require_auth)] if get_settings().require_auth else []
+_auth_ws = [Depends(require_auth_ws)] if get_settings().require_auth else []
+app.include_router(dossiers_router, dependencies=_auth)
+app.include_router(classification_router, dependencies=_auth)
+app.include_router(taxonomy_router, dependencies=_auth)
+app.include_router(completeness_router, dependencies=_auth)
+app.include_router(pieces_checklist_router, dependencies=_auth)
+app.include_router(extraction_router, dependencies=_auth)
+app.include_router(extraction_schema_router, dependencies=_auth)
+app.include_router(project_synthesis_router, dependencies=_auth)
+app.include_router(audit_router, dependencies=_auth)
+app.include_router(websocket_router, dependencies=_auth_ws)
 
 
 @app.get("/api/health")

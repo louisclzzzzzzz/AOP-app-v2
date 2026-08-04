@@ -2,7 +2,8 @@
 # Avant le premier déploiement :
 #   fly apps create aop-v2                      # ou laissez `fly launch` choisir un nom unique
 #   fly volumes create aop_data --region cdg -n 1   # 1 Go, stocke workspace/ (SQLite + docs + cache OCR)
-#   fly secrets set MISTRAL_API_KEY=...
+#   fly secrets set MISTRAL_API_KEY=... SECRET_KEY=$(openssl rand -base64 32)
+#   # puis créer les comptes : fly ssh console -C "uv run python scripts/create_user.py ..."
 # Puis : fly deploy
 
 app = "aop-v2"
@@ -12,6 +13,9 @@ primary_region = "cdg"
 
 [env]
   AOP_WORKSPACE_DIR = "/data"
+  # Déploiement public exposé à quiconque a le lien : authentification par compte requise
+  # (voir .env.example) — désactivé par défaut pour l'usage local, qui n'a pas ce risque.
+  AOP_REQUIRE_AUTH = "true"
 
 [[mounts]]
   source = "aop_data"

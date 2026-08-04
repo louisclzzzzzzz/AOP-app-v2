@@ -1,6 +1,7 @@
 """Configuration de l'application : variables d'environnement (.env) + fichiers YAML de config/."""
 from __future__ import annotations
 
+import secrets
 import sys
 from functools import lru_cache
 from pathlib import Path
@@ -63,6 +64,16 @@ class Settings(BaseSettings):
     # première. Une seule clé = comportement historique inchangé (voir MistralApiKeySettings).
     mistral_api_keys: list[str] = []
 
+    # Signe les cookies de session (app/auth/security.py). Doit être fixé explicitement (et
+    # stable) en production — sinon (dev local) une valeur aléatoire est générée à chaque
+    # démarrage : sans conséquence, juste des sessions invalidées à chaque redémarrage.
+    secret_key: str = ""
+    # Off par défaut : usage local (./start.sh, l'exécutable Windows empaqueté) reste
+    # mono-utilisateur sans friction, comme avant — pas de compte à créer pour un testeur qui
+    # lance juste AOP-v2.exe sur son poste. À activer explicitement (AOP_REQUIRE_AUTH=true)
+    # pour un déploiement public exposé à quiconque a le lien (ex. Railway).
+    require_auth: bool = False
+
     def model_post_init(self, __context: Any) -> None:
         resolved = Path(self.workspace_dir).resolve()
         if not self.database_url:
@@ -72,6 +83,8 @@ class Settings(BaseSettings):
             # workspace/, jamais nichée sous la profondeur arbitraire d'un DCE.
             self.database_url = f"sqlite:///{resolved / 'aop.db'}"
         self.workspace_dir = _win_long_path(resolved)
+        if not self.secret_key:
+            self.secret_key = secrets.token_urlsafe(32)
 
 
 class MistralApiKeySettings(BaseSettings):
