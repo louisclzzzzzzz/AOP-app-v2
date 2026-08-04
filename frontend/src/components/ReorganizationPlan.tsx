@@ -28,13 +28,6 @@ const REOPENABLE_REORG_STATUSES: DossierStatus[] = [
   'extraction_validated',
 ]
 
-function confidenceTone(confidence: number | null): string {
-  if (confidence === null) return 'text-slate-400'
-  if (confidence >= 0.8) return 'text-green-700'
-  if (confidence >= 0.5) return 'text-amber-700'
-  return 'text-red-700'
-}
-
 export function ReorganizationPlan({ dossierId, status, onApplied }: Props) {
   const [entries, setEntries] = useState<ClassificationEntry[] | null>(null)
   const [taxonomy, setTaxonomy] = useState<TaxonomyCategory[] | null>(null)
@@ -139,17 +132,17 @@ export function ReorganizationPlan({ dossierId, status, onApplied }: Props) {
                   <tr>
                     <th className="px-3 py-2">Source</th>
                     <th className="px-3 py-2">Cible</th>
-                    <th className="px-3 py-2">Confiance</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
                   {report.entries.map((e) => (
                     <tr key={e.document_id}>
                       <td className="px-3 py-1.5 text-slate-500">{e.source}</td>
-                      <td className="px-3 py-1.5">{e.target}</td>
-                      <td className={`px-3 py-1.5 ${confidenceTone(e.confidence)}`}>
-                        {e.confidence !== null ? e.confidence.toFixed(2) : '—'}
-                        {e.manually_corrected && ' (corrigé)'}
+                      <td className="px-3 py-1.5">
+                        {e.target}
+                        {e.manually_corrected && (
+                          <span className="ml-1 rounded bg-slate-100 px-1 text-[10px] text-slate-500">corrigé</span>
+                        )}
                       </td>
                     </tr>
                   ))}
@@ -200,7 +193,6 @@ export function ReorganizationPlan({ dossierId, status, onApplied }: Props) {
               <th className="px-3 py-2">Catégorie finale</th>
               <th className="px-3 py-2">Lot</th>
               <th className="px-3 py-2">Nom cible</th>
-              <th className="px-3 py-2">Confiance</th>
               <th className="px-3 py-2">Justification</th>
             </tr>
           </thead>
@@ -244,9 +236,6 @@ export function ReorganizationPlan({ dossierId, status, onApplied }: Props) {
                     }}
                     className="w-64 rounded border border-slate-200 px-1.5 py-1"
                   />
-                </td>
-                <td className={`px-3 py-1.5 ${confidenceTone(entry.confidence)}`}>
-                  {entry.confidence !== null ? entry.confidence.toFixed(2) : '—'}
                   {entry.is_manually_corrected && (
                     <span className="ml-1 rounded bg-slate-100 px-1 text-[10px] text-slate-500">corrigé</span>
                   )}

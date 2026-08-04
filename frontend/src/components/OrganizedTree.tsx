@@ -98,6 +98,23 @@ export function treeToMarkdown(root: TreeNode, depth = 0): string {
   return lines.filter(Boolean).join('\n')
 }
 
+/** Comme `treeToMarkdown`, mais ne liste jamais les fichiers (seulement les dossiers, à tous
+ * les niveaux, avec leur nombre de pièces) — pour le rapport téléchargeable, où un DCE de
+ * plusieurs centaines de fichiers rendrait l'arborescence illisible si chacun y était listé
+ * individuellement (§ExtractionSheet.tsx `handleDownloadReport`). */
+export function treeToMarkdownFoldersOnly(root: TreeNode, depth = 0): string {
+  const lines: string[] = []
+  const childFolders = [...root.children.values()].sort((a, b) => a.name.localeCompare(b.name))
+  const indent = '  '.repeat(depth)
+
+  for (const folder of childFolders) {
+    const total = countFiles(folder)
+    lines.push(`${indent}- **${folder.name}/** (${total} fichier${total > 1 ? 's' : ''})`)
+    lines.push(treeToMarkdownFoldersOnly(folder, depth + 1))
+  }
+  return lines.filter(Boolean).join('\n')
+}
+
 interface SelectionProps {
   selectable?: boolean
   selected?: Set<string>

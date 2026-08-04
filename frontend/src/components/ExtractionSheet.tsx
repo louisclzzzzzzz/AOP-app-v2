@@ -1,6 +1,5 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
-  correctExtraction,
   documentFileUrl,
   exportReportDocx,
   extractionExcelUrl,
@@ -19,7 +18,7 @@ import { HOVER_HINT_CLASS } from '../ui'
 import { CERTAINTY_LABELS, PRESENCE_LABELS } from './CompletenessChecklist'
 import { CollapsiblePanel } from './CollapsiblePanel'
 import { Markdown } from './Markdown'
-import { collectDocumentIds, OrganizedTree, reorgReportEntriesToTree, treeToMarkdown, type TreeNode } from './OrganizedTree'
+import { collectDocumentIds, OrganizedTree, reorgReportEntriesToTree, treeToMarkdownFoldersOnly, type TreeNode } from './OrganizedTree'
 import { ReopenButton } from './ReopenButton'
 
 interface Props {
@@ -42,13 +41,6 @@ function crossCheckTone(status: string | null): string {
   if (status === 'incoherent') return 'bg-red-100 text-red-700'
   if (status === 'single_source') return 'bg-slate-100 text-slate-500'
   return ''
-}
-
-function confidenceTone(confidence: number | null): string {
-  if (confidence === null) return 'text-slate-400'
-  if (confidence >= 0.8) return 'text-green-700'
-  if (confidence >= 0.5) return 'text-amber-700'
-  return 'text-red-700'
 }
 
 function formatDuration(startIso: string, endIso: string): string {
@@ -90,9 +82,7 @@ function downloadBlob(filename: string, blob: Blob) {
 export function ExtractionSheet({ dossierId, dossier, documents, onApplied }: Props) {
   const status = dossier.status
   const [entries, setEntries] = useState<ExtractionEntry[] | null>(null)
-  const [savingId, setSavingId] = useState<string | null>(null)
   const [running, setRunning] = useState(false)
-  const [validating, setValidating] = useState(false)
   const [downloadingReport, setDownloadingReport] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [generatingSynthesis, setGeneratingSynthesis] = useState(false)
@@ -113,6 +103,20 @@ export function ExtractionSheet({ dossierId, dossier, documents, onApplied }: Pr
       refreshEntries()
     }
   }, [status, refreshEntries])
+
+  // Plus de correction manuelle des champs ni de bouton « Valider » : la proposition du moteur
+  // fait foi directement — validée automatiquement dès l'entrée en revue, une seule fois par
+  // dossier (le garde ref évite un double appel sous StrictMode, qui monte les effets deux fois
+  // en dev — §CompletenessChecklist.tsx, même mécanique pour l'étape 2).
+  const autoValidatedForRef = useRef<string | null>(null)
+  useEffect(() => {
+    if (status === 'extraction_review' && autoValidatedForRef.current !== dossierId) {
+      autoValidatedForRef.current = dossierId
+      validateExtraction(dossierId)
+        .then(onApplied)
+        .catch((e) => setError(e instanceof Error ? e.message : "Échec de la validation de l'extraction"))
+    }
+  }, [status, dossierId, onApplied])
 
   // Génération de la synthèse projet (Phase 1) : action annexe, en arrière-plan côté serveur —
   // on relit périodiquement le dossier tant qu'elle est en cours plutôt que d'écouter le
@@ -239,35 +243,6 @@ export function ExtractionSheet({ dossierId, dossier, documents, onApplied }: Pr
     }
   }, [dossierId, onApplied, selectedDocIds])
 
-  const handleCorrection = useCallback(
-    async (entry: ExtractionEntry, finalValue: string) => {
-      setSavingId(entry.field_id)
-      setError(null)
-      try {
-        const updated = await correctExtraction(dossierId, entry.field_id, { final_value: finalValue })
-        setEntries((prev) => prev?.map((e) => (e.field_id === entry.field_id ? updated : e)) ?? prev)
-      } catch (e) {
-        setError(e instanceof Error ? e.message : 'Échec de la correction')
-      } finally {
-        setSavingId(null)
-      }
-    },
-    [dossierId],
-  )
-
-  const handleValidate = useCallback(async () => {
-    setValidating(true)
-    setError(null)
-    try {
-      await validateExtraction(dossierId)
-      onApplied()
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Échec de la validation de l'extraction")
-    } finally {
-      setValidating(false)
-    }
-  }, [dossierId, onApplied])
-
   const handleReopen = useCallback(async () => {
     await reopenExtraction(dossierId)
     setEntries(null)
@@ -284,7 +259,7 @@ export function ExtractionSheet({ dossierId, dossier, documents, onApplied }: Pr
       ])
 
       const treeMd = reorgReport
-        ? treeToMarkdown(reorgReportEntriesToTree(reorgReport.entries))
+        ? treeToMarkdownFoldersOnly(reorgReportEntriesToTree(reorgReport.entries))
         : '_Arborescence non disponible._'
 
       const selectedPieces = completenessEntries.filter((e) => e.is_selected)
@@ -469,7 +444,6 @@ ${auditMd}
     return <p className="text-sm text-slate-400">Chargement des données extraites…</p>
   }
 
-  const isReview = status === 'extraction_review'
   const foundCount = entries.filter((e) => e.final_value).length
 
   return (
@@ -484,24 +458,22 @@ ${auditMd}
           </span>
         </div>
         <div className="flex items-center gap-2">
-          <button
-            onClick={handleGenerateSynthesis}
-            disabled={generatingSynthesis || dossier.synthese_projet_status === 'generating'}
-            title="Rapport narratif exhaustif du projet (identité, RICT, géotechnique…), relisant directement les documents pivots — Phase 1 du protocole d'analyse"
-            className="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
-          >
-            {dossier.synthese_projet_status === 'generating'
-              ? 'Génération en cours…'
-              : dossier.synthese_projet_md
-                ? 'Régénérer la synthèse projet (IA)'
-                : 'Générer la synthèse projet (IA)'}
-          </button>
+          {!dossier.synthese_projet_md && (
+            <button
+              onClick={handleGenerateSynthesis}
+              disabled={generatingSynthesis || dossier.synthese_projet_status === 'generating'}
+              title="Rapport narratif exhaustif du projet (identité, RICT, géotechnique…), relisant directement les documents pivots — Phase 1 du protocole d'analyse"
+              className="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+            >
+              {dossier.synthese_projet_status === 'generating' ? 'Génération en cours…' : 'Générer la synthèse projet (IA)'}
+            </button>
+          )}
           {dossier.synthese_projet_md && (
             <button
               onClick={handleGenerateAudit}
               disabled={generatingAudit || dossier.audit_risques_status === 'generating'}
               title="Audit critique des risques DO/TRC section par section (fondations, structure, couverture, façades, équipements, aménagements), croisant les CCTP/RICT/étude de sol et les données publiques Géorisques — Phase 2 du protocole d'analyse"
-              className="rounded-md border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50 disabled:opacity-50"
+              className="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
             >
               {dossier.audit_risques_status === 'generating'
                 ? 'Génération en cours…'
@@ -526,15 +498,6 @@ ${auditMd}
           >
             Exporter le tableau (.xlsx)
           </a>
-          {isReview && (
-            <button
-              onClick={handleValidate}
-              disabled={validating}
-              className="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
-            >
-              {validating ? 'Validation…' : "Valider l'extraction"}
-            </button>
-          )}
           {status === 'extraction_validated' && (
             <ReopenButton label="Modifier l'extraction" onReopen={handleReopen} />
           )}
@@ -584,7 +547,6 @@ ${auditMd}
               <th className="px-3 py-2">Donnée</th>
               <th className="px-3 py-2">Valeur</th>
               <th className="px-3 py-2">Sources</th>
-              <th className="px-3 py-2">Confiance</th>
               <th className="px-3 py-2">Recoupement</th>
             </tr>
           </thead>
@@ -592,27 +554,16 @@ ${auditMd}
             {[...bySection.keys()]
               .flatMap((section) => [
                 <tr key={`section-${section}`} className="bg-slate-50">
-                  <td colSpan={5} className="px-3 py-1.5 font-medium text-slate-600">
+                  <td colSpan={4} className="px-3 py-1.5 font-medium text-slate-600">
                     {sectionLabels.get(section) ?? section}
                   </td>
                 </tr>,
                 ...(bySection.get(section) ?? [])
                   .map((entry) => (
-                    <tr key={entry.field_id} className={savingId === entry.field_id ? 'opacity-50' : ''}>
+                    <tr key={entry.field_id}>
                       <td className="px-3 py-1.5">{entry.libelle}</td>
                       <td className="px-3 py-1.5">
-                        {isReview ? (
-                          <input
-                            type="text"
-                            defaultValue={entry.final_value ?? ''}
-                            onBlur={(e) => {
-                              if (e.target.value !== (entry.final_value ?? '')) {
-                                handleCorrection(entry, e.target.value)
-                              }
-                            }}
-                            className="w-full rounded border border-slate-200 bg-white px-1.5 py-1"
-                          />
-                        ) : entry.final_value ? (
+                        {entry.final_value ? (
                           <span className="inline-flex items-center gap-1.5">
                             <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-green-500" />
                             <span className="font-semibold text-slate-800">{entry.final_value}</span>
@@ -641,9 +592,6 @@ ${auditMd}
                               </span>
                             ))
                           : '—'}
-                      </td>
-                      <td className={`px-3 py-1.5 font-medium ${confidenceTone(entry.confidence)}`}>
-                        {entry.confidence != null ? `${Math.round(entry.confidence * 100)}%` : '—'}
                       </td>
                       <td className="px-3 py-1.5">
                         {entry.cross_check_status && entry.cross_check_status !== 'not_applicable' ? (

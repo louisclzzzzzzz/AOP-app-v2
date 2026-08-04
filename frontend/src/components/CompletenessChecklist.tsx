@@ -1,6 +1,5 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
-  correctCompleteness,
   documentFileUrl,
   getCompleteness,
   reopenCompleteness,
@@ -60,21 +59,6 @@ function certaintyTone(certainty: string | null): string {
   return 'text-slate-400'
 }
 
-// Mêmes couleurs que les badges en lecture seule, appliquées au <select> lui-même pendant la
-// correction manuelle pour que le statut reste lisible d'un coup d'œil sans avoir à lire le texte.
-function presenceSelectClasses(presence: string): string {
-  if (presence === 'present') return 'border-green-300 bg-green-50 text-green-800'
-  if (presence === 'partial') return 'border-amber-300 bg-amber-50 text-amber-800'
-  return 'border-red-300 bg-red-50 text-red-800'
-}
-
-function certaintySelectClasses(certainty: string): string {
-  if (certainty === 'certain') return 'border-green-300 bg-green-50 text-green-800'
-  if (certainty === 'probable') return 'border-amber-300 bg-amber-50 text-amber-800'
-  if (certainty === 'a_verifier') return 'border-red-300 bg-red-50 text-red-800'
-  return 'border-slate-200 bg-white text-slate-500'
-}
-
 function LocalisationCell({
   dossierId,
   items,
@@ -117,7 +101,6 @@ export function CompletenessChecklist({ dossierId, status, documents, onApplied 
   const [entries, setEntries] = useState<CompletenessEntry[] | null>(null)
   const [savingId, setSavingId] = useState<string | null>(null)
   const [running, setRunning] = useState(false)
-  const [validating, setValidating] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   const refreshEntries = useCallback(() => {
@@ -175,41 +158,19 @@ export function CompletenessChecklist({ dossierId, status, documents, onApplied 
     }
   }, [dossierId, onApplied])
 
-  const handleCorrection = useCallback(
-    async (entry: CompletenessEntry, patch: Partial<{ presence: string; certainty: string | null }>) => {
-      setSavingId(entry.piece_id)
-      setError(null)
-      try {
-        const updated = await correctCompleteness(dossierId, entry.piece_id, {
-          presence: (patch.presence ?? entry.final_presence ?? 'absent') as 'present' | 'partial' | 'absent',
-          certainty: ('certainty' in patch ? patch.certainty : entry.final_certainty) as
-            | 'certain'
-            | 'probable'
-            | 'a_verifier'
-            | null,
-        })
-        setEntries((prev) => prev?.map((e) => (e.piece_id === entry.piece_id ? updated : e)) ?? prev)
-      } catch (e) {
-        setError(e instanceof Error ? e.message : 'Échec de la correction')
-      } finally {
-        setSavingId(null)
-      }
-    },
-    [dossierId],
-  )
-
-  const handleValidate = useCallback(async () => {
-    setValidating(true)
-    setError(null)
-    try {
-      await validateCompleteness(dossierId)
-      onApplied()
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Échec de la validation de la complétude')
-    } finally {
-      setValidating(false)
+  // Plus de correction manuelle (sûreté/statut) ni de bouton « Valider » : la proposition du
+  // moteur fait foi directement — validée automatiquement dès l'entrée en revue, une seule fois
+  // par dossier (le garde ref évite un double appel sous StrictMode, qui monte les effets deux
+  // fois en dev).
+  const autoValidatedForRef = useRef<string | null>(null)
+  useEffect(() => {
+    if (status === 'completeness_review' && autoValidatedForRef.current !== dossierId) {
+      autoValidatedForRef.current = dossierId
+      validateCompleteness(dossierId)
+        .then(onApplied)
+        .catch((e) => setError(e instanceof Error ? e.message : 'Échec de la validation de la complétude'))
     }
-  }, [dossierId, onApplied])
+  }, [status, dossierId, onApplied])
 
   const handleReopen = useCallback(async () => {
     await reopenCompleteness(dossierId)
@@ -251,7 +212,6 @@ export function CompletenessChecklist({ dossierId, status, documents, onApplied 
   }
 
   const isSelectionPhase = SELECTION_STATUSES.includes(status)
-  const isReview = status === 'completeness_review'
   const selectedCount = entries.filter((e) => e.is_selected).length
   const visibleEntries = entries.filter((e) => e.is_selected)
 
@@ -270,15 +230,6 @@ export function CompletenessChecklist({ dossierId, status, documents, onApplied 
             className="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
           >
             {running ? 'Lancement…' : "Lancer l'analyse"}
-          </button>
-        )}
-        {isReview && (
-          <button
-            onClick={handleValidate}
-            disabled={validating}
-            className="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
-          >
-            {validating ? 'Validation…' : 'Valider la complétude'}
           </button>
         )}
         {REOPENABLE_COMPLETENESS_STATUSES.includes(status) && (
@@ -326,14 +277,7 @@ export function CompletenessChecklist({ dossierId, status, documents, onApplied 
                       checked={entry.is_selected}
                       onChange={(e) => handleToggleSelection(entry.piece_id, e.target.checked)}
                     />
-                    <span className="flex-1">
-                      {entry.libelle}
-                      {entry.obligatoire && (
-                        <span className="ml-1.5 rounded bg-amber-100 px-1 text-[10px] text-amber-700">
-                          obligatoire
-                        </span>
-                      )}
-                    </span>
+                    <span className="flex-1">{entry.libelle}</span>
                   </label>
                 ))}
               </div>
@@ -357,41 +301,16 @@ export function CompletenessChecklist({ dossierId, status, documents, onApplied 
                 <tr key={entry.piece_id} className={savingId === entry.piece_id ? 'opacity-50' : ''}>
                   <td className="px-3 py-1.5">{entry.libelle}</td>
                   <td className="px-3 py-1.5">
-                    {isReview ? (
-                      <select
-                        value={entry.final_presence ?? 'absent'}
-                        onChange={(e) => handleCorrection(entry, { presence: e.target.value })}
-                        className={`rounded border px-1.5 py-1 font-medium ${presenceSelectClasses(entry.final_presence ?? 'absent')}`}
-                      >
-                        <option value="present">Présente</option>
-                        <option value="partial">Partielle</option>
-                        <option value="absent">Absente</option>
-                      </select>
-                    ) : (
-                      <span
-                        className={`inline-block rounded-full px-2 py-0.5 text-[11px] font-medium ${presenceBadgeClasses(entry.final_presence)}`}
-                      >
-                        {PRESENCE_LABELS[entry.final_presence ?? ''] ?? '—'}
-                      </span>
-                    )}
+                    <span
+                      className={`inline-block rounded-full px-2 py-0.5 text-[11px] font-medium ${presenceBadgeClasses(entry.final_presence)}`}
+                    >
+                      {PRESENCE_LABELS[entry.final_presence ?? ''] ?? '—'}
+                    </span>
                   </td>
                   <td className="px-3 py-1.5">
-                    {isReview ? (
-                      <select
-                        value={entry.final_certainty ?? ''}
-                        onChange={(e) => handleCorrection(entry, { certainty: e.target.value || null })}
-                        className={`rounded border px-1.5 py-1 font-medium ${certaintySelectClasses(entry.final_certainty ?? '')}`}
-                      >
-                        <option value="">—</option>
-                        <option value="certain">Certain</option>
-                        <option value="probable">Probable</option>
-                        <option value="a_verifier">À vérifier</option>
-                      </select>
-                    ) : (
-                      <span className={certaintyTone(entry.final_certainty)}>
-                        {CERTAINTY_LABELS[entry.final_certainty ?? ''] ?? '—'}
-                      </span>
-                    )}
+                    <span className={certaintyTone(entry.final_certainty)}>
+                      {CERTAINTY_LABELS[entry.final_certainty ?? ''] ?? '—'}
+                    </span>
                     {entry.is_manually_corrected && (
                       <span className="ml-1 rounded bg-slate-100 px-1 text-[10px] text-slate-500">corrigé</span>
                     )}

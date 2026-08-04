@@ -49,6 +49,16 @@ function estimateProcessingMinutes(totalFiles: number): { low: number; high: num
   }
 }
 
+// Mêmes runs e2e réels que ci-dessus (dce grand_pic) : synthèse projet ~2,3 min, audit des
+// risques ~4,4 min — un seul point de mesure chacun, donc fourchette large plutôt qu'un chiffre
+// unique. Contrairement au traitement principal, ces deux étapes n'ont pas de sous-compteur
+// (un seul gros appel IA, pas de N/M documents à afficher) — d'où la barre indéterminée
+// ci-dessous plutôt qu'un pourcentage.
+const REPORT_GENERATION_ESTIMATES: Record<'synthese' | 'audit', { low: number; high: number }> = {
+  synthese: { low: 2, high: 4 },
+  audit: { low: 4, high: 8 },
+}
+
 function computeProgress(
   status: DossierStatus,
   counters: Counters,
@@ -184,6 +194,18 @@ export function DossierProgress({ dossierId, onBack, onSelectDossier }: Props) {
   const estimate =
     progressPct < 100 && counters.total_files > 0 ? estimateProcessingMinutes(counters.total_files) : null
 
+  // La synthèse projet et l'audit des risques (§ExtractionSheet.tsx) ne touchent jamais
+  // `Dossier.status` (qui reste à "extraction_validated", donc la barre normale resterait
+  // bloquée à 100 %) — on bascule ici sur une barre indéterminée pendant leur génération, pour
+  // ne pas donner l'impression que le chargement est figé sur un traitement pourtant long.
+  const generatingReport: 'synthese' | 'audit' | null =
+    dossier.synthese_projet_status === 'generating'
+      ? 'synthese'
+      : dossier.audit_risques_status === 'generating'
+        ? 'audit'
+        : null
+  const reportEstimate = generatingReport ? REPORT_GENERATION_ESTIMATES[generatingReport] : null
+
   return (
     <div className="flex flex-col gap-6">
       <div className="flex items-center justify-between">
@@ -221,24 +243,43 @@ export function DossierProgress({ dossierId, onBack, onSelectDossier }: Props) {
 
       <DossierSummary synthese={dossier.synthese_ia} />
 
-      <div>
-        <div className="mb-1 flex justify-between text-xs text-slate-500">
-          <span>{progressLabel} — {processed} / {total} {progressUnit}</span>
-          <span>{progressPct}%</span>
+      {generatingReport ? (
+        <div>
+          <div className="mb-1 flex justify-between text-xs text-slate-500">
+            <span>
+              {generatingReport === 'synthese' ? 'Génération de la synthèse projet (IA)…' : "Génération de l'audit des risques (IA)…"}
+            </span>
+          </div>
+          <div className="h-2 w-full overflow-hidden rounded-full bg-slate-200">
+            <div className="h-full w-full animate-pulse rounded-full bg-blue-500" />
+          </div>
+          {reportEstimate && (
+            <p className="mt-1 text-xs text-slate-400">
+              Temps estimé : environ {reportEstimate.low} à {reportEstimate.high} min — c'est normal si ça semble
+              long, le traitement continue.
+            </p>
+          )}
         </div>
-        <div className="h-2 w-full overflow-hidden rounded-full bg-slate-200">
-          <div
-            className="h-full rounded-full bg-blue-500 transition-all"
-            style={{ width: `${progressPct}%` }}
-          />
+      ) : (
+        <div>
+          <div className="mb-1 flex justify-between text-xs text-slate-500">
+            <span>{progressLabel} — {processed} / {total} {progressUnit}</span>
+            <span>{progressPct}%</span>
+          </div>
+          <div className="h-2 w-full overflow-hidden rounded-full bg-slate-200">
+            <div
+              className="h-full rounded-full bg-blue-500 transition-all"
+              style={{ width: `${progressPct}%` }}
+            />
+          </div>
+          {estimate && (
+            <p className="mt-1 text-xs text-slate-400">
+              Temps estimé pour l'ensemble du traitement : environ {estimate.low} à {estimate.high} min (variable
+              selon le contenu des documents).
+            </p>
+          )}
         </div>
-        {estimate && (
-          <p className="mt-1 text-xs text-slate-400">
-            Temps estimé pour l'ensemble du traitement : environ {estimate.low} à {estimate.high} min (variable
-            selon le contenu des documents).
-          </p>
-        )}
-      </div>
+      )}
 
       {availableSteps.length > 0 && (
         <div>
