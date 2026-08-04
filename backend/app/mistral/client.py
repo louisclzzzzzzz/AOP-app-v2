@@ -276,21 +276,11 @@ def record_slot_failure(slot: int, exc: Exception) -> None:
 
 def record_slot_success(slot: int) -> None:
     """Un succès lève immédiatement la quarantaine : une clé rate-limitée qui repasse redevient
-    utilisable sans intervention. Incrémente aussi le compteur d'usage mensuel de la personne
-    (§barre d'utilisation, app/api/me.py) quand l'appel courant utilisait une clé personnelle —
-    import différé pour éviter tout couplage au chargement du module (ce chemin ne s'exécute
-    qu'en présence d'une clé personnelle active, pas pour le pool global)."""
+    utilisable sans intervention."""
     with _slots_lock:
         if slot < len(_slot_failures):
             _slot_failures[slot] = 0
             _slot_blocked_until[slot] = 0.0
-    ctx = _current_user_key.get()
-    if ctx is not None:
-        from app.store.db import session_scope
-        from app.store.repository import record_api_usage
-
-        with session_scope() as s:
-            record_api_usage(s, ctx.user_id)
 
 
 def api_slots_health() -> list[dict[str, Any]]:

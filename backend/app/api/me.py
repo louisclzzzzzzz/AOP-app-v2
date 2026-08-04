@@ -10,7 +10,6 @@ exécutable Windows (jamais de session), elles restent montées mais renvoient 4
 from __future__ import annotations
 
 import asyncio
-import datetime as dt
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -49,11 +48,6 @@ class ApiKeyIn(BaseModel):
 class ApiKeyStatusOut(BaseModel):
     configured: bool
     masked: str | None = None
-
-
-class UsageOut(BaseModel):
-    period: str
-    requests_count: int
 
 
 @router.get("/mistral-key", response_model=ApiKeyStatusOut)
@@ -101,14 +95,3 @@ async def delete_mistral_key(request: Request) -> None:
     user_id = _uid(request)
     with session_scope() as s:
         clear_user_api_key(s, user_id)
-
-
-@router.get("/usage", response_model=UsageOut)
-async def get_usage(request: Request) -> UsageOut:
-    user_id = _uid(request)
-    with session_scope() as s:
-        row = get_user_api_key_row(s, user_id)
-    current_period = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m")
-    if row is None or row.usage_period != current_period:
-        return UsageOut(period=current_period, requests_count=0)
-    return UsageOut(period=row.usage_period, requests_count=row.usage_count)

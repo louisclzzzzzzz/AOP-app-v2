@@ -34,6 +34,21 @@ const STEP_TABS: { step: StepNumber; label: string; threshold: DossierStatus }[]
   { step: 3, label: 'Étape 3 — Extraction', threshold: 'completeness_validated' },
 ]
 
+// Fourchette calibrée sur les runs e2e réels (data/resultats_tests_*/, pipeline complet
+// upload -> classification -> complétude -> extraction -> synthèse -> audit) : dce grand_pic
+// (36 fichiers) entre 11 et 17 min selon les tirages, chu_rouen (84 fichiers, plus riche en OCR)
+// 23,6 min. La taille du zip en octets prédit mal la durée (deux dossiers de ~180 Mo ont mis un
+// temps du simple au double) — le nombre de fichiers, déjà connu tôt (dès l'inventaire, avant
+// tout appel OCR/LLM), est un bien meilleur signal. Fourchette large et volontairement
+// approximative plutôt qu'un chiffre unique trompeur : le contenu (densité de pages scannées,
+// nombre de pièces à recouper) pèse au moins autant que le nombre de fichiers.
+function estimateProcessingMinutes(totalFiles: number): { low: number; high: number } {
+  return {
+    low: Math.max(3, Math.round(totalFiles * 0.25)),
+    high: Math.max(6, Math.round(totalFiles * 0.5)),
+  }
+}
+
 function computeProgress(
   status: DossierStatus,
   counters: Counters,
@@ -90,10 +105,8 @@ function computeProgress(
 
 export function DossierProgress({ dossierId, onBack, onSelectDossier }: Props) {
   const [dossier, setDossier] = useState<Dossier | null>(null)
-  const [events, setEvents] = useState<ProgressEvent[]>([])
   const [documents, setDocuments] = useState<DocumentItem[] | null>(null)
   const [activeStep, setActiveStep] = useState<StepNumber | null>(null)
-  const logEndRef = useRef<HTMLDivElement>(null)
   const autoFollowRef = useRef(true)
   const synthesisFetchedForRef = useRef<string | null>(null)
 
@@ -106,7 +119,6 @@ export function DossierProgress({ dossierId, onBack, onSelectDossier }: Props) {
     const ws = new WebSocket(dossierWebSocketUrl(dossierId))
     ws.onmessage = (evt) => {
       const data: ProgressEvent = JSON.parse(evt.data)
-      setEvents((prev) => [...prev.slice(-99), data])
       setDossier((prev) =>
         prev
           ? { ...prev, status: data.status as Dossier['status'], counters: data.counters }
@@ -118,10 +130,6 @@ export function DossierProgress({ dossierId, onBack, onSelectDossier }: Props) {
       ws.close()
     }
   }, [dossierId])
-
-  useEffect(() => {
-    logEndRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [events])
 
   useEffect(() => {
     if (dossier && dossier.status !== 'uploaded' && dossier.status !== 'unzipping' && documents === null) {
@@ -173,6 +181,8 @@ export function DossierProgress({ dossierId, onBack, onSelectDossier }: Props) {
     : ['extracting', 'extraction_review', 'extraction_validated'].includes(dossier.status)
       ? 'champs'
       : 'fichiers'
+  const estimate =
+    progressPct < 100 && counters.total_files > 0 ? estimateProcessingMinutes(counters.total_files) : null
 
   return (
     <div className="flex flex-col gap-6">
@@ -222,34 +232,12 @@ export function DossierProgress({ dossierId, onBack, onSelectDossier }: Props) {
             style={{ width: `${progressPct}%` }}
           />
         </div>
-      </div>
-
-      <div className="grid grid-cols-3 gap-3 text-center">
-        <Stat label="Total" value={counters.total_files} />
-        <Stat label="Texte extrait" value={counters.text_extracted} tone="text-green-700" />
-        <Stat label="Erreurs" value={counters.error} tone="text-red-700" />
-      </div>
-
-      <div>
-        <h3 className="mb-2 text-sm font-medium text-slate-600">Suivi en direct</h3>
-        <div className="h-48 overflow-y-auto rounded-lg border border-slate-200 bg-slate-50 p-3 font-mono text-xs">
-          {events.length === 0 && <p className="text-slate-400">En attente d’évènements…</p>}
-          {events.map((evt, i) => (
-            <div key={i} className="py-0.5">
-              <span className="text-slate-400">[{STAGE_LABELS[evt.stage] ?? evt.stage}]</span>{' '}
-              {evt.document ? (
-                <span className={evt.document.error ? 'text-red-600' : 'text-slate-700'}>
-                  {evt.document.relative_path}
-                  {evt.document.method && ` (${evt.document.method}${evt.document.from_cache ? ', cache' : ''})`}
-                  {evt.document.error && ` — ${evt.document.error}`}
-                </span>
-              ) : (
-                <span className="text-slate-600">{evt.message}</span>
-              )}
-            </div>
-          ))}
-          <div ref={logEndRef} />
-        </div>
+        {estimate && (
+          <p className="mt-1 text-xs text-slate-400">
+            Temps estimé pour l'ensemble du traitement : environ {estimate.low} à {estimate.high} min (variable
+            selon le contenu des documents).
+          </p>
+        )}
       </div>
 
       {availableSteps.length > 0 && (
@@ -288,26 +276,6 @@ export function DossierProgress({ dossierId, onBack, onSelectDossier }: Props) {
           </div>
         </div>
       )}
-    </div>
-  )
-}
-
-function Stat({
-  label,
-  value,
-  tone,
-  hint,
-}: {
-  label: string
-  value: number
-  tone?: string
-  hint?: React.ReactNode
-}) {
-  return (
-    <div className="rounded-lg border border-slate-200 bg-white py-3">
-      <p className={`text-xl font-semibold ${tone ?? 'text-slate-800'}`}>{value}</p>
-      <p className="text-xs text-slate-400">{label}</p>
-      {hint}
     </div>
   )
 }

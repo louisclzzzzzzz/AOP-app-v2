@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
-import { deleteApiKey, getApiKeyStatus, getApiUsage, saveApiKey } from '../auth'
-import type { ApiKeyStatus, ApiUsage } from '../auth'
+import { deleteApiKey, getApiKeyStatus, saveApiKey } from '../auth'
+import type { ApiKeyStatus } from '../auth'
 
 interface Props {
   /** 'onboarding' : plein écran, pas de fermeture possible tant qu'aucune clé n'est enregistrée
@@ -50,40 +50,8 @@ const STEPS: Step[] = [
   },
 ]
 
-// Repère purement indicatif pour la barre d'usage (pas une limite Mistral réelle — aucune API
-// publique n'expose le quota du compte) : sert juste à donner un ordre de grandeur visuel.
-const USAGE_SOFT_CAP = 1000
-
-function UsageBar({ usage }: { usage: ApiUsage }) {
-  const pct = Math.min(100, Math.round((usage.requests_count / USAGE_SOFT_CAP) * 100))
-  return (
-    <div>
-      <div className="flex items-baseline justify-between text-sm">
-        <span className="font-medium text-slate-700">Utilisation ce mois-ci</span>
-        <span className="text-slate-400">{usage.requests_count} appels API</span>
-      </div>
-      <div className="mt-1.5 h-2 w-full overflow-hidden rounded-full bg-slate-100">
-        <div className="h-full rounded-full bg-blue-500 transition-all" style={{ width: `${pct}%` }} />
-      </div>
-      <p className="mt-1 text-xs text-slate-400">
-        Estimation propre à l’application, pas le solde de votre compte Mistral — consultez{' '}
-        <a
-          href="https://console.mistral.ai"
-          target="_blank"
-          rel="noopener noreferrer"
-          className="underline hover:text-slate-600"
-        >
-          console.mistral.ai
-        </a>{' '}
-        pour la consommation exacte.
-      </p>
-    </div>
-  )
-}
-
 export function ApiKeyGuide({ mode, onConfigured, onClose }: Props) {
   const [status, setStatus] = useState<ApiKeyStatus | null>(null)
-  const [usage, setUsage] = useState<ApiUsage | null>(null)
   const [apiKey, setApiKey] = useState('')
   const [showKey, setShowKey] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -92,7 +60,6 @@ export function ApiKeyGuide({ mode, onConfigured, onClose }: Props) {
 
   const refresh = useCallback(() => {
     getApiKeyStatus().then(setStatus).catch(() => {})
-    getApiUsage().then(setUsage).catch(() => {})
   }, [])
 
   useEffect(refresh, [refresh])
@@ -214,11 +181,18 @@ export function ApiKeyGuide({ mode, onConfigured, onClose }: Props) {
           </button>
         )}
 
-        {usage && (
-          <div className="mt-5 border-t border-slate-100 pt-4">
-            <UsageBar usage={usage} />
-          </div>
-        )}
+        <p className="mt-5 border-t border-slate-100 pt-4 text-xs text-slate-400">
+          Pour suivre votre consommation, consultez{' '}
+          <a
+            href="https://admin.mistral.ai/subscription"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="underline hover:text-slate-600"
+          >
+            admin.mistral.ai/subscription
+          </a>
+          .
+        </p>
       </section>
 
       {mode === 'panel' && (

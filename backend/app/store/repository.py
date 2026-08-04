@@ -597,22 +597,3 @@ def clear_user_api_key(session: Session, user_id: str) -> None:
     if row is not None:
         row.mistral_api_key_encrypted = None
         session.flush()
-
-
-def record_api_usage(session: Session, user_id: str) -> None:
-    """Incrémente le compteur d'appels API du mois en cours (§barre d'utilisation,
-    app/api/me.py) — remise à zéro automatique dès que `usage_period` diffère du mois courant,
-    pas de tâche de purge séparée. Crée la ligne si l'utilisateur n'en a pas encore (ne devrait
-    arriver que si un appel réussit alors que la clé vient d'être effacée entre-temps par un
-    autre onglet — cas limite sans conséquence, juste un compteur qui démarre)."""
-    period = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m")
-    row = session.get(UserApiKey, user_id)
-    if row is None:
-        row = UserApiKey(user_id=user_id, usage_period=period, usage_count=1)
-        session.add(row)
-    else:
-        if row.usage_period != period:
-            row.usage_period = period
-            row.usage_count = 0
-        row.usage_count += 1
-    session.flush()

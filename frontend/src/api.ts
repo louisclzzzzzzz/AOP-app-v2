@@ -216,6 +216,23 @@ export function extractionExcelUrl(dossierId: string): string {
   return `/api/dossiers/${dossierId}/extraction/export.xlsx`
 }
 
+/** Le Markdown est assemblé côté frontend (§ExtractionSheet.tsx `handleDownloadReport`, toujours
+ * à jour de l'état courant) puis envoyé au serveur qui le convertit en .docx — POST plutôt qu'un
+ * lien direct comme l'export Excel, car le contenu à convertir dépasse ce qu'une URL peut porter
+ * (synthèse projet + audit des risques inclus, potentiellement plusieurs milliers de mots). */
+export async function exportReportDocx(dossierId: string, markdown: string): Promise<Blob> {
+  const res = await fetch(`/api/dossiers/${dossierId}/report/export.docx`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ markdown }),
+  })
+  if (!res.ok) {
+    const body = await res.text().catch(() => '')
+    throw new Error(`${res.status} ${res.statusText} — ${body}`)
+  }
+  return res.blob()
+}
+
 export async function generateProjectSynthesis(dossierId: string): Promise<Dossier> {
   const res = await fetch(`/api/dossiers/${dossierId}/synthese-projet/generate`, { method: 'POST' })
   return handle<Dossier>(res)

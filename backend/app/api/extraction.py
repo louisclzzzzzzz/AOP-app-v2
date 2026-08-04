@@ -6,6 +6,7 @@ import json
 import logging
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Response
+from pydantic import BaseModel
 
 from app.api.dossiers import dossier_to_out, reopen_stage
 from app.api.schemas import (
@@ -22,6 +23,7 @@ from app.extraction.pipeline import ensure_results_initialized, run_extraction_p
 from app.extraction.report import REPORT_JSON_FILENAME, validate_extraction
 from app.pipeline_support import owner_api_key, run_pipeline_safely
 from app.progress import progress_manager
+from app.reports.docx_export import markdown_to_docx, report_docx_filename
 from app.settings import get_settings
 from app.store.db import session_scope
 from app.store.models import DossierStatus, ExtractionResult
@@ -234,5 +236,30 @@ async def export_extraction_xlsx(dossier_id: str) -> Response:
     return Response(
         content=content,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+class ReportExportIn(BaseModel):
+    markdown: str
+
+
+@router.post("/{dossier_id}/report/export.docx")
+async def export_report_docx(dossier_id: str, payload: ReportExportIn) -> Response:
+    """Rapport composite (arborescence, pièces, extraction, synthèse projet, audit des risques)
+    converti en .docx. Le Markdown est assemblé côté frontend depuis l'état déjà chargé
+    (§ExtractionSheet.tsx `handleDownloadReport`, toujours à jour des corrections manuelles en
+    cours) — cette route ne fait AUCUNE requête métier, uniquement la conversion
+    (§app/reports/docx_export.py) : pas de logique d'assemblage dupliquée côté serveur."""
+    with session_scope() as s:
+        dossier = get_dossier(s, dossier_id)
+        if dossier is None:
+            raise HTTPException(404, "Dossier introuvable")
+        filename = report_docx_filename(dossier)
+
+    content = markdown_to_docx(payload.markdown)
+    return Response(
+        content=content,
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )

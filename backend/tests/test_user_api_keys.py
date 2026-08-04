@@ -2,11 +2,12 @@
 app/mistral/client.py) : chaque personne apporte la sienne sur un déploiement public
 (AOP_REQUIRE_AUTH) plutôt que de consommer le quota d'une clé globale partagée.
 
-Couvre : chiffrement au repos (app/auth/crypto.py), CRUD + compteur d'usage
-(app/store/repository.py), bascule de la clé effectivement utilisée par le client Mistral
-(app/mistral/client.py `use_user_api_key`), le point de jonction qui résout la clé du
-propriétaire d'un dossier (app/pipeline_support.py `owner_api_key`), et les routes REST
-(app/api/me.py)."""
+Couvre : chiffrement au repos (app/auth/crypto.py), CRUD (app/store/repository.py), bascule de
+la clé effectivement utilisée par le client Mistral (app/mistral/client.py
+`use_user_api_key`), le point de jonction qui résout la clé du propriétaire d'un dossier
+(app/pipeline_support.py `owner_api_key`), et les routes REST (app/api/me.py). Pas de suivi de
+consommation : Mistral n'expose aucune API de solde/quota (§app/store/models.py UserApiKey) —
+le frontend renvoie vers admin.mistral.ai/subscription."""
 from __future__ import annotations
 
 import io
@@ -41,7 +42,7 @@ def test_decrypt_with_wrong_secret_returns_none():
     assert decrypt_secret(token, secret_key="secret-b") is None
 
 
-# --- Repository : CRUD + usage --------------------------------------------------------------
+# --- Repository : CRUD ------------------------------------------------------------------------
 
 def test_save_then_get_user_api_key(isolated_workspace):
     from app.store.db import session_scope
@@ -78,38 +79,6 @@ def test_clear_user_api_key(isolated_workspace):
         assert get_user_api_key_row(s, "user-1").mistral_api_key_encrypted is None
 
 
-def test_record_api_usage_increments_within_the_same_month(isolated_workspace):
-    from app.store.db import session_scope
-    from app.store.repository import get_user_api_key_row, record_api_usage
-
-    with session_scope() as s:
-        record_api_usage(s, "user-1")
-        record_api_usage(s, "user-1")
-        record_api_usage(s, "user-1")
-    with session_scope() as s:
-        row = get_user_api_key_row(s, "user-1")
-        assert row.usage_count == 3
-
-
-def test_record_api_usage_resets_on_month_change(isolated_workspace):
-    from app.store.db import session_scope
-    from app.store.repository import get_user_api_key_row, record_api_usage
-
-    with session_scope() as s:
-        record_api_usage(s, "user-1")
-        record_api_usage(s, "user-1")
-
-    with session_scope() as s:
-        row = get_user_api_key_row(s, "user-1")
-        row.usage_period = "2020-01"  # simule un mois passé
-
-    with session_scope() as s:
-        record_api_usage(s, "user-1")
-    with session_scope() as s:
-        row = get_user_api_key_row(s, "user-1")
-        assert row.usage_count == 1  # remis à zéro puis incrémenté, pas 3
-
-
 # --- app/mistral/client.py : bascule de clé via use_user_api_key ---------------------------
 
 def test_use_user_api_key_overrides_configured_keys(isolated_workspace):
@@ -129,23 +98,6 @@ def test_use_user_api_key_builds_a_single_client_for_that_key(isolated_workspace
         clients = client_mod.get_clients()
         assert len(clients) == 1
         assert clients[0].sdk_configuration.security.api_key == "cle-personnelle"
-
-
-def test_record_slot_success_increments_usage_only_when_a_personal_key_is_active(isolated_workspace):
-    import app.mistral.client as client_mod
-    from app.store.db import session_scope
-    from app.store.repository import get_user_api_key_row
-
-    client_mod.record_slot_success(0)  # pas de clé personnelle active : ne doit rien enregistrer
-    with session_scope() as s:
-        assert get_user_api_key_row(s, "user-1") is None
-
-    with client_mod.use_user_api_key("user-1", "cle-personnelle"):
-        client_mod.record_slot_success(0)
-        client_mod.record_slot_success(0)
-
-    with session_scope() as s:
-        assert get_user_api_key_row(s, "user-1").usage_count == 2
 
 
 # --- app/pipeline_support.py : owner_api_key ------------------------------------------------
@@ -300,30 +252,6 @@ def test_mistral_key_is_scoped_per_user(isolated_workspace, monkeypatch):
 
     assert alice.get("/api/me/mistral-key").json()["configured"] is True
     assert bob.get("/api/me/mistral-key").json()["configured"] is False
-
-
-def test_get_usage_defaults_to_zero(isolated_workspace):
-    from app.main import app
-
-    client = _session_client(app, "user-1")
-    res = client.get("/api/me/usage")
-    assert res.status_code == 200
-    assert res.json()["requests_count"] == 0
-
-
-def test_get_usage_reflects_recorded_calls(isolated_workspace):
-    from app.main import app
-    from app.store.db import session_scope
-    from app.store.repository import record_api_usage
-
-    user_id = "user-1"
-    with session_scope() as s:
-        record_api_usage(s, user_id)
-        record_api_usage(s, user_id)
-
-    client = _session_client(app, user_id)
-    res = client.get("/api/me/usage")
-    assert res.json()["requests_count"] == 2
 
 
 # --- app/api/dossiers.py : l'upload exige une clé personnelle quand AOP_REQUIRE_AUTH est actif --

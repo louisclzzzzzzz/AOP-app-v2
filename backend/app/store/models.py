@@ -438,20 +438,14 @@ class ExtractionResult(Base):
 class UserApiKey(Base):
     """Clé API Mistral personnelle d'un utilisateur (§app/api/me.py) — chiffrée au repos
     (Fernet, §app/auth/crypto.py) et jamais en clair en base, contrairement au code d'accès qui
-    n'est qu'un identifiant de connexion. Porte aussi le compteur d'usage mensuel affiché en
-    barre de progression côté frontend (§app/mistral/client.py record_slot_success) — un simple
-    nombre d'appels, pas la consommation réelle du compte Mistral (aucune API publique ne
-    l'expose)."""
+    n'est qu'un identifiant de connexion. Pas de suivi de consommation ici : Mistral n'expose
+    aucune API de solde/quota — le frontend renvoie vers admin.mistral.ai/subscription plutôt
+    que d'afficher une estimation locale forcément approximative."""
 
     __tablename__ = "user_api_keys"
 
     user_id: Mapped[str] = mapped_column(String(64), primary_key=True)
     mistral_api_key_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
-
-    # "YYYY-MM" — comparé au mois courant à chaque appel pour remettre usage_count à zéro sans
-    # tâche de purge séparée (§record_api_usage).
-    usage_period: Mapped[str | None] = mapped_column(String(7), nullable=True)
-    usage_count: Mapped[int] = mapped_column(Integer, default=0)
 
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_now)
     updated_at: Mapped[dt.datetime] = mapped_column(

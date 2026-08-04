@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   correctExtraction,
   documentFileUrl,
+  exportReportDocx,
   extractionExcelUrl,
   generateAuditRisques,
   generateProjectSynthesis,
@@ -75,8 +76,7 @@ function stripLeadingHeading(md: string): string {
   return md
 }
 
-function downloadTextFile(filename: string, content: string) {
-  const blob = new Blob([content], { type: 'text/markdown;charset=utf-8' })
+function downloadBlob(filename: string, blob: Blob) {
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')
   a.href = url
@@ -362,7 +362,8 @@ ${auditMd}
 `
 
       const safeName = dossier.original_filename.replace(/\.[^./]+$/, '').replace(/[^a-zA-Z0-9._-]+/g, '_')
-      downloadTextFile(`rapport_${safeName}.md`, md)
+      const blob = await exportReportDocx(dossierId, md)
+      downloadBlob(`rapport_${safeName}.docx`, blob)
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Échec de la génération du rapport')
     } finally {
@@ -487,7 +488,7 @@ ${auditMd}
             onClick={handleGenerateSynthesis}
             disabled={generatingSynthesis || dossier.synthese_projet_status === 'generating'}
             title="Rapport narratif exhaustif du projet (identité, RICT, géotechnique…), relisant directement les documents pivots — Phase 1 du protocole d'analyse"
-            className="rounded-md border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50 disabled:opacity-50"
+            className="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
           >
             {dossier.synthese_projet_status === 'generating'
               ? 'Génération en cours…'
@@ -495,24 +496,26 @@ ${auditMd}
                 ? 'Régénérer la synthèse projet (IA)'
                 : 'Générer la synthèse projet (IA)'}
           </button>
-          <button
-            onClick={handleGenerateAudit}
-            disabled={generatingAudit || dossier.audit_risques_status === 'generating'}
-            title="Audit critique des risques DO/TRC section par section (fondations, structure, couverture, façades, équipements, aménagements), croisant les CCTP/RICT/étude de sol et les données publiques Géorisques — Phase 2 du protocole d'analyse"
-            className="rounded-md border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50 disabled:opacity-50"
-          >
-            {dossier.audit_risques_status === 'generating'
-              ? 'Génération en cours…'
-              : dossier.audit_risques_md
-                ? "Régénérer l'audit des risques (IA)"
-                : "Générer l'audit des risques (IA)"}
-          </button>
+          {dossier.synthese_projet_md && (
+            <button
+              onClick={handleGenerateAudit}
+              disabled={generatingAudit || dossier.audit_risques_status === 'generating'}
+              title="Audit critique des risques DO/TRC section par section (fondations, structure, couverture, façades, équipements, aménagements), croisant les CCTP/RICT/étude de sol et les données publiques Géorisques — Phase 2 du protocole d'analyse"
+              className="rounded-md border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50 disabled:opacity-50"
+            >
+              {dossier.audit_risques_status === 'generating'
+                ? 'Génération en cours…'
+                : dossier.audit_risques_md
+                  ? "Régénérer l'audit des risques (IA)"
+                  : "Générer l'audit des risques (IA)"}
+            </button>
+          )}
           <button
             onClick={handleDownloadReport}
             disabled={downloadingReport}
             className="rounded-md border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50 disabled:opacity-50"
           >
-            {downloadingReport ? 'Génération…' : 'Télécharger le rapport (.md)'}
+            {downloadingReport ? 'Génération…' : 'Télécharger le rapport (.docx)'}
           </button>
           {/* Lien direct plutôt qu'un fetch + Blob : le serveur régénère le classeur à la volée
               depuis l'état courant, y compris les corrections manuelles en cours de validation. */}

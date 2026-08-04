@@ -10,11 +10,6 @@ export interface ApiKeyStatus {
   masked: string | null
 }
 
-export interface ApiUsage {
-  period: string
-  requests_count: number
-}
-
 export async function getApiKeyStatus(): Promise<ApiKeyStatus> {
   const res = await fetch('/api/me/mistral-key')
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`)
@@ -36,12 +31,6 @@ export async function saveApiKey(apiKey: string): Promise<ApiKeyStatus> {
 
 export async function deleteApiKey(): Promise<void> {
   await fetch('/api/me/mistral-key', { method: 'DELETE' })
-}
-
-export async function getApiUsage(): Promise<ApiUsage> {
-  const res = await fetch('/api/me/usage')
-  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`)
-  return res.json()
 }
 
 export async function login(code: string): Promise<void> {
