@@ -10,6 +10,8 @@ import logging
 import threading
 import time
 from contextlib import contextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Callable, Iterator, TypeVar
@@ -99,10 +101,45 @@ class MistralNotConfiguredError(RuntimeError):
     """Levée quand aucune clé n'est configurée : on ne devine jamais, on échoue clairement."""
 
 
+@dataclass(frozen=True)
+class _UserKeyContext:
+    user_id: str
+    api_key: str
+
+
+# Clé API PERSONNELLE de l'utilisateur propriétaire du dossier en cours de traitement — posée
+# par `use_user_api_key` (§app/pipeline_support.py `owner_api_key`, appelé une fois par pipeline
+# avant tout appel Mistral) plutôt que passée en paramètre à chaque fonction de ce module : la
+# chaîne d'appels OCR/LLM traverse une dizaine de fonctions dans 6 modules `*/pipeline.py`,
+# toutes déjà exécutées via `asyncio.to_thread` — qui propage automatiquement les context vars
+# vers le thread, documenté depuis Python 3.9. Sans utilisateur identifié (AOP_REQUIRE_AUTH
+# désactivé — usage local/exécutable Windows), reste à None et tout retombe sur le comportement
+# historique (clé(s) globales de `settings`, avec bascule de secours).
+_current_user_key: ContextVar[_UserKeyContext | None] = ContextVar("current_user_key", default=None)
+
+
+@contextmanager
+def use_user_api_key(user_id: str, api_key: str) -> Iterator[None]:
+    """Force tous les appels Mistral effectués dans ce bloc (OCR et LLM, y compris depuis les
+    threads `asyncio.to_thread` imbriqués) à utiliser la clé personnelle de `user_id` plutôt que
+    la ou les clés globales de `settings`. Un seul créneau, jamais de clé de secours : c'est le
+    compte Mistral de la personne, pas un pool partagé — si elle est épuisée/révoquée, l'échec
+    doit remonter tel quel plutôt que de basculer silencieusement sur le quota de quelqu'un
+    d'autre."""
+    token = _current_user_key.set(_UserKeyContext(user_id, api_key))
+    try:
+        yield
+    finally:
+        _current_user_key.reset(token)
+
+
 @lru_cache
-def get_clients() -> tuple[Mistral, ...]:
-    """Un client par clé API configurée, dans l'ordre de déclaration : la première est la clé
-    principale, les suivantes sont des clés de secours (§settings.py)."""
+def _global_clients() -> tuple[Mistral, ...]:
+    """Pool construit depuis `settings` (clé(s) globales déclarées en .env) — mono-utilisateur
+    ou déploiement sans AOP_REQUIRE_AUTH. Caché séparément de `get_clients()` : un `@lru_cache`
+    sur une fonction sans paramètre ne peut pas varier avec `_current_user_key` (contextvar,
+    invisible du cache), il fallait donc que le chemin "override personnel" ne passe jamais par
+    cette fonction-ci."""
     settings = get_settings()
     keys = settings.mistral_api_keys or ([settings.mistral_api_key] if settings.mistral_api_key else [])
     if not keys:
@@ -120,7 +157,34 @@ def get_clients() -> tuple[Mistral, ...]:
     return tuple(Mistral(api_key=key) for key in keys)
 
 
+_user_clients_lock = threading.Lock()
+# Un seul client Mistral par clé personnelle vue jusqu'ici (réutilisé entre les appels d'un même
+# utilisateur au lieu d'en reconstruire un à chaque fois) — pas de TTL/éviction : le nombre de
+# personnes distinctes reste borné (quelques codes d'accès), sans commune mesure avec une fuite
+# mémoire.
+_user_clients: dict[str, Mistral] = {}
+
+
+def get_clients() -> tuple[Mistral, ...]:
+    """Un client par clé API disponible pour l'appel courant. Avec une clé personnelle active
+    (`use_user_api_key`) : un seul client, celui de cette clé. Sinon : le pool global de
+    `settings`, dans l'ordre de déclaration — la première est la clé principale, les suivantes
+    sont des clés de secours (§settings.py)."""
+    ctx = _current_user_key.get()
+    if ctx is not None:
+        with _user_clients_lock:
+            client = _user_clients.get(ctx.api_key)
+            if client is None:
+                client = Mistral(api_key=ctx.api_key)
+                _user_clients[ctx.api_key] = client
+        return (client,)
+    return _global_clients()
+
+
 def _configured_keys() -> list[str]:
+    ctx = _current_user_key.get()
+    if ctx is not None:
+        return [ctx.api_key]
     settings = get_settings()
     return settings.mistral_api_keys or ([settings.mistral_api_key] if settings.mistral_api_key else [])
 
@@ -139,7 +203,9 @@ def reset_slots_for_tests() -> None:
     """Vide le pool de clients et les états par créneau — les tests changent de configuration
     (workspace, clés) d'un cas à l'autre et ne doivent pas hériter du stimulateur précédent."""
     global _ocr_semaphore_size
-    get_clients.cache_clear()
+    _global_clients.cache_clear()
+    with _user_clients_lock:
+        _user_clients.clear()
     with _slots_lock:
         _llm_next_available.clear()
         _slot_failures.clear()
@@ -210,11 +276,21 @@ def record_slot_failure(slot: int, exc: Exception) -> None:
 
 def record_slot_success(slot: int) -> None:
     """Un succès lève immédiatement la quarantaine : une clé rate-limitée qui repasse redevient
-    utilisable sans intervention."""
+    utilisable sans intervention. Incrémente aussi le compteur d'usage mensuel de la personne
+    (§barre d'utilisation, app/api/me.py) quand l'appel courant utilisait une clé personnelle —
+    import différé pour éviter tout couplage au chargement du module (ce chemin ne s'exécute
+    qu'en présence d'une clé personnelle active, pas pour le pool global)."""
     with _slots_lock:
         if slot < len(_slot_failures):
             _slot_failures[slot] = 0
             _slot_blocked_until[slot] = 0.0
+    ctx = _current_user_key.get()
+    if ctx is not None:
+        from app.store.db import session_scope
+        from app.store.repository import record_api_usage
+
+        with session_scope() as s:
+            record_api_usage(s, ctx.user_id)
 
 
 def api_slots_health() -> list[dict[str, Any]]:

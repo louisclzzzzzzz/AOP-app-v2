@@ -8,6 +8,7 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException
 
 from app.api.dossiers import dossier_to_out
 from app.api.schemas import DossierOut
+from app.pipeline_support import owner_api_key
 from app.store.db import session_scope
 from app.store.models import DossierStatus
 from app.store.repository import get_dossier
@@ -25,7 +26,8 @@ async def _run_safely(dossier_id: str) -> None:
     exception ici ne doit jamais faire basculer `Dossier.status` en erreur — cette génération est
     annexe à l'étape 3, jamais un checkpoint — seul `synthese_projet_status` en rend compte."""
     try:
-        await run_project_synthesis_pipeline(dossier_id)
+        async with owner_api_key(dossier_id):
+            await run_project_synthesis_pipeline(dossier_id)
     except Exception as exc:
         logger.exception("Échec de la génération de la synthèse projet pour %s", dossier_id)
         with session_scope() as s:

@@ -19,7 +19,7 @@ from app.api.schemas import (
 from app.completeness.pieces_checklist import load_pieces_checklist
 from app.completeness.pipeline import ensure_checks_initialized, run_completeness_pipeline
 from app.completeness.report import REPORT_JSON_FILENAME, validate_completeness
-from app.pipeline_support import run_pipeline_safely
+from app.pipeline_support import owner_api_key, run_pipeline_safely
 from app.progress import progress_manager
 from app.settings import get_settings
 from app.store.db import session_scope
@@ -80,9 +80,11 @@ def _entry_to_out(check: CompletenessCheck) -> CompletenessEntryOut:
 
 
 async def _run_completeness_safely(dossier_id: str) -> None:
-    await run_pipeline_safely(
-        dossier_id, lambda: run_completeness_pipeline(dossier_id), what="le pipeline de complétude"
-    )
+    async def _run() -> None:
+        async with owner_api_key(dossier_id):
+            await run_completeness_pipeline(dossier_id)
+
+    await run_pipeline_safely(dossier_id, _run, what="le pipeline de complétude")
 
 
 @pieces_checklist_router.get("", response_model=list[PieceOut])

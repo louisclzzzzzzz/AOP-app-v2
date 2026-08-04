@@ -10,6 +10,7 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException
 from app.api.dossiers import dossier_to_out
 from app.api.schemas import DossierOut
 from app.audit.pipeline import run_audit_pipeline
+from app.pipeline_support import owner_api_key
 from app.store.db import session_scope
 from app.store.models import DossierStatus
 from app.store.repository import get_dossier
@@ -25,7 +26,8 @@ async def _run_safely(dossier_id: str) -> None:
     """Filet de sécurité dédié : une exception ici ne doit jamais faire basculer `Dossier.status`
     en erreur — cet audit est annexe à l'étape 3 — seul `audit_risques_status` en rend compte."""
     try:
-        await run_audit_pipeline(dossier_id)
+        async with owner_api_key(dossier_id):
+            await run_audit_pipeline(dossier_id)
     except Exception as exc:
         logger.exception("Échec de la génération de l'audit des risques pour %s", dossier_id)
         with session_scope() as s:

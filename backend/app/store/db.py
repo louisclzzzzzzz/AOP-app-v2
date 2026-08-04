@@ -55,6 +55,7 @@ _NEW_DOSSIER_COLUMNS = {
     "audit_risques_status": "VARCHAR(16) DEFAULT 'not_generated'",
     "audit_risques_error": "TEXT",
     "audit_risques_generated_at": "DATETIME",
+    "owner_user_id": "VARCHAR(64)",
 }
 
 _NEW_DOCUMENT_COLUMNS = {

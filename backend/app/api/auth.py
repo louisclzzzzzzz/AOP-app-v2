@@ -11,7 +11,13 @@ from pydantic import BaseModel
 
 from app.auth import rate_limit
 from app.auth.dependencies import require_auth
-from app.auth.security import COOKIE_NAME, SESSION_MAX_AGE_SECONDS, create_session_cookie, verify_access_code
+from app.auth.security import (
+    COOKIE_NAME,
+    SESSION_MAX_AGE_SECONDS,
+    create_session_cookie,
+    hash_access_code,
+    verify_access_code,
+)
 from app.settings import get_settings
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
@@ -43,7 +49,7 @@ async def login(payload: LoginRequest, request: Request, response: Response) -> 
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Code incorrect")
 
     rate_limit.record_success(ip)
-    token = create_session_cookie(secret_key=settings.secret_key)
+    token = create_session_cookie(secret_key=settings.secret_key, user_id=hash_access_code(payload.code))
     response.set_cookie(
         COOKIE_NAME,
         token,

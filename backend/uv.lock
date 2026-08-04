@@ -38,6 +38,7 @@ name = "aop-v2-backend"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "cryptography" },
     { name = "fastapi" },
     { name = "itsdangerous" },
     { name = "mistralai" },
@@ -66,6 +67,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "cryptography", specifier = ">=49.0.0" },
     { name = "fastapi", specifier = ">=0.115.0" },
     { name = "itsdangerous", specifier = ">=2.2.0" },
     { name = "mistralai", specifier = ">=1.2.0" },

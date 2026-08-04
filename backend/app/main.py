@@ -20,6 +20,7 @@ from app.api.completeness import router as completeness_router
 from app.api.dossiers import router as dossiers_router
 from app.api.extraction import extraction_schema_router
 from app.api.extraction import router as extraction_router
+from app.api.me import router as me_router
 from app.api.project_synthesis import router as project_synthesis_router
 from app.api.websocket import router as websocket_router
 from app.auth.dependencies import require_auth, require_auth_ws
@@ -66,6 +67,10 @@ app.add_middleware(
 )
 
 app.include_router(auth_router)
+# Toujours monté, protégé par require_auth EN INTERNE (§app/api/me.py) plutôt que par
+# `dependencies=_auth` ci-dessous : ces routes n'ont de sens que pour un utilisateur identifié,
+# indépendamment du réglage global AOP_REQUIRE_AUTH.
+app.include_router(me_router)
 
 # Off par défaut (AOP_REQUIRE_AUTH) : usage local (./start.sh, l'exécutable Windows) reste
 # mono-utilisateur sans compte à créer, comme avant. Activé pour un déploiement public exposé

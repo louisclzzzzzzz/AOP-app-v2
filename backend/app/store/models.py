@@ -140,6 +140,13 @@ class Dossier(Base):
     # Hash du .zip uploadé (pas du contenu individuel des documents, cf. Document.sha256) —
     # sert uniquement à détecter un ré-upload probable du même dossier (§ upload_dossier).
     upload_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    # Identifiant de la personne connectée qui a uploadé ce dossier (hash de son code d'accès,
+    # §app/auth/security.py hash_access_code) — None en usage local/exécutable Windows
+    # (AOP_REQUIRE_AUTH désactivé, jamais de session). Sert à retrouver SA clé API Mistral
+    # personnelle pour tous les appels de traitement de ce dossier (§app/pipeline_support.py
+    # owner_api_key, app/store/models.py UserApiKey) : chaque utilisateur consomme son propre
+    # quota, jamais celui d'un autre.
+    owner_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     # Instantané dénormalisé du dossier existant dont celui-ci semble être une copie, capturé
     # une fois à l'upload — un avertissement non bloquant, jamais un refus d'upload.
     duplicate_of_dossier_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
@@ -426,3 +433,27 @@ class ExtractionResult(Base):
     )
 
     dossier: Mapped["Dossier"] = relationship(back_populates="extraction_results")
+
+
+class UserApiKey(Base):
+    """Clé API Mistral personnelle d'un utilisateur (§app/api/me.py) — chiffrée au repos
+    (Fernet, §app/auth/crypto.py) et jamais en clair en base, contrairement au code d'accès qui
+    n'est qu'un identifiant de connexion. Porte aussi le compteur d'usage mensuel affiché en
+    barre de progression côté frontend (§app/mistral/client.py record_slot_success) — un simple
+    nombre d'appels, pas la consommation réelle du compte Mistral (aucune API publique ne
+    l'expose)."""
+
+    __tablename__ = "user_api_keys"
+
+    user_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    mistral_api_key_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # "YYYY-MM" — comparé au mois courant à chaque appel pour remettre usage_count à zéro sans
+    # tâche de purge séparée (§record_api_usage).
+    usage_period: Mapped[str | None] = mapped_column(String(7), nullable=True)
+    usage_count: Mapped[int] = mapped_column(Integer, default=0)
+
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    updated_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True), default=_now, onupdate=_now
+    )

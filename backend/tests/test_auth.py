@@ -18,8 +18,14 @@ from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
 from app.auth import rate_limit
-from app.auth.dependencies import require_auth, require_auth_ws
-from app.auth.security import COOKIE_NAME, create_session_cookie, verify_access_code, verify_session_cookie
+from app.auth.dependencies import get_current_user_id, require_auth, require_auth_ws
+from app.auth.security import (
+    COOKIE_NAME,
+    create_session_cookie,
+    decode_session_cookie,
+    hash_access_code,
+    verify_access_code,
+)
 from app.settings import get_settings
 
 # `Secure` cookies (app/api/auth.py) ne sont stockés/renvoyés par httpx (TestClient) que sur
@@ -61,21 +67,29 @@ def test_empty_code_list_never_matches():
     assert verify_access_code("", []) is False
 
 
+def test_hash_access_code_is_stable_and_distinct():
+    """Même code -> même identifiant (retrouver la clé API enregistrée d'une session à
+    l'autre) ; codes différents -> identifiants différents (jamais de collision entre deux
+    personnes)."""
+    assert hash_access_code("1234") == hash_access_code("1234")
+    assert hash_access_code("1234") != hash_access_code("5678")
+
+
 # --- Cookie de session signé --------------------------------------------------------------
 
 def test_session_cookie_roundtrip():
-    token = create_session_cookie(secret_key="secret-a")
-    assert verify_session_cookie(token, secret_key="secret-a") is True
+    token = create_session_cookie(secret_key="secret-a", user_id="user-1")
+    assert decode_session_cookie(token, secret_key="secret-a") == "user-1"
 
 
 def test_session_cookie_rejected_with_wrong_secret():
-    token = create_session_cookie(secret_key="secret-a")
-    assert verify_session_cookie(token, secret_key="secret-b") is False
+    token = create_session_cookie(secret_key="secret-a", user_id="user-1")
+    assert decode_session_cookie(token, secret_key="secret-b") is None
 
 
 def test_tampered_session_cookie_is_rejected():
-    token = create_session_cookie(secret_key="secret-a")
-    assert verify_session_cookie(token + "x", secret_key="secret-a") is False
+    token = create_session_cookie(secret_key="secret-a", user_id="user-1")
+    assert decode_session_cookie(token + "x", secret_key="secret-a") is None
 
 
 # --- Dépendance require_auth (HTTP), sur une mini-app jetable -----------------------------
@@ -96,7 +110,7 @@ def test_protected_route_rejects_missing_cookie():
 
 
 def test_protected_route_accepts_valid_session(isolated_workspace):
-    token = create_session_cookie(secret_key=get_settings().secret_key)
+    token = create_session_cookie(secret_key=get_settings().secret_key, user_id="user-1")
     client = TestClient(_protected_app())
     client.cookies.set(COOKIE_NAME, token)
     assert client.get("/protected").status_code == 200
@@ -106,6 +120,31 @@ def test_protected_route_rejects_garbage_cookie(isolated_workspace):
     client = TestClient(_protected_app())
     client.cookies.set(COOKIE_NAME, "n-importe-quoi")
     assert client.get("/protected").status_code == 401
+
+
+# --- Dépendance get_current_user_id : identité (utilisée pour attribuer un dossier à son
+# propriétaire et retrouver sa clé API personnelle) plutôt que contrôle d'accès -------------
+
+def _whoami_app() -> FastAPI:
+    app = FastAPI()
+
+    @app.get("/whoami")
+    def whoami(user_id: str | None = Depends(get_current_user_id)) -> dict:
+        return {"user_id": user_id}
+
+    return app
+
+
+def test_get_current_user_id_is_none_without_cookie():
+    client = TestClient(_whoami_app())
+    assert client.get("/whoami").json() == {"user_id": None}
+
+
+def test_get_current_user_id_returns_uid_for_valid_session(isolated_workspace):
+    token = create_session_cookie(secret_key=get_settings().secret_key, user_id="user-42")
+    client = TestClient(_whoami_app())
+    client.cookies.set(COOKIE_NAME, token)
+    assert client.get("/whoami").json() == {"user_id": "user-42"}
 
 
 # --- Dépendance require_auth_ws (WebSocket), même mini-app pattern -----------------------
@@ -126,7 +165,7 @@ def test_websocket_rejects_missing_cookie():
 
 
 def test_websocket_accepts_valid_session(isolated_workspace):
-    token = create_session_cookie(secret_key=get_settings().secret_key)
+    token = create_session_cookie(secret_key=get_settings().secret_key, user_id="user-1")
 
     app = FastAPI()
 

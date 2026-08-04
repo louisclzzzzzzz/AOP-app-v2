@@ -20,7 +20,7 @@ from app.extraction.excel_export import build_extraction_workbook, extraction_wo
 from app.extraction.extraction_schema import load_extraction_schema
 from app.extraction.pipeline import ensure_results_initialized, run_extraction_pipeline
 from app.extraction.report import REPORT_JSON_FILENAME, validate_extraction
-from app.pipeline_support import run_pipeline_safely
+from app.pipeline_support import owner_api_key, run_pipeline_safely
 from app.progress import progress_manager
 from app.settings import get_settings
 from app.store.db import session_scope
@@ -69,11 +69,11 @@ def _entry_to_out(result: ExtractionResult) -> ExtractionEntryOut:
 
 
 async def _run_extraction_safely(dossier_id: str, document_ids: list[str] | None = None) -> None:
-    await run_pipeline_safely(
-        dossier_id,
-        lambda: run_extraction_pipeline(dossier_id, document_ids=document_ids),
-        what="le pipeline d'extraction",
-    )
+    async def _run() -> None:
+        async with owner_api_key(dossier_id):
+            await run_extraction_pipeline(dossier_id, document_ids=document_ids)
+
+    await run_pipeline_safely(dossier_id, _run, what="le pipeline d'extraction")
 
 
 @extraction_schema_router.get("", response_model=list[ExtractionFieldOut])

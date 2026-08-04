@@ -7,15 +7,16 @@ import logging
 import shutil
 from typing import Callable
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException, Response, UploadFile
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Request, Response, UploadFile
 from fastapi.responses import FileResponse, PlainTextResponse
 from sqlalchemy.orm import Session
 
 from app.api.schemas import CountersOut, DocumentOut, DocumentTextOut, DossierOut
+from app.auth.dependencies import get_current_user_id
 from app.classify.pipeline import run_classification_pipeline
 from app.ingestion.pipeline import run_ingestion_pipeline
 from app.ocr.cache import delete_text_cache_files, read_text_cache
-from app.pipeline_support import run_pipeline_safely
+from app.pipeline_support import owner_api_key, run_pipeline_safely
 from app.progress import progress_manager
 from app.settings import get_settings
 from app.store.db import session_scope
@@ -26,6 +27,7 @@ from app.store.repository import (
     find_dossier_by_upload_hash,
     get_dossier,
     get_document,
+    get_user_api_key_row,
     list_documents,
     list_dossiers,
     set_dossier_upload_info,
@@ -114,14 +116,15 @@ async def _run_pipeline_safely(dossier_id: str, zip_path) -> None:
     lève une exception non prévue, au lieu de le laisser bloqué silencieusement à mi-chemin."""
 
     async def _run() -> None:
-        await run_ingestion_pipeline(dossier_id, zip_path)
+        async with owner_api_key(dossier_id):
+            await run_ingestion_pipeline(dossier_id, zip_path)
 
-        with session_scope() as s:
-            dossier = get_dossier(s, dossier_id)
-            ingestion_ok = dossier is not None and dossier.status == DossierStatus.READY_STEP1.value
+            with session_scope() as s:
+                dossier = get_dossier(s, dossier_id)
+                ingestion_ok = dossier is not None and dossier.status == DossierStatus.READY_STEP1.value
 
-        if ingestion_ok:
-            await run_classification_pipeline(dossier_id)
+            if ingestion_ok:
+                await run_classification_pipeline(dossier_id)
 
     await run_pipeline_safely(dossier_id, _run, what="le pipeline d'ingestion")
 
@@ -156,15 +159,30 @@ async def reopen_stage(
 
 
 @router.post("", response_model=DossierOut)
-async def upload_dossier(file: UploadFile, background_tasks: BackgroundTasks) -> DossierOut:
+async def upload_dossier(file: UploadFile, background_tasks: BackgroundTasks, request: Request) -> DossierOut:
     if not file.filename or not file.filename.lower().endswith(".zip"):
         raise HTTPException(400, "Seuls les fichiers .zip sont acceptés")
 
+    settings = get_settings()
+    owner_user_id = get_current_user_id(request)
+    if settings.require_auth:
+        # Garanti non-None ici : le router impose déjà require_auth (app/main.py) — la requête
+        # n'atteint ce point qu'avec une session valide.
+        assert owner_user_id is not None
+        with session_scope() as s:
+            row = get_user_api_key_row(s, owner_user_id)
+            has_key = bool(row and row.mistral_api_key_encrypted)
+        if not has_key:
+            raise HTTPException(
+                400,
+                "Configurez votre clé API Mistral personnelle avant d'analyser un dossier "
+                "(bouton « Clé API » dans le menu).",
+            )
+
     with session_scope() as s:
-        dossier = create_dossier(s, file.filename)
+        dossier = create_dossier(s, file.filename, owner_user_id=owner_user_id)
         dossier_id = dossier.id
 
-    settings = get_settings()
     dossier_dir = settings.workspace_dir / dossier_id
     dossier_dir.mkdir(parents=True, exist_ok=True)
     zip_path = dossier_dir / "upload.zip"

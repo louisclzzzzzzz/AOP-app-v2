@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useState } from 'react'
 import { deleteDossier, listDossiers, uploadDossier } from './api'
-import { checkSession, logout } from './auth'
+import { checkSession, getApiKeyStatus, logout } from './auth'
+import type { ApiKeyStatus } from './auth'
 import type { Dossier } from './types'
 import { UploadDropzone } from './components/UploadDropzone'
 import { DossierList } from './components/DossierList'
 import { DossierProgress } from './components/DossierProgress'
 import { LoginForm } from './components/LoginForm'
+import { ApiKeyGuide } from './components/ApiKeyGuide'
 
 export default function App() {
   // undefined = vérification en cours ; false = accès ouvert (AOP_REQUIRE_AUTH off — usage
@@ -14,9 +16,15 @@ export default function App() {
   // toujours une session valide même quand AOP_REQUIRE_AUTH est désactivé partout ailleurs —
   // s'y fier bloquerait à tort l'usage local, qui n'a jamais de session.
   const [needsLogin, setNeedsLogin] = useState<boolean | undefined>(undefined)
-  // Pas de compte individuel (juste un code partagé) : ce booléen ne sert qu'à décider
-  // d'afficher le bouton de déconnexion, jamais une identité à afficher.
+  // Pas de compte individuel (juste un code par personne) : ce booléen ne sert qu'à décider
+  // d'afficher le bouton de déconnexion et de vérifier la clé API personnelle, jamais une
+  // identité à afficher.
   const [hasSession, setHasSession] = useState(false)
+  // undefined tant que non vérifié, ou quand hasSession est false (AOP_REQUIRE_AUTH désactivé —
+  // usage local/exécutable Windows : aucune notion de clé personnelle, la clé globale de
+  // settings/.env suffit, §backend/app/pipeline_support.py owner_api_key).
+  const [keyStatus, setKeyStatus] = useState<ApiKeyStatus | undefined>(undefined)
+  const [showApiKeyPanel, setShowApiKeyPanel] = useState(false)
   const [dossiers, setDossiers] = useState<Dossier[]>([])
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [isUploading, setIsUploading] = useState(false)
@@ -28,6 +36,12 @@ export default function App() {
       .catch(() => setNeedsLogin(false))
     checkSession().then(setHasSession).catch(() => setHasSession(false))
   }, [])
+
+  useEffect(() => {
+    if (hasSession) {
+      getApiKeyStatus().then(setKeyStatus).catch(() => {})
+    }
+  }, [hasSession])
 
   const refresh = useCallback(() => {
     listDossiers().then(setDossiers).catch(() => {})
@@ -46,6 +60,8 @@ export default function App() {
     await logout()
     setHasSession(false)
     setNeedsLogin(true)
+    setKeyStatus(undefined)
+    setShowApiKeyPanel(false)
   }, [])
 
   const handleFileSelected = useCallback(async (file: File) => {
@@ -84,6 +100,24 @@ export default function App() {
     return <LoginForm onLoggedIn={handleLoggedIn} />
   }
 
+  // Première connexion (ou clé effacée depuis un autre onglet) sur un déploiement authentifié :
+  // pas d'accès aux dossiers tant qu'aucune clé API Mistral personnelle n'est enregistrée
+  // (§backend/app/api/dossiers.py, l'upload la refuse de toute façon). N'affecte jamais l'usage
+  // local/exécutable Windows (hasSession reste false, aucune session n'existe jamais là-bas).
+  if (hasSession && keyStatus && !keyStatus.configured) {
+    return <ApiKeyGuide mode="onboarding" onConfigured={setKeyStatus} />
+  }
+
+  if (showApiKeyPanel) {
+    return (
+      <ApiKeyGuide
+        mode="panel"
+        onConfigured={setKeyStatus}
+        onClose={() => setShowApiKeyPanel(false)}
+      />
+    )
+  }
+
   return (
     <div className="min-h-screen bg-slate-50">
       <header className="border-b border-slate-200 bg-white">
@@ -93,9 +127,17 @@ export default function App() {
             <p className="text-sm text-slate-400">Analyse de DCE</p>
           </div>
           {hasSession && (
-            <button onClick={handleLogout} className="text-sm text-blue-600 hover:underline">
-              Déconnexion
-            </button>
+            <div className="flex items-center gap-4">
+              <button
+                onClick={() => setShowApiKeyPanel(true)}
+                className="text-sm text-slate-500 hover:text-slate-800"
+              >
+                Clé API
+              </button>
+              <button onClick={handleLogout} className="text-sm text-blue-600 hover:underline">
+                Déconnexion
+              </button>
+            </div>
           )}
         </div>
       </header>

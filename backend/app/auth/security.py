@@ -8,9 +8,15 @@ pour la protection anti-brute-force).
 Session par cookie signé plutôt que table de sessions côté serveur : plus simple (pas de
 nettoyage d'expiration à gérer), et le cookie est envoyé automatiquement par le navigateur
 sur les requêtes HTTP *et* sur la poignée de main WebSocket (même origine), donc un seul
-mécanisme couvre l'API REST et `/ws/dossiers/{id}` (§app/auth/dependencies.py)."""
+mécanisme couvre l'API REST et `/ws/dossiers/{id}` (§app/auth/dependencies.py).
+
+Le cookie porte désormais un identifiant STABLE de la personne connectée (hash du code, jamais
+le code en clair) — nécessaire depuis que chaque utilisateur a sa propre clé API Mistral
+personnelle (§app/api/me.py, app/store/models.py UserApiKey) : il faut savoir QUI est connecté
+pour retrouver SA clé, alors qu'avant la session n'était qu'un booléen anonyme."""
 from __future__ import annotations
 
+import hashlib
 import secrets
 
 from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
@@ -31,19 +37,34 @@ def verify_access_code(candidate: str, valid_codes: list[str]) -> bool:
     return matched
 
 
+def hash_access_code(code: str) -> str:
+    """Identifiant stable et non-réversible d'une personne, dérivé de son code d'accès —
+    utilisé comme clé primaire pour tout ce qui est propre à cette personne (clé API Mistral,
+    compteur d'usage). Un hash plutôt que le code en clair dans le cookie/la base : défense en
+    profondeur (le cookie est déjà httponly+secure, mais ne coûte rien à ne pas transporter le
+    secret de connexion lui-même) — sans conséquence sur la sécurité du code, qui reste protégé
+    à la connexion par le verrouillage anti-brute-force (app/auth/rate_limit.py), pas par ce
+    hash (10 000 combinaisons se devinent trivialement hors-ligne)."""
+    return hashlib.sha256(code.encode()).hexdigest()
+
+
 def _serializer(secret_key: str) -> URLSafeTimedSerializer:
     return URLSafeTimedSerializer(secret_key, salt="aop-session")
 
 
-def create_session_cookie(*, secret_key: str) -> str:
-    return _serializer(secret_key).dumps({"authenticated": True})
+def create_session_cookie(*, secret_key: str, user_id: str) -> str:
+    return _serializer(secret_key).dumps({"authenticated": True, "uid": user_id})
 
 
-def verify_session_cookie(token: str, *, secret_key: str) -> bool:
-    """True si le cookie est valide, signé avec la bonne clé et non expiré — jamais
-    d'exception : un cookie absent/altéré/expiré doit juste être traité comme non connecté."""
+def decode_session_cookie(token: str, *, secret_key: str) -> str | None:
+    """Identifiant de la personne connectée si le cookie est valide, signé avec la bonne clé et
+    non expiré ; None sinon — jamais d'exception : un cookie absent/altéré/expiré doit juste
+    être traité comme non connecté."""
     try:
         data = _serializer(secret_key).loads(token, max_age=SESSION_MAX_AGE_SECONDS)
     except (BadSignature, SignatureExpired):
-        return False
-    return isinstance(data, dict) and data.get("authenticated") is True
+        return None
+    if not isinstance(data, dict) or data.get("authenticated") is not True:
+        return None
+    user_id = data.get("uid")
+    return user_id if isinstance(user_id, str) else None
