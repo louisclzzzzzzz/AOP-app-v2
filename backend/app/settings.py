@@ -73,9 +73,16 @@ class Settings(BaseSettings):
     # lance juste AOP-v2.exe sur son poste. À activer explicitement (AOP_REQUIRE_AUTH=true)
     # pour un déploiement public exposé à quiconque a le lien (ex. Railway).
     require_auth: bool = False
-    # Code d'accès à 4 chiffres, seul secret partagé (pas de compte individuel) — donné à la
-    # main aux personnes autorisées. N'a de sens que si require_auth=True.
-    access_code: str = ""
+    # Un code à 4 chiffres par personne (pas de compte email/mot de passe) — chacun a le
+    # sien, ce qui permet de révoquer un accès individuellement (retirer son code de la
+    # liste) sans devoir faire tourner le code de tout le monde. N'a de sens que si
+    # require_auth=True. Brut (chaîne "1111,2222,3333") plutôt que list[str] : pydantic-settings
+    # attend du JSON pour parser une liste depuis l'env, pas une liste séparée par virgules —
+    # même choix que mistral_api_keys ci-dessus (MistralApiKeySettings.resolved_keys()).
+    access_codes: str = ""
+
+    def resolved_access_codes(self) -> list[str]:
+        return [c.strip() for c in self.access_codes.split(",") if c.strip()]
 
     def model_post_init(self, __context: Any) -> None:
         resolved = Path(self.workspace_dir).resolve()

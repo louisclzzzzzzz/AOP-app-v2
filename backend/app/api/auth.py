@@ -1,8 +1,9 @@
-"""Connexion / déconnexion par code d'accès partagé (4 chiffres) + cookie de session signé.
+"""Connexion / déconnexion par code d'accès (4 chiffres) + cookie de session signé.
 
-Pas de compte individuel : un seul code, donné à la main aux personnes autorisées (configuré
-via AOP_ACCESS_CODE, jamais en dur). Verrouillage anti-brute-force par IP (app/auth/rate_limit.py)
-— indispensable : 4 chiffres n'offrent que 10 000 combinaisons."""
+Un code par personne (configuré via AOP_ACCESS_CODES, jamais en dur) plutôt qu'un compte
+email/mot de passe — révocable individuellement sans toucher aux codes des autres.
+Verrouillage anti-brute-force par IP (app/auth/rate_limit.py) — indispensable : 4 chiffres
+n'offrent que 10 000 combinaisons."""
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
@@ -37,7 +38,7 @@ async def login(payload: LoginRequest, request: Request, response: Response) -> 
         )
 
     settings = get_settings()
-    if not verify_access_code(payload.code, settings.access_code):
+    if not verify_access_code(payload.code, settings.resolved_access_codes()):
         rate_limit.record_failure(ip)
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Code incorrect")
 

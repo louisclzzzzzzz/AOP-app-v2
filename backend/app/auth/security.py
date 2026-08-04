@@ -1,7 +1,9 @@
-"""Vérification du code d'accès partagé + cookie de session signé (itsdangerous).
+"""Vérification du code d'accès + cookie de session signé (itsdangerous).
 
-Pas de compte individuel : un seul code à 4 chiffres, donné à la main aux personnes
-autorisées (§app/api/auth.py, app/auth/rate_limit.py pour la protection anti-brute-force).
+Pas de compte email/mot de passe : un code à 4 chiffres par personne (§app/settings.py
+Settings.resolved_access_codes), donné à la main — ce qui permet de révoquer un accès
+individuellement sans toucher aux codes des autres (§app/api/auth.py, app/auth/rate_limit.py
+pour la protection anti-brute-force).
 
 Session par cookie signé plutôt que table de sessions côté serveur : plus simple (pas de
 nettoyage d'expiration à gérer), et le cookie est envoyé automatiquement par le navigateur
@@ -17,10 +19,16 @@ COOKIE_NAME = "aop_session"
 SESSION_MAX_AGE_SECONDS = 30 * 24 * 3600  # 30 jours
 
 
-def verify_access_code(candidate: str, expected: str) -> bool:
-    """Comparaison à temps constant : une comparaison `==` naïve sur une chaîne aussi courte
-    (4 chiffres) fuiterait un signal exploitable par mesure de timing."""
-    return bool(expected) and secrets.compare_digest(candidate, expected)
+def verify_access_code(candidate: str, valid_codes: list[str]) -> bool:
+    """Comparaison à temps constant (par code) : une comparaison `==` naïve sur une chaîne
+    aussi courte (4 chiffres) fuiterait un signal exploitable par mesure de timing. On
+    n'interrompt jamais la boucle au premier essai — comparer TOUS les codes à chaque appel
+    évite de fuiter, par le temps de réponse global, la position du code dans la liste."""
+    matched = False
+    for code in valid_codes:
+        if secrets.compare_digest(candidate, code):
+            matched = True
+    return matched
 
 
 def _serializer(secret_key: str) -> URLSafeTimedSerializer:

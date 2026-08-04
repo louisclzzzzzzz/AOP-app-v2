@@ -1,5 +1,5 @@
-"""Auth par code d'accès partagé (4 chiffres, pas de compte individuel), cookie de session
-signé + verrouillage anti-brute-force par IP.
+"""Auth par code d'accès (4 chiffres, un par personne — pas de compte email/mot de passe),
+cookie de session signé + verrouillage anti-brute-force par IP.
 
 `app.main`'s app est un singleton construit à l'import (les routers sont protégés ou non
 selon AOP_REQUIRE_AUTH lu UNE SEULE FOIS à ce moment-là) — impossible de faire varier ce
@@ -8,7 +8,7 @@ réglage par test en monkeypatchant l'env après coup. On teste donc :
   FastAPI jetable construite dans le test, où le comportement protégé/non protégé est
   vérifiable directement ;
 - les endpoints /api/auth/* eux-mêmes (toujours montés, peu importe AOP_REQUIRE_AUTH) contre
-  la vraie app, avec AOP_ACCESS_CODE positionné explicitement ;
+  la vraie app, avec AOP_ACCESS_CODES positionné explicitement ;
 - que l'app réelle reste ouverte par défaut (AOP_REQUIRE_AUTH non positionné dans
   isolated_workspace) — garde-fou de non-régression pour l'usage local / l'exécutable Windows."""
 from __future__ import annotations
@@ -29,26 +29,36 @@ from app.settings import get_settings
 _HTTPS = "https://testserver"
 
 
-def _set_access_code(monkeypatch, code: str) -> None:
-    monkeypatch.setenv("AOP_ACCESS_CODE", code)
+def _set_access_codes(monkeypatch, codes: str) -> None:
+    monkeypatch.setenv("AOP_ACCESS_CODES", codes)
     get_settings.cache_clear()
 
 
 # --- Code d'accès --------------------------------------------------------------------------
 
 def test_correct_code_is_accepted():
-    assert verify_access_code("1234", "1234") is True
+    assert verify_access_code("1234", ["1234"]) is True
 
 
 def test_wrong_code_is_rejected():
-    assert verify_access_code("0000", "1234") is False
+    assert verify_access_code("0000", ["1234"]) is False
 
 
-def test_empty_expected_code_never_matches():
+def test_any_of_several_codes_is_accepted():
+    """Un code par personne : celui de n'importe qui doit fonctionner, pas seulement le
+    premier de la liste."""
+    codes = ["1111", "2222", "3333"]
+    assert verify_access_code("1111", codes) is True
+    assert verify_access_code("2222", codes) is True
+    assert verify_access_code("3333", codes) is True
+    assert verify_access_code("4444", codes) is False
+
+
+def test_empty_code_list_never_matches():
     """Pas de code configuré : jamais d'authentification possible, même une chaîne vide
-    contre elle-même — sinon un déploiement mal configuré (AOP_ACCESS_CODE oublié) se
+    contre une liste vide — sinon un déploiement mal configuré (AOP_ACCESS_CODES oublié) se
     retrouverait accessible avec un champ resté vide."""
-    assert verify_access_code("", "") is False
+    assert verify_access_code("", []) is False
 
 
 # --- Cookie de session signé --------------------------------------------------------------
@@ -137,7 +147,7 @@ def test_login_sets_cookie_and_me_confirms_session(isolated_workspace, monkeypat
     from app.main import app
 
     rate_limit.reset_for_tests()
-    _set_access_code(monkeypatch, "1234")
+    _set_access_codes(monkeypatch, "1234")
 
     client = TestClient(app, base_url=_HTTPS)
     res = client.post("/api/auth/login", json={"code": "1234"})
@@ -151,7 +161,7 @@ def test_login_rejects_wrong_code(isolated_workspace, monkeypatch):
     from app.main import app
 
     rate_limit.reset_for_tests()
-    _set_access_code(monkeypatch, "1234")
+    _set_access_codes(monkeypatch, "1234")
 
     client = TestClient(app, base_url=_HTTPS)
     assert client.post("/api/auth/login", json={"code": "0000"}).status_code == 401
@@ -168,7 +178,7 @@ def test_logout_clears_cookie(isolated_workspace, monkeypatch):
     from app.main import app
 
     rate_limit.reset_for_tests()
-    _set_access_code(monkeypatch, "1234")
+    _set_access_codes(monkeypatch, "1234")
 
     client = TestClient(app, base_url=_HTTPS)
     client.post("/api/auth/login", json={"code": "1234"})
@@ -178,13 +188,39 @@ def test_logout_clears_cookie(isolated_workspace, monkeypatch):
     assert client.get("/api/auth/me").status_code == 401
 
 
+def test_each_persons_code_logs_in_independently(isolated_workspace, monkeypatch):
+    from app.main import app
+
+    rate_limit.reset_for_tests()
+    _set_access_codes(monkeypatch, "1111,2222,3333")
+
+    for code in ("1111", "2222", "3333"):
+        client = TestClient(app, base_url=_HTTPS, headers={"X-Forwarded-For": f"9.9.8.{code[0]}"})
+        assert client.post("/api/auth/login", json={"code": code}).status_code == 204
+
+
+def test_revoking_one_code_does_not_affect_the_others(isolated_workspace, monkeypatch):
+    """Retirer le code d'une personne de la liste (révocation) ne doit rien changer pour les
+    autres — c'est tout l'intérêt d'un code par personne plutôt qu'un code partagé."""
+    from app.main import app
+
+    rate_limit.reset_for_tests()
+    _set_access_codes(monkeypatch, "1111,3333")  # "2222" retiré (révoqué)
+
+    revoked = TestClient(app, base_url=_HTTPS, headers={"X-Forwarded-For": "9.9.7.1"})
+    assert revoked.post("/api/auth/login", json={"code": "2222"}).status_code == 401
+
+    still_valid = TestClient(app, base_url=_HTTPS, headers={"X-Forwarded-For": "9.9.7.2"})
+    assert still_valid.post("/api/auth/login", json={"code": "1111"}).status_code == 204
+
+
 # --- Verrouillage anti-brute-force par IP --------------------------------------------------
 
 def test_lockout_after_max_attempts(isolated_workspace, monkeypatch):
     from app.main import app
 
     rate_limit.reset_for_tests()
-    _set_access_code(monkeypatch, "1234")
+    _set_access_codes(monkeypatch, "1234")
 
     client = TestClient(app, base_url=_HTTPS, headers={"X-Forwarded-For": "9.9.9.1"})
     for _ in range(rate_limit.MAX_ATTEMPTS):
@@ -200,7 +236,7 @@ def test_lockout_is_per_ip(isolated_workspace, monkeypatch):
     from app.main import app
 
     rate_limit.reset_for_tests()
-    _set_access_code(monkeypatch, "1234")
+    _set_access_codes(monkeypatch, "1234")
 
     attacker = TestClient(app, base_url=_HTTPS, headers={"X-Forwarded-For": "9.9.9.2"})
     for _ in range(rate_limit.MAX_ATTEMPTS):
@@ -217,7 +253,7 @@ def test_successful_login_resets_the_failure_counter(isolated_workspace, monkeyp
     from app.main import app
 
     rate_limit.reset_for_tests()
-    _set_access_code(monkeypatch, "1234")
+    _set_access_codes(monkeypatch, "1234")
 
     client = TestClient(app, base_url=_HTTPS, headers={"X-Forwarded-For": "9.9.9.4"})
     for _ in range(rate_limit.MAX_ATTEMPTS - 1):
