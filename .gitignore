@@ -21,6 +21,12 @@ frontend/.vite/
 workspace/*
 !workspace/.gitkeep
 
+# Empaquetage Windows (PyInstaller) - artefacts de build locaux, jamais versionnés
+/build/
+/dist/
+/release/
+/*.zip
+
 # OS
 .DS_Store
 

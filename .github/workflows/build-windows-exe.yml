@@ -1,0 +1,149 @@
+name: Build Windows executable
+
+# Déclenchement manuel (bouton "Run workflow" dans l'onglet Actions) pour distribuer une
+# build de test, ou automatique sur un tag "vX.Y.Z" qui publie en plus une Release GitHub.
+on:
+  workflow_dispatch: {}
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+
+      - name: Setup Node
+        uses: actions/setup-node@v7.0.0
+        with:
+          node-version: "20"
+
+      - name: Build frontend
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run build
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v9.0.0
+
+      - name: Install Python
+        run: uv python install 3.12
+
+      - name: Sync backend dependencies
+        working-directory: backend
+        run: uv sync --frozen
+
+      - name: Run backend tests (Windows)
+        working-directory: backend
+        run: uv run --frozen pytest -v
+        # Fait tourner ici, sur windows-latest, les régressions spécifiques à Windows (ex.
+        # MAX_PATH) qu'une CI macOS/Linux ne peut jamais révéler — avant de passer du temps
+        # sur le build PyInstaller si le backend lui-même est cassé sur cet OS.
+
+      - name: Build Windows executable with PyInstaller
+        working-directory: backend
+        run: |
+          # Chemins Windows absolus (pwd -W, pas le style POSIX /d/... de Git Bash) :
+          # PyInstaller résout les chemins relatifs de --add-data par rapport au dossier du
+          # .spec généré (--specpath), pas au cwd d'invocation ; et un chemin POSIX brut
+          # collé à ";config" dans le même argument échapperait à la conversion auto de
+          # Git Bash vers un chemin Windows.
+          CONFIG_SRC="$(pwd -W)/config"
+          FRONTEND_SRC="$(cd ../frontend/dist && pwd -W)"
+          uv run --frozen \
+            --with pyinstaller \
+            --with pyinstaller-hooks-contrib \
+            pyinstaller \
+              --name AOP-v2 \
+              --onefile \
+              --console \
+              --noconfirm \
+              --paths . \
+              --add-data "${CONFIG_SRC};config" \
+              --add-data "${FRONTEND_SRC};frontend/dist" \
+              --hidden-import python_multipart \
+              --hidden-import multipart \
+              --hidden-import sqlalchemy.dialects.sqlite.pysqlite \
+              --collect-all uvicorn \
+              --collect-all fastapi \
+              --collect-all starlette \
+              --collect-all mistralai \
+              --collect-all websockets \
+              --collect-all sqlalchemy \
+              --collect-all anyio \
+              --collect-all httpx \
+              --collect-all httpcore \
+              --collect-data reportlab \
+              --collect-data pdfminer \
+              --distpath ../dist \
+              --workpath ../build \
+              --specpath ../build \
+              windows_entrypoint.py
+
+      - name: Smoke-test the executable
+        run: |
+          set -e
+          export AOP_BACKEND_PORT=8765
+          ./dist/AOP-v2.exe &
+          EXE_PID=$!
+
+          ok=""
+          for i in $(seq 1 40); do
+            if curl -sf "http://127.0.0.1:${AOP_BACKEND_PORT}/api/health" -o health.json; then
+              ok=1
+              break
+            fi
+            sleep 1
+          done
+
+          if [ -z "$ok" ]; then
+            echo "::error::Le backend empaqueté n'a jamais répondu sur /api/health"
+            kill "$EXE_PID" 2>/dev/null || true
+            taskkill //F //IM AOP-v2.exe 2>/dev/null || true
+            exit 1
+          fi
+
+          echo "Réponse /api/health :"; cat health.json
+          grep -q '"status":"ok"' health.json
+
+          curl -sf "http://127.0.0.1:${AOP_BACKEND_PORT}/" -o index.html
+          test -s index.html
+          echo "Frontend servi correctement ($(wc -c < index.html) octets)"
+
+          kill "$EXE_PID" 2>/dev/null || true
+          taskkill //F //IM AOP-v2.exe 2>/dev/null || true
+
+      - name: Assemble release folder
+        run: |
+          mkdir -p release
+          cp dist/AOP-v2.exe release/
+          cp .env.example release/
+          cp GUIDE_UTILISATEUR.md release/
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: AOP-v2-windows
+          path: release/
+          retention-days: 30
+
+      - name: Publish GitHub release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd release
+          zip -r ../AOP-v2-windows.zip .
+          cd ..
+          gh release create "${{ github.ref_name }}" AOP-v2-windows.zip \
+            --title "AOP v2 ${{ github.ref_name }} (Windows)" \
+            --notes "Exécutable Windows autonome (aucune dépendance à installer). Dézippez, copiez .env.example en .env et renseignez MISTRAL_API_KEY avant de lancer AOP-v2.exe."

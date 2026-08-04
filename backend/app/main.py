@@ -21,12 +21,17 @@ from app.api.extraction import router as extraction_router
 from app.api.project_synthesis import router as project_synthesis_router
 from app.api.websocket import router as websocket_router
 from app.mistral.client import api_slots_health
-from app.settings import get_settings
+from app.settings import get_bundle_dir, get_settings
 from app.store.db import init_db
 
 logging.basicConfig(level=logging.INFO)
 
-FRONTEND_DIST = Path(__file__).resolve().parent.parent.parent / "frontend" / "dist"
+_bundle_dir = get_bundle_dir()
+FRONTEND_DIST = (
+    (_bundle_dir / "frontend" / "dist")
+    if _bundle_dir is not None
+    else Path(__file__).resolve().parent.parent.parent / "frontend" / "dist"
+)
 
 
 @asynccontextmanager

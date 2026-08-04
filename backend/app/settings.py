@@ -1,6 +1,7 @@
 """Configuration de l'application : variables d'environnement (.env) + fichiers YAML de config/."""
 from __future__ import annotations
 
+import sys
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -9,8 +10,39 @@ import yaml
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 BACKEND_DIR = Path(__file__).resolve().parent.parent
-PROJECT_ROOT = BACKEND_DIR.parent
-CONFIG_DIR = BACKEND_DIR / "config"
+
+# Exécutable empaqueté (PyInstaller) : le bootloader pose sys.frozen et sys._MEIPASS pointe
+# vers le dossier d'extraction des ressources en lecture seule (temporaire en mode --onefile,
+# effacé à la fermeture). Les données persistantes (workspace/, .env) doivent au contraire
+# vivre à côté de l'exécutable lui-même, jamais dans ce dossier temporaire.
+_FROZEN_BUNDLE_DIR = Path(getattr(sys, "_MEIPASS")) if getattr(sys, "frozen", False) else None
+
+PROJECT_ROOT = Path(sys.executable).resolve().parent if _FROZEN_BUNDLE_DIR is not None else BACKEND_DIR.parent
+CONFIG_DIR = (_FROZEN_BUNDLE_DIR / "config") if _FROZEN_BUNDLE_DIR is not None else BACKEND_DIR / "config"
+
+
+def get_bundle_dir() -> Path | None:
+    """Dossier des ressources en lecture seule embarquées (config, frontend/dist) si l'app
+    tourne comme exécutable empaqueté, None en exécution normale (uv run)."""
+    return _FROZEN_BUNDLE_DIR
+
+
+def _win_long_path(path: Path) -> Path:
+    """Windows refuse mkdir/open au-delà de MAX_PATH (260 caractères) sauf préfixe étendu
+    `\\\\?\\`, qui fonctionne sans droits admin ni réglage système (contrairement à l'opt-in
+    `LongPathsEnabled` sinon nécessaire) — indispensable ici : un DCE réel a une arborescence
+    et des noms de fichiers longs (traçabilité = copie fidèle de la source, jamais tronquée),
+    qui dépassent vite la limite une fois nichés sous workspace/<id>/.source.staging-xxxxxxxx/…
+    (cas réel rencontré au premier test Windows : dépassement de quelques caractères
+    seulement). No-op hors Windows, où cette limite n'existe pas."""
+    if sys.platform != "win32":
+        return path
+    s = str(path)
+    if s.startswith("\\\\?\\"):
+        return path
+    if s.startswith("\\\\"):  # chemin UNC \\serveur\partage\...
+        return Path("\\\\?\\UNC\\" + s[2:])
+    return Path("\\\\?\\" + s)
 
 
 class Settings(BaseSettings):
@@ -32,9 +64,14 @@ class Settings(BaseSettings):
     mistral_api_keys: list[str] = []
 
     def model_post_init(self, __context: Any) -> None:
+        resolved = Path(self.workspace_dir).resolve()
         if not self.database_url:
-            self.database_url = f"sqlite:///{self.workspace_dir / 'aop.db'}"
-        self.workspace_dir = Path(self.workspace_dir).resolve()
+            # DSN construit sur le chemin résolu SANS préfixe long-path : le "?" de `\\?\`
+            # casserait le parsing d'URL SQLAlchemy (tout ce qui suit deviendrait une
+            # querystring). Sans risque pour MAX_PATH : aop.db reste à la racine de
+            # workspace/, jamais nichée sous la profondeur arbitraire d'un DCE.
+            self.database_url = f"sqlite:///{resolved / 'aop.db'}"
+        self.workspace_dir = _win_long_path(resolved)
 
 
 class MistralApiKeySettings(BaseSettings):
