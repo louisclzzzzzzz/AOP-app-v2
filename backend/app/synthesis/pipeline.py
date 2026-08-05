@@ -58,13 +58,16 @@ from app.synthesis.schema import SynthesisTopic, load_synthesis_schema
 logger = logging.getLogger(__name__)
 
 # Concurrence bornée sur les appels LLM (§P0 de l'analyse timing) : les relevés de documents sont
-# indépendants entre eux, les 12 thèmes aussi, donc rien n'impose de les exécuter en séquence —
-# mais on ne les lance pas tous d'un coup pour rester prudent sur un éventuel rate limit
-# tokens/minute côté Mistral (un relevé envoie le texte INTÉGRAL d'un document). Même ordre de
-# grandeur que le sémaphore OCR existant (`models.yaml` ocr.max_concurrency=3). `_retry`
+# indépendants entre eux, les 12 thèmes aussi, donc rien n'impose de les exécuter en séquence.
+# Mesuré empiriquement sur le vrai compte Mistral avant d'être relevé à 8 (comme
+# `_EXTRACTION_LLM_CONCURRENCY`, app/extraction/pipeline.py — mêmes chiffres de base : 0 échec
+# jusqu'à 16 appels simultanés sur mistral-large-2512) : contrairement à l'extraction, un appel
+# « map » ici envoie le texte INTÉGRAL d'un document (pas un extrait borné), donc un volume de
+# tokens/appel bien plus élevé — reste dans le rate limit tokens/minute (validé avec un gabarit de
+# test ~26k caractères + max_tokens=16000, 0 échec à concurrence=8). `_retry`
 # (app/mistral/client.py) absorbe déjà un 429 isolé avec backoff exponentiel si la concurrence
-# s'avère malgré tout trop agressive.
-_SYNTHESIS_LLM_CONCURRENCY = 4
+# s'avère malgré tout trop agressive sur un dossier aux documents pivots particulièrement longs.
+_SYNTHESIS_LLM_CONCURRENCY = 8
 
 
 def _document_signals(dossier_id: str) -> list[DocumentSignal]:
