@@ -22,6 +22,7 @@ from __future__ import annotations
 import asyncio
 import datetime as dt
 import logging
+import time
 
 from sqlalchemy.orm import Session
 
@@ -57,6 +58,21 @@ from app.store.repository import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Concurrence bornée sur les appels LLM par document (couches 1 et 2). Mesuré empiriquement sur
+# le vrai compte Mistral avant d'implémenter (script de test hors-projet, mistral-large-2512,
+# gabarit d'appel identique à `analyze_document`) : 0 échec/429 jusqu'à 16 appels simultanés,
+# débit passant de ~5 appels/min en séquentiel à ~30 appels/min à concurrence=8 (~37/min à
+# concurrence=16, mais rendements décroissants au-delà de 8 et latence par appel qui grimpe —
+# signe d'un début de throttling côté serveur avant tout 429 franc). 8 retenu comme valeur sûre
+# avec marge sous le plus haut palier testé sans erreur, plutôt que 16 : les prompts réels
+# (jusqu'à `MAX_FIELDS_PER_CALL` champs sur un extrait de `DOCUMENT_EXCERPT_MAX_CHARS`) sont plus
+# variables que le gabarit de test. Même valeur reprise pour `_AUDIT_LLM_CONCURRENCY` et
+# `_SYNTHESIS_LLM_CONCURRENCY` (mêmes modèle et rate limit) — auparavant 4 dans les trois cas,
+# sans mesure empirique à l'appui. `_retry` (app/mistral/client.py) absorbe un 429 isolé avec
+# backoff exponentiel ; le stimulateur par clé (`min_interval_seconds`) reste la seconde ligne de
+# défense si la concurrence à elle seule dépassait un jour le débit réellement autorisé.
+_EXTRACTION_LLM_CONCURRENCY = 8
 
 
 def ensure_results_initialized(session: Session, dossier_id: str) -> list[ExtractionResult]:
@@ -175,19 +191,45 @@ async def run_extraction_pipeline(dossier_id: str, *, document_ids: list[str] | 
         # On diffuse une estimation optimiste (champs déjà couverts par au moins un appel
         # terminé) pour que la barre de progression avance document par document au lieu de
         # rester bloquée puis sauter d'un coup à la fin ; jamais écrite en base.
+        if not calls:
+            return {}
+
+        # Phase 1 — OCR à la demande (§5 OPTIMISATION.md, phase 4), en concurrence (déjà bornée
+        # globalement par `ocr.max_concurrency`, §`ocr_slot()` dans app/mistral/client.py — donc
+        # sans rapport avec la concurrence LLM ci-dessous). Dédupliquée par document : `calls`
+        # peut contenir plusieurs entrées pour un même document quand ses champs ont été lotis
+        # (`_batch_fields`), inutile de l'OCRiser deux fois (même dédup que app/audit/pipeline.py).
+        unique_docs = {doc.document_id: doc for doc, _ in calls}
+        ocr_started_at = time.monotonic()
+        ocr_updated = await asyncio.gather(
+            *(asyncio.to_thread(ensure_document_ocr, dossier_id, doc) for doc in unique_docs.values())
+        )
+        for doc in ocr_updated:
+            signals_by_id[doc.document_id] = doc
+        logger.info(
+            "Extraction %s : OCR à la demande sur %d document(s) terminé en %.1fs",
+            dossier_id, len(unique_docs), time.monotonic() - ocr_started_at,
+        )
+
+        # Phase 2 — un appel LLM par entrée de `calls`, en concurrence bornée
+        # (`_EXTRACTION_LLM_CONCURRENCY`). `analyze_document` ne lève jamais (erreur capturée dans
+        # `DocumentExtractionResult.error`), donc un échec isolé n'annule pas les autres appels en
+        # vol dans le même `asyncio.gather`.
         results: dict[str, DocumentExtractionResult] = {}
         touched_field_ids: set[str] = set()
-        for doc, fields_for_doc in calls:
-            # OCR à la demande (§5 OPTIMISATION.md, phase 4) : no-op si le texte est déjà
-            # définitif (option désactivée, ou document déjà OCRisé/natif) ; sinon ré-extrait ce
-            # document précis maintenant, avant de l'analyser.
-            doc = await asyncio.to_thread(ensure_document_ocr, dossier_id, doc)
-            signals_by_id[doc.document_id] = doc
-            result = await asyncio.to_thread(analyze_document, doc, fields_for_doc)
+        semaphore = asyncio.Semaphore(_EXTRACTION_LLM_CONCURRENCY)
+
+        async def _run_one(doc: DocumentSignal, fields_for_doc: list[ExtractionField]) -> None:
+            current_doc = signals_by_id[doc.document_id]  # texte à jour après l'OCR ci-dessus
+            async with semaphore:
+                result = await asyncio.to_thread(analyze_document, current_doc, fields_for_doc)
             # Un même document donne lieu à plusieurs appels quand ses champs ont été lotis
             # (`_batch_fields`) : on fusionne au lieu d'écraser, sinon seul le dernier lot
-            # survivrait et tous les champs des lots précédents seraient déclarés absents.
-            results[doc.document_id] = merge_document_results(results.get(doc.document_id), result)
+            # survivrait et tous les champs des lots précédents seraient déclarés absents. Pas de
+            # verrou nécessaire : asyncio est mono-thread, ce bloc ne contient aucun `await`.
+            results[current_doc.document_id] = merge_document_results(
+                results.get(current_doc.document_id), result
+            )
             touched_field_ids.update(f.id for f in fields_for_doc)
             counters = await asyncio.to_thread(_read_counters)
             counters["fields_extracted"] = min(
@@ -199,13 +241,20 @@ async def run_extraction_pipeline(dossier_id: str, *, document_ids: list[str] | 
                 status=DossierStatus.EXTRACTING.value,
                 counters=counters,
                 document={
-                    "id": doc.document_id,
-                    "filename": doc.filename,
-                    "relative_path": doc.filename,
+                    "id": current_doc.document_id,
+                    "filename": current_doc.filename,
+                    "relative_path": current_doc.filename,
                     "fields_covered": len(fields_for_doc),
                     "error": result.error,
                 },
             )
+
+        llm_started_at = time.monotonic()
+        await asyncio.gather(*(_run_one(doc, fields_for_doc) for doc, fields_for_doc in calls))
+        logger.info(
+            "Extraction %s : %d appel(s) LLM (concurrence=%d) terminé(s) en %.1fs",
+            dossier_id, len(calls), _EXTRACTION_LLM_CONCURRENCY, time.monotonic() - llm_started_at,
+        )
         return results
 
     # --- Couche 1 : un appel par document de référence (ou par document sélectionné) --------

@@ -44,10 +44,15 @@ from app.store.repository import get_dossier, list_documents, list_extraction_re
 
 logger = logging.getLogger(__name__)
 
-# Concurrence bornée sur les appels LLM des sections (6 sections indépendantes) — même ordre de
-# grandeur que la Phase 1 (`_SYNTHESIS_LLM_CONCURRENCY`). `_retry` (app/mistral/client.py) absorbe
-# un 429 isolé avec backoff exponentiel.
-_AUDIT_LLM_CONCURRENCY = 4
+# Concurrence bornée sur les appels LLM des sections (6 sections indépendantes) et des relevés
+# « map » par document pivot (texte intégral, comme la Phase 1) — même valeur que
+# `_SYNTHESIS_LLM_CONCURRENCY` et `_EXTRACTION_LLM_CONCURRENCY` (app/extraction/pipeline.py, §voir
+# ce commentaire pour la mesure empirique à l'appui sur des appels courts : 0 échec jusqu'à 16
+# appels simultanés sur mistral-large-2512 ; §app/synthesis/pipeline.py pour la mesure équivalente
+# sur des appels « texte intégral » comme ceux du map ci-dessous : 0 échec à concurrence=8 avec un
+# gabarit ~26k caractères + max_tokens=16000). 8 retenu avec marge sous le plus haut palier testé
+# sans erreur. `_retry` (app/mistral/client.py) absorbe un 429 isolé avec backoff exponentiel.
+_AUDIT_LLM_CONCURRENCY = 8
 
 # Champ d'extraction (étape 3) utilisé pour géocoder le chantier auprès de Géorisques.
 _ADRESSE_CHANTIER_FIELD_ID = "adresse_chantier"
