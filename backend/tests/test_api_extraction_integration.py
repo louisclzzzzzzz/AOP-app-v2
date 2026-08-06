@@ -475,6 +475,13 @@ def test_layer2_semantic_retrieval_finds_a_reworded_document(isolated_workspace,
     assert entries["nom_moa"]["final_value"] == "Commune de Marly"
     assert entries["montants_totaux_ht"]["final_value"] == "1 000 000 EUR"
 
+    # Provenance tracée jusqu'à l'écran de validation : c'est là que se concentre le risque de
+    # valeur plausible mais fausse (cf. « Réception échelonnée » sur le dossier réel CHU Rouen,
+    # rempli depuis un calendrier de FORMATION), l'expert doit pouvoir le repérer sans relire
+    # chaque citation.
+    assert entries["stratigraphie"]["sources"][0]["selection"] == "semantic"
+    assert entries["stratigraphie"]["justification"].startswith("[Document rapproché par recherche sémantique")
+
 
 def test_run_extraction_with_manual_document_selection_ignores_reference_categories(isolated_workspace, monkeypatch):
     """Sélection manuelle : en limitant le run au seul CCAP (qui n'est catégorie de référence

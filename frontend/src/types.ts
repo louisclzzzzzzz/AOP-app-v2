@@ -255,6 +255,9 @@ export interface ExtractionSource {
   filename: string
   value: string
   confidence: number | null
+  /** 'semantic' : document proposé par la seule recherche sémantique de la couche 2 — il ne
+   *  contient aucun mot-clé du champ, la valeur mérite donc une relecture de la citation. */
+  selection?: 'semantic' | null
 }
 
 export interface ExtractionEntry {

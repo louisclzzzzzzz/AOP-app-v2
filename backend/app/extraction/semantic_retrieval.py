@@ -50,10 +50,15 @@ import re
 import sys
 import time
 from array import array
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
-from app.extraction.engine import MAX_LLM_CANDIDATES, keyword_ranked_candidates, split_paragraphs
+from app.extraction.engine import (
+    MAX_LLM_CANDIDATES,
+    ExtractionOutcome,
+    keyword_ranked_candidates,
+    split_paragraphs,
+)
 from app.extraction.extraction_schema import ExtractionField
 from app.ingestion.document_signal import DocumentSignal
 from app.mistral.client import call_embeddings
@@ -338,16 +343,63 @@ def append_semantic_candidates(
     return selected
 
 
+@dataclass(frozen=True)
+class Layer2Selection:
+    """Candidats retenus pour un champ, et parmi eux ceux que SEULE la recherche sémantique a
+    proposés — un document rapproché par le sens sans contenir aucun indice littéral du champ.
+
+    La distinction sert au marquage de provenance (`mark_semantic_origin`) : ces documents-là
+    n'auraient jamais été soumis au LLM auparavant, et un document seulement PROCHE du sujet
+    suffit parfois à lui faire produire une valeur plausible mais fausse. Constaté sur le dossier
+    réel CHU Rouen : le champ « Réception échelonnée » s'est vu remplir depuis « La FORMATION est
+    prévue en deux fois : une première fois à la réception… » — un calendrier de formation, pas
+    une réception échelonnée. L'expert doit pouvoir repérer ces valeurs d'un coup d'œil à l'écran
+    de validation, sans relire chaque citation."""
+
+    candidates: list[DocumentSignal]
+    semantic_only: frozenset[str]
+
+    @classmethod
+    def keyword_only(cls, candidates: list[DocumentSignal]) -> "Layer2Selection":
+        return cls(candidates=candidates, semantic_only=frozenset())
+
+
+def mark_semantic_origin(outcome: ExtractionOutcome, selection: Layer2Selection) -> ExtractionOutcome:
+    """Signale, dans la décision d'un champ, que sa valeur provient d'un document rapproché par
+    la seule recherche sémantique : drapeau `selection` sur la source concernée (affiché comme un
+    badge à l'écran de validation) et mention en tête de justification (reprise telle quelle par
+    le rapport Markdown et l'export Excel, qui affichent la justification et pas les sources)."""
+    if not selection.semantic_only or outcome.value is None:
+        return outcome
+    sources = [
+        {**source, "selection": "semantic"} if source.get("document_id") in selection.semantic_only else source
+        for source in outcome.sources
+    ]
+    if not any(source.get("selection") == "semantic" for source in sources):
+        return outcome
+    justification = _SEMANTIC_ORIGIN_NOTE + (outcome.justification or "")
+    return replace(outcome, sources=sources, justification=justification)
+
+
+_SEMANTIC_ORIGIN_NOTE = (
+    "[Document rapproché par recherche sémantique — il ne contient aucun mot-clé du champ, "
+    "vérifier la citation.] "
+)
+
+
 def select_layer2_candidates(
     missing_fields: list[ExtractionField], documents: list[DocumentSignal]
-) -> dict[str, list[DocumentSignal]]:
-    """Documents candidats de la couche 2, par id de champ — mots-clés fusionnés avec la
-    recherche sémantique.
+) -> dict[str, Layer2Selection]:
+    """Documents candidats de la couche 2, par id de champ — mots-clés complétés par la recherche
+    sémantique.
 
     Ne lève jamais : tout échec de vectorisation retombe sur le classement par mots-clés seul,
     c'est-à-dire exactement le comportement d'avant."""
     keyword_rankings = {f.id: keyword_ranked_candidates(f, documents) for f in missing_fields}
-    keyword_only = {field_id: ranking[:MAX_LLM_CANDIDATES] for field_id, ranking in keyword_rankings.items()}
+    keyword_only = {
+        field_id: Layer2Selection.keyword_only(ranking[:MAX_LLM_CANDIDATES])
+        for field_id, ranking in keyword_rankings.items()
+    }
     if not missing_fields:
         return keyword_only
 
@@ -375,8 +427,10 @@ def select_layer2_candidates(
         )
         return keyword_only
 
-    return {
-        f.id: append_semantic_candidates(
+    selections: dict[str, Layer2Selection] = {}
+    for f in missing_fields:
+        kept = keyword_rankings[f.id][:MAX_LLM_CANDIDATES]
+        candidates = append_semantic_candidates(
             keyword_rankings[f.id],
             semantic_ranked_candidates(
                 f, documents, index=index, query=query_vectors[f.id], min_similarity=min_similarity
@@ -384,5 +438,12 @@ def select_layer2_candidates(
             keyword_limit=MAX_LLM_CANDIDATES,
             extra=extra,
         )
-        for f in missing_fields
-    }
+        # « Sémantique seul » = ajouté par les embeddings, donc absent du classement mots-clés
+        # ENTIER (pas seulement de sa tête) : un document contenant un indice du champ, même mal
+        # classé, n'est pas un rapprochement par le sens.
+        keyword_ids = {d.document_id for d in keyword_rankings[f.id]}
+        selections[f.id] = Layer2Selection(
+            candidates=candidates,
+            semantic_only=frozenset(d.document_id for d in candidates[len(kept):] if d.document_id not in keyword_ids),
+        )
+    return selections

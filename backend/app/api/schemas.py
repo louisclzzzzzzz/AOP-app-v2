@@ -204,6 +204,11 @@ class ExtractionSourceOut(BaseModel):
     filename: str
     value: str
     confidence: float | None
+    # "semantic" : document proposé par la seule recherche sémantique de la couche 2 — il ne
+    # contient aucun mot-clé du champ (§app/extraction/semantic_retrieval.py). Affiché comme un
+    # badge à l'écran de validation : c'est là que se concentre le risque d'une valeur plausible
+    # mais tirée d'un document qui ne répond pas vraiment à la question posée.
+    selection: str | None = None
 
 
 class ExtractionEntryOut(BaseModel):

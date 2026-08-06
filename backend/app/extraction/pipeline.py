@@ -41,7 +41,7 @@ from app.extraction.engine import (
     resolve_field,
 )
 from app.extraction.extraction_schema import ExtractionField, load_extraction_schema
-from app.extraction.semantic_retrieval import select_layer2_candidates
+from app.extraction.semantic_retrieval import mark_semantic_origin, select_layer2_candidates
 from app.ingestion.document_signal import DocumentSignal, build_document_signal, ensure_document_ocr
 from app.pipeline_support import finalize_stage, start_stage
 from app.progress import progress_manager
@@ -303,23 +303,34 @@ async def run_extraction_pipeline(dossier_id: str, *, document_ids: list[str] | 
         # vectorise le dossier (`select_layer2_candidates`), ce qu'il serait absurde de refaire à
         # chaque champ. Ne lève jamais — repli sur les mots-clés seuls si les embeddings sont
         # indisponibles.
-        layer2_by_field = await asyncio.to_thread(select_layer2_candidates, missing_fields, signals)
-        layer2_calls = plan_layer2_calls(missing_fields, signals, candidates_by_field=layer2_by_field)
+        selections = await asyncio.to_thread(select_layer2_candidates, missing_fields, signals)
+        layer2_calls = plan_layer2_calls(
+            missing_fields,
+            signals,
+            candidates_by_field={field_id: sel.candidates for field_id, sel in selections.items()},
+        )
         layer2_results = await _run_calls(layer2_calls)
-        layer2_outcomes: dict[str, ExtractionOutcome] = {
-            f.id: resolve_field(
+
+        def _layer2_outcome(f: ExtractionField) -> ExtractionOutcome:
+            selection = selections[f.id]
+            outcome = resolve_field(
                 f,
-                candidates=layer2_by_field.get(f.id, []),
+                candidates=selection.candidates,
                 results_by_document=layer2_results,
                 match_layer=MatchLayer.CONTENT.value,
                 cross_check_required=False,
             )
-            or absent_outcome(
-                "Aucune valeur trouvée, y compris après recherche élargie (mots-clés et recherche "
-                "sémantique) sur l'ensemble du dossier."
-            )
-            for f in missing_fields
-        }
+            if outcome is None:
+                return absent_outcome(
+                    "Aucune valeur trouvée, y compris après recherche élargie (mots-clés et "
+                    "recherche sémantique) sur l'ensemble du dossier."
+                )
+            # Une valeur tirée d'un document que seuls les embeddings ont proposé est signalée
+            # comme telle : c'est là que le risque de valeur plausible mais fausse se concentre,
+            # et l'expert doit pouvoir la repérer sans relire chaque citation.
+            return mark_semantic_origin(outcome, selection)
+
+        layer2_outcomes: dict[str, ExtractionOutcome] = {f.id: _layer2_outcome(f) for f in missing_fields}
         await asyncio.to_thread(_persist, layer2_outcomes)
 
     # --- Synthèse textuelle : un appel unique à partir des valeurs déjà résolues ------------

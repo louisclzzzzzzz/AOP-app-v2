@@ -144,7 +144,7 @@ def test_document_without_any_keyword_match_is_selected_when_semantically_releva
 
     selected = sr.select_layer2_candidates([field], [blind_spot, *unrelated])
 
-    assert [d.document_id for d in selected["stratigraphie"]][0] == "doc-g2"
+    assert [d.document_id for d in selected["stratigraphie"].candidates][0] == "doc-g2"
 
 
 def test_keyword_hit_stays_ahead_of_semantic_only_candidate(semantic_enabled):
@@ -157,7 +157,7 @@ def test_keyword_hit_stays_ahead_of_semantic_only_candidate(semantic_enabled):
 
     selected = sr.select_layer2_candidates([field], [semantic_only, literal])
 
-    assert [d.document_id for d in selected["stratigraphie"]] == ["doc-cctp", "doc-g2"]
+    assert [d.document_id for d in selected["stratigraphie"].candidates] == ["doc-cctp", "doc-g2"]
 
 
 def test_keyword_candidates_are_never_displaced(semantic_enabled):
@@ -174,7 +174,7 @@ def test_keyword_candidates_are_never_displaced(semantic_enabled):
     documents = [*semantic_docs, *keyword_docs]
 
     before = [d.document_id for d in layer2_candidates(field, documents)]
-    after = [d.document_id for d in sr.select_layer2_candidates([field], documents)["stratigraphie"]]
+    after = [d.document_id for d in sr.select_layer2_candidates([field], documents)["stratigraphie"].candidates]
 
     assert after[: len(before)] == before  # inchangés, et toujours en tête
     assert set(before) <= set(after)
@@ -192,7 +192,7 @@ def test_selection_adds_a_bounded_number_of_semantic_candidates(semantic_enabled
 
     selected = sr.select_layer2_candidates([field], docs)
 
-    assert len(selected["stratigraphie"]) == MAX_LLM_CANDIDATES + extra
+    assert len(selected["stratigraphie"].candidates) == MAX_LLM_CANDIDATES + extra
 
 
 def test_extra_semantic_candidates_zero_disables_the_semantic_contribution(semantic_enabled, monkeypatch):
@@ -202,7 +202,7 @@ def test_extra_semantic_candidates_zero_disables_the_semantic_contribution(seman
     field = _field(id="stratigraphie", libelle="Stratigraphie", indices=[re.compile(r"stratigraphie")])
     blind_spot = _doc("doc-g2", "Nature des terrains reconnue par sondages pressiométriques.")
 
-    assert sr.select_layer2_candidates([field], [blind_spot])["stratigraphie"] == []
+    assert sr.select_layer2_candidates([field], [blind_spot])["stratigraphie"].candidates == []
 
 
 def test_min_similarity_floor_filters_out_distant_documents(semantic_enabled, monkeypatch):
@@ -214,7 +214,7 @@ def test_min_similarity_floor_filters_out_distant_documents(semantic_enabled, mo
     config = get_models_config()
     monkeypatch.setitem(config["embeddings"], "min_similarity", 0.9)
 
-    assert sr.select_layer2_candidates([field], [far_away])["stratigraphie"] == []
+    assert sr.select_layer2_candidates([field], [far_away])["stratigraphie"].candidates == []
 
 
 # --- Dégradation : jamais d'échec de run à cause des embeddings ---------------------------------
@@ -233,7 +233,7 @@ def test_falls_back_to_keyword_ranking_when_embeddings_fail(semantic_enabled, mo
 
     selected = sr.select_layer2_candidates([field], [semantic_only, literal])
 
-    assert [d.document_id for d in selected["stratigraphie"]] == ["doc-cctp"]
+    assert [d.document_id for d in selected["stratigraphie"].candidates] == ["doc-cctp"]
 
 
 def test_disabled_in_config_keeps_keyword_only_selection(semantic_enabled, monkeypatch):
@@ -250,7 +250,7 @@ def test_disabled_in_config_keeps_keyword_only_selection(semantic_enabled, monke
 
     selected = sr.select_layer2_candidates([field], [semantic_only, literal])
 
-    assert [d.document_id for d in selected["stratigraphie"]] == ["doc-cctp"]
+    assert [d.document_id for d in selected["stratigraphie"].candidates] == ["doc-cctp"]
 
 
 def test_documents_without_text_are_ignored(semantic_enabled):
@@ -343,3 +343,62 @@ def test_append_semantic_candidates_fills_everything_when_keywords_find_nothing(
 def test_cosine_of_identical_unit_vectors_is_one():
     vector = sr._unit([3.0, 4.0])
     assert math.isclose(sr._cosine(vector, vector), 1.0, rel_tol=1e-6)
+
+
+# --- Traçabilité de l'origine sémantique --------------------------------------------------------
+
+def _outcome(value, sources):
+    from app.extraction.engine import ExtractionOutcome
+
+    return ExtractionOutcome(
+        match_layer="content", value=value, confidence=0.7, justification="Trouvé.", citation="cite",
+        sources=sources, cross_check_status=None, model_name="m", model_version="v", error=None,
+    )
+
+
+def test_selection_flags_documents_that_only_the_semantic_search_proposed(semantic_enabled):
+    field = _field(id="stratigraphie", libelle="Stratigraphie", indices=[re.compile(r"stratigraphie")])
+    literal = _doc("doc-cctp", "La stratigraphie du sol est détaillée au chapitre 3.")
+    semantic_only = _doc("doc-g2", "Nature des terrains reconnue par sondages pressiométriques.")
+
+    selection = sr.select_layer2_candidates([field], [semantic_only, literal])["stratigraphie"]
+
+    assert selection.semantic_only == frozenset({"doc-g2"})
+
+
+def test_a_keyword_document_pushed_out_of_the_top_is_not_flagged_semantic(semantic_enabled):
+    """Un document contenant un indice du champ, même mal classé, n'est pas un rapprochement par
+    le sens — le marquer comme tel serait un faux signal pour l'expert."""
+    field = _field(id="stratigraphie", libelle="Stratigraphie", indices=[re.compile(r"stratigraphie")])
+    docs = [_doc(f"kw-{i}", f"La stratigraphie, variante {i}.") for i in range(6)]
+
+    selection = sr.select_layer2_candidates([field], docs)["stratigraphie"]
+
+    assert selection.semantic_only == frozenset()
+
+
+def test_mark_semantic_origin_flags_the_source_and_the_justification():
+    selection = sr.Layer2Selection(candidates=[], semantic_only=frozenset({"doc-g2"}))
+    marked = sr.mark_semantic_origin(
+        _outcome("Marne argileuse", [{"document_id": "doc-g2", "filename": "g2.pdf", "value": "x", "confidence": 0.7}]),
+        selection,
+    )
+
+    assert marked.sources[0]["selection"] == "semantic"
+    assert marked.justification.startswith("[Document rapproché par recherche sémantique")
+    assert "Trouvé." in marked.justification
+
+
+def test_mark_semantic_origin_leaves_a_keyword_sourced_value_untouched():
+    selection = sr.Layer2Selection(candidates=[], semantic_only=frozenset({"doc-g2"}))
+    outcome = _outcome("Marne", [{"document_id": "doc-cctp", "filename": "cctp.pdf", "value": "x", "confidence": 0.9}])
+
+    marked = sr.mark_semantic_origin(outcome, selection)
+
+    assert marked is outcome  # aucune copie, aucun marquage
+
+
+def test_mark_semantic_origin_ignores_an_absent_field():
+    selection = sr.Layer2Selection(candidates=[], semantic_only=frozenset({"doc-g2"}))
+    outcome = _outcome(None, [])
+    assert sr.mark_semantic_origin(outcome, selection) is outcome

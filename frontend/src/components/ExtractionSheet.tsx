@@ -589,6 +589,14 @@ ${auditMd}
                                 >
                                   {documentPathById.get(s.document_id) ?? s.filename}
                                 </a>
+                                {s.selection === 'semantic' && (
+                                  <span
+                                    className={`ml-1 rounded bg-amber-100 px-1 text-[10px] text-amber-700 ${HOVER_HINT_CLASS}`}
+                                    title="Document rapproché par recherche sémantique : il ne contient aucun mot-clé de cette donnée. La valeur est plausible mais mérite une relecture de la citation."
+                                  >
+                                    sémantique
+                                  </span>
+                                )}
                               </span>
                             ))
                           : '—'}
