@@ -25,6 +25,7 @@ from mistralai.extra.utils.response_format import (
 )
 from pydantic import BaseModel
 
+from app.mistral import call_log
 from app.settings import get_models_config, get_settings
 
 logger = logging.getLogger(__name__)
@@ -603,10 +604,13 @@ def call_structured_chat(
     # réseau/API MistralError) — d'où cette seconde boucle. Chaque rattrapage relève légèrement la
     # température ET ajoute une consigne de réparation explicite : à consigne inchangée, le seul
     # effet de la température est de recasser le JSON ailleurs (0% de rattrapage mesuré).
+    t0 = time.monotonic()
     response = None
     parsed: ModelT | None = None
+    attempts = 0
     last_parse_error: Exception | None = None
     for attempt in range(parse_retries + 1):
+        attempts = attempt + 1
         temperature = base_temperature if attempt == 0 else min(0.4, base_temperature + 0.2 * attempt)
         prompt = user_prompt if attempt == 0 else user_prompt + _JSON_REPAIR_INSTRUCTION
         response = _retry(lambda: _do(temperature, prompt), what=what)
@@ -650,15 +654,40 @@ def call_structured_chat(
                     len(content),
                     len(content) - len(content.rstrip()),
                 )
-    if parsed is None:
-        raise RuntimeError(
-            f"Réponse structurée non parsable après {parse_retries + 1} tentative(s) pour {what} : {last_parse_error}"
-        )
 
-    assert response is not None
-    if response.usage:
+    latency_ms = (time.monotonic() - t0) * 1000
+    usage_dict = None
+    if response is not None and response.usage:
+        usage_dict = {
+            "prompt_tokens": response.usage.prompt_tokens,
+            "completion_tokens": response.usage.completion_tokens,
+            "total_tokens": response.usage.total_tokens,
+        }
         logger.info(
             "USAGE llm what=%r model=%s prompt_tokens=%s completion_tokens=%s total_tokens=%s",
             what, model, response.usage.prompt_tokens, response.usage.completion_tokens, response.usage.total_tokens,
+        )
+    if parsed is None:
+        if call_log.is_enabled():
+            call_log.log_llm_call(
+                what=what, model_requested=model, model_served=getattr(response, "model", None),
+                system_prompt=system_prompt, user_prompt=user_prompt,
+                output=None, usage=usage_dict, latency_ms=latency_ms, attempts=attempts,
+                error=str(last_parse_error),
+            )
+        raise RuntimeError(
+            f"Réponse structurée non parsable après {parse_retries + 1} tentative(s) pour {what} : {last_parse_error}"
+        )
+    assert response is not None
+    if call_log.is_enabled():
+        try:
+            output_dump = parsed.model_dump(mode="json")
+        except Exception:
+            output_dump = None
+        call_log.log_llm_call(
+            what=what, model_requested=model, model_served=getattr(response, "model", None),
+            system_prompt=system_prompt, user_prompt=user_prompt,
+            output=output_dump, usage=usage_dict, latency_ms=latency_ms, attempts=attempts,
+            error=None,
         )
     return parsed, getattr(response, "model", None)

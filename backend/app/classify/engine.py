@@ -26,6 +26,7 @@ from pydantic import BaseModel, create_model
 
 from app.classify.naming import build_normalized_filename
 from app.classify.taxonomy import Taxonomy, TaxonomyCategory, load_taxonomy, strip_accents
+from app.mistral import call_log
 from app.mistral.client import call_structured_chat
 from app.mistral.validation import confidence_validator
 from app.settings import get_models_config
@@ -330,6 +331,15 @@ def _build_batch_user_prompt(*, items: list[AmbiguousDocument], taxonomy: Taxono
             if item.content_excerpt
             else "(aucun contenu extrait)"
         )
+        if item.content_excerpt and len(item.content_excerpt) > BATCH_CONTENT_EXCERPT_MAX_CHARS:
+            call_log.log_truncation(
+                source="classification_batch",
+                document=item.filename,
+                original_chars=len(item.content_excerpt),
+                kept_chars=len(excerpt),
+                limit_name="BATCH_CONTENT_EXCERPT_MAX_CHARS",
+                limit_value=BATCH_CONTENT_EXCERPT_MAX_CHARS,
+            )
         blocks.append(f"""--- Document index={i} ---
 Chemin d'origine dans le DCE : {item.relative_path}
 Nom de fichier : {item.filename}

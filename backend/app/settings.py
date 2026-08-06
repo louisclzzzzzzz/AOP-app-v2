@@ -84,6 +84,10 @@ class Settings(BaseSettings):
     def resolved_access_codes(self) -> list[str]:
         return [c.strip() for c in self.access_codes.split(",") if c.strip()]
 
+    # Répertoire de journalisation complète des appels Mistral (entrée/sortie/coût/troncatures) —
+    # désactivé par défaut (None), à ne renseigner que pour un run e2e instrumenté (§app/mistral/call_log.py).
+    api_call_log_dir: Path | None = None
+
     def model_post_init(self, __context: Any) -> None:
         resolved = Path(self.workspace_dir).resolve()
         if not self.database_url:
@@ -95,6 +99,8 @@ class Settings(BaseSettings):
         self.workspace_dir = _win_long_path(resolved)
         if not self.secret_key:
             self.secret_key = secrets.token_urlsafe(32)
+        if self.api_call_log_dir is not None:
+            self.api_call_log_dir = Path(self.api_call_log_dir).resolve()
 
 
 class MistralApiKeySettings(BaseSettings):

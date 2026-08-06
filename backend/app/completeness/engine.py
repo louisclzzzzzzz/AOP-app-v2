@@ -30,6 +30,7 @@ from pydantic import BaseModel, create_model
 from app.classify.taxonomy import strip_accents
 from app.completeness.pieces_checklist import Piece
 from app.ingestion.document_signal import DocumentSignal
+from app.mistral import call_log
 from app.mistral.client import call_structured_chat
 from app.mistral.validation import confidence_validator
 from app.settings import get_models_config
@@ -236,6 +237,15 @@ def _build_document_user_prompt(*, doc: DocumentSignal, pieces: list[Piece]) -> 
         for p in pieces
     )
     excerpt = doc.content_excerpt[:CONTENT_EXCERPT_MAX_CHARS]
+    if len(doc.content_excerpt) > CONTENT_EXCERPT_MAX_CHARS:
+        call_log.log_truncation(
+            source="completeness",
+            document=doc.filename,
+            original_chars=len(doc.content_excerpt),
+            kept_chars=len(excerpt),
+            limit_name="CONTENT_EXCERPT_MAX_CHARS",
+            limit_value=CONTENT_EXCERPT_MAX_CHARS,
+        )
     return f"""Document candidat : {doc.filename}
 
 Pièces recherchées dans CE document ({len(pieces)}) :

@@ -34,6 +34,7 @@ from pydantic import BaseModel, create_model
 
 from app.extraction.extraction_schema import ExtractionField
 from app.ingestion.document_signal import DocumentSignal
+from app.mistral import call_log
 from app.mistral.client import call_structured_chat
 from app.mistral.validation import confidence_validator
 from app.settings import get_models_config
@@ -316,6 +317,16 @@ def analyze_document(doc: DocumentSignal, fields: list[ExtractionField]) -> Docu
     field_ids = tuple(f.id for f in fields)
     response_model = _document_response_model(field_ids)
     excerpt = _select_relevant_excerpt(doc, fields)
+    if len(doc.content_excerpt) > len(excerpt):
+        call_log.log_truncation(
+            source="extraction_relevant_excerpt",
+            document=doc.filename,
+            original_chars=len(doc.content_excerpt),
+            kept_chars=len(excerpt),
+            limit_name="DOCUMENT_EXCERPT_MAX_CHARS",
+            limit_value=DOCUMENT_EXCERPT_MAX_CHARS,
+            extra={"method": "scored_paragraph_selection"},
+        )
 
     try:
         decision, api_model_name = call_structured_chat(
