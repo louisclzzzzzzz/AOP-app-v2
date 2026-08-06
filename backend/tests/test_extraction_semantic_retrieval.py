@@ -148,8 +148,9 @@ def test_document_without_any_keyword_match_is_selected_when_semantically_releva
 
 
 def test_keyword_hit_stays_ahead_of_semantic_only_candidate(semantic_enabled):
-    """La fusion ne sacrifie pas la précision des mots-clés : un document qui contient littéralement
-    l'indice reste en tête, le candidat purement sémantique complète la sélection."""
+    """La précision des mots-clés n'est pas sacrifiée : un document qui contient littéralement
+    l'indice reste en tête (donc `resolve_field` retient sa valeur en priorité), le candidat
+    purement sémantique complète la sélection."""
     field = _field(id="stratigraphie", libelle="Stratigraphie", indices=[re.compile(r"stratigraphie")])
     literal = _doc("doc-cctp", "La stratigraphie du sol est détaillée au chapitre 3.")
     semantic_only = _doc("doc-g2", "Nature des terrains reconnue par sondages pressiométriques.")
@@ -159,16 +160,49 @@ def test_keyword_hit_stays_ahead_of_semantic_only_candidate(semantic_enabled):
     assert [d.document_id for d in selected["stratigraphie"]] == ["doc-cctp", "doc-g2"]
 
 
-def test_selection_stays_capped_at_max_llm_candidates(semantic_enabled):
-    """Le budget d'appels LLM ne doit pas bouger : la fusion reste plafonnée comme avant."""
-    from app.extraction.engine import MAX_LLM_CANDIDATES
+def test_keyword_candidates_are_never_displaced(semantic_enabled):
+    """LA propriété qui compte : la sélection d'avant reste un SOUS-ENSEMBLE de la nouvelle.
+
+    Mesuré sur le dossier réel dce_grand_pic2, une fusion à plafond constant délogeait un document
+    mots-clés porteur de la réponse et faisait régresser un champ déjà correct. Un run automatique
+    ne doit jamais perdre ce qu'il trouvait avant."""
+    from app.extraction.engine import layer2_candidates
 
     field = _field(id="stratigraphie", libelle="Stratigraphie", indices=[re.compile(r"stratigraphie")])
-    docs = [_doc(f"doc-{i}", f"La stratigraphie et la nature des terrains, variante {i}.") for i in range(8)]
+    keyword_docs = [_doc(f"kw-{i}", f"La stratigraphie, variante {i}.") for i in range(5)]
+    semantic_docs = [_doc(f"sem-{i}", f"Nature des terrains, sondages pressiométriques {i}.") for i in range(5)]
+    documents = [*semantic_docs, *keyword_docs]
+
+    before = [d.document_id for d in layer2_candidates(field, documents)]
+    after = [d.document_id for d in sr.select_layer2_candidates([field], documents)["stratigraphie"]]
+
+    assert after[: len(before)] == before  # inchangés, et toujours en tête
+    assert set(before) <= set(after)
+
+
+def test_selection_adds_a_bounded_number_of_semantic_candidates(semantic_enabled):
+    """Le surcoût est borné et explicite : `MAX_LLM_CANDIDATES` mots-clés + au plus
+    `extra_semantic_candidates` documents supplémentaires."""
+    from app.extraction.engine import MAX_LLM_CANDIDATES
+    from app.settings import get_models_config
+
+    extra = get_models_config()["embeddings"]["extra_semantic_candidates"]
+    field = _field(id="stratigraphie", libelle="Stratigraphie", indices=[re.compile(r"stratigraphie")])
+    docs = [_doc(f"doc-{i}", f"La stratigraphie et la nature des terrains, variante {i}.") for i in range(12)]
 
     selected = sr.select_layer2_candidates([field], docs)
 
-    assert len(selected["stratigraphie"]) == MAX_LLM_CANDIDATES
+    assert len(selected["stratigraphie"]) == MAX_LLM_CANDIDATES + extra
+
+
+def test_extra_semantic_candidates_zero_disables_the_semantic_contribution(semantic_enabled, monkeypatch):
+    from app.settings import get_models_config
+
+    monkeypatch.setitem(get_models_config()["embeddings"], "extra_semantic_candidates", 0)
+    field = _field(id="stratigraphie", libelle="Stratigraphie", indices=[re.compile(r"stratigraphie")])
+    blind_spot = _doc("doc-g2", "Nature des terrains reconnue par sondages pressiométriques.")
+
+    assert sr.select_layer2_candidates([field], [blind_spot])["stratigraphie"] == []
 
 
 def test_min_similarity_floor_filters_out_distant_documents(semantic_enabled, monkeypatch):
@@ -282,22 +316,28 @@ def test_cache_is_invalidated_when_the_model_changes(semantic_enabled, monkeypat
     assert len(calls) == 1
 
 
-# --- Fusion ---------------------------------------------------------------------------------
+# --- Composition -----------------------------------------------------------------------------
 
-def test_fuse_rankings_promotes_documents_ranked_by_both():
-    """Un document trouvé par les deux méthodes passe devant un premier de classement unique."""
-    a, b, c = _doc("a", "x"), _doc("b", "x"), _doc("c", "x")
-    fused = sr.fuse_rankings([[a, b], [b, c]], limit=3)
-    assert [d.document_id for d in fused] == ["b", "a", "c"]
-
-
-def test_fuse_rankings_reserves_a_seat_for_the_semantic_ranking():
-    """Avec deux classements disjoints, la sélection alterne : le classement sémantique obtient une
-    place même quand les mots-clés remplissent déjà le plafond."""
+def test_append_semantic_candidates_keeps_keyword_order_then_adds():
     keyword = [_doc(f"k{i}", "x") for i in range(3)]
     semantic = [_doc(f"s{i}", "x") for i in range(3)]
-    fused = sr.fuse_rankings([keyword, semantic], limit=3)
-    assert [d.document_id for d in fused] == ["k0", "s0", "k1"]
+    composed = sr.append_semantic_candidates(keyword, semantic, keyword_limit=3, extra=2)
+    assert [d.document_id for d in composed] == ["k0", "k1", "k2", "s0", "s1"]
+
+
+def test_append_semantic_candidates_does_not_duplicate_a_shared_document():
+    shared = _doc("commun", "x")
+    keyword = [shared, _doc("k1", "x")]
+    semantic = [shared, _doc("s1", "x")]
+    composed = sr.append_semantic_candidates(keyword, semantic, keyword_limit=3, extra=2)
+    assert [d.document_id for d in composed] == ["commun", "k1", "s1"]
+
+
+def test_append_semantic_candidates_fills_everything_when_keywords_find_nothing():
+    """Cas de l'angle mort total : aucun document ne contient d'indice du champ."""
+    semantic = [_doc(f"s{i}", "x") for i in range(4)]
+    composed = sr.append_semantic_candidates([], semantic, keyword_limit=3, extra=2)
+    assert [d.document_id for d in composed] == ["s0", "s1"]
 
 
 def test_cosine_of_identical_unit_vectors_is_one():

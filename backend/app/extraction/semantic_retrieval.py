@@ -17,12 +17,16 @@ Principe retenu : ne pas remplacer les mots-clés, les FUSIONNER avec un classem
 - Le classement sémantique, lui, ne filtre rien : il ordonne TOUS les documents du dossier par
   proximité de sens, y compris ceux dont le score mots-clés est nul — c'est exactement la
   population que l'ancien filtre supprimait.
-- La fusion se fait par Reciprocal Rank Fusion (`_RRF_K`), qui combine deux classements sans
-  avoir à comparer des échelles incomparables (un compte de motifs et un cosinus). Un document
-  bien classé par les deux passe devant ; à égalité, les mots-clés gardent la priorité (le
-  comportement historique reste en tête de liste).
+- La composition est STRICTEMENT ADDITIVE (`append_semantic_candidates`) : les candidats
+  mots-clés sont conservés tels quels, en tête, et la recherche sémantique ne fait qu'AJOUTER
+  quelques documents (`extra_semantic_candidates`). Une première version fusionnait les deux
+  classements à plafond constant (Reciprocal Rank Fusion) ; mesurée sur le dossier réel
+  dce_grand_pic2, elle gagnait 3 champs mais en PERDAIT un, un document mots-clés porteur de la
+  réponse s'étant fait déloger. Sur un run automatique, une régression coûte plus cher qu'un
+  gain : voir le détail dans `append_semantic_candidates`.
 
-Le budget d'appels LLM ne bouge pas : la fusion est plafonnée au même `MAX_LLM_CANDIDATES`.
+Le surcoût est donc borné et explicite : au plus `extra_semantic_candidates` documents de plus
+par champ resté absent, les `MAX_LLM_CANDIDATES` mots-clés étant inchangés.
 
 Découpage : chaque document est vectorisé PAR MORCEAUX (`chunk_max_chars`) et son score est le
 meilleur de ses morceaux. Vectoriser un document entier d'un bloc dilue le passage pertinent dans
@@ -57,14 +61,6 @@ from app.settings import get_models_config, get_settings
 
 logger = logging.getLogger(__name__)
 
-# Constante usuelle de la Reciprocal Rank Fusion : amortit l'écart entre les premiers rangs, pour
-# qu'un document classé 1er par un seul des deux classements ne balaie pas un document classé 2e
-# par les deux.
-_RRF_K = 60
-# Profondeur retenue dans chaque classement avant fusion. Au-delà, un document n'a plus aucune
-# chance d'entrer dans les `MAX_LLM_CANDIDATES` retenus, et le prendre en compte ne ferait
-# qu'ajouter du bruit.
-_RANK_DEPTH = 10
 # Version du format du cache de vecteurs : un cache écrit par une version antérieure est ignoré
 # (et réécrit) plutôt que mal relu.
 _CACHE_FORMAT = 1
@@ -305,24 +301,41 @@ def semantic_ranked_candidates(
     return [doc for _score, doc in ranked]
 
 
-# --- Fusion des deux classements ----------------------------------------------------------------
+# --- Composition des deux classements -----------------------------------------------------------
 
-def fuse_rankings(rankings: list[list[DocumentSignal]], *, limit: int) -> list[DocumentSignal]:
-    """Reciprocal Rank Fusion : score(d) = Σ 1/(k + rang(d)) sur les classements où d apparaît.
+def append_semantic_candidates(
+    keyword_ranking: list[DocumentSignal],
+    semantic_ranking: list[DocumentSignal],
+    *,
+    keyword_limit: int,
+    extra: int,
+) -> list[DocumentSignal]:
+    """Candidats mots-clés d'abord, INCHANGÉS, puis les meilleurs documents sémantiques qui n'y
+    figurent pas déjà.
 
-    Évite d'avoir à mettre sur la même échelle un compte de motifs et un cosinus. À score égal,
-    l'ordre des classements fournis tranche — `select_layer2_candidates` passe les mots-clés en
-    premier, de sorte que le comportement historique reste en tête."""
-    scores: dict[str, float] = {}
-    tiebreak: dict[str, tuple[int, int]] = {}
-    docs: dict[str, DocumentSignal] = {}
-    for ranking_index, ranking in enumerate(rankings):
-        for rank, doc in enumerate(ranking[:_RANK_DEPTH], start=1):
-            scores[doc.document_id] = scores.get(doc.document_id, 0.0) + 1.0 / (_RRF_K + rank)
-            tiebreak.setdefault(doc.document_id, (ranking_index, rank))
-            docs.setdefault(doc.document_id, doc)
-    ordered = sorted(scores, key=lambda doc_id: (-scores[doc_id], tiebreak[doc_id]))
-    return [docs[doc_id] for doc_id in ordered[:limit]]
+    Strictement ADDITIF, et ce n'est pas un détail. Une première version fusionnait les deux
+    classements par Reciprocal Rank Fusion à plafond constant. Vérifié sur le dossier réel
+    dce_grand_pic2 : elle remplissait bien 3 champs jusque-là absents, mais en PERDAIT un
+    (`adresse_moa`, « 7 Chemin du Vieux Chêne 38240 MEYLAN ») — le document mots-clés qui portait
+    la réponse s'était fait déloger du top 3 par des candidats sémantiques. Sur un run automatique
+    relu par un expert, régresser sur un champ déjà correct coûte bien plus cher que d'en gagner
+    un nouveau : la sélection d'avant doit rester un SOUS-ENSEMBLE de la nouvelle, à quoi s'ajoute
+    un petit nombre de documents supplémentaires.
+
+    L'ordre compte aussi : `resolve_field` retient le PREMIER document qui confirme une valeur
+    (hors recoupement). Les candidats mots-clés en tête, ce sont donc les valeurs historiques qui
+    priment, et le sémantique ne se prononce que là où ils ne trouvaient rien."""
+    selected = list(keyword_ranking[:keyword_limit])
+    known = {doc.document_id for doc in selected}
+    for doc in semantic_ranking:
+        if extra <= 0:
+            break
+        if doc.document_id in known:
+            continue
+        selected.append(doc)
+        known.add(doc.document_id)
+        extra -= 1
+    return selected
 
 
 def select_layer2_candidates(
@@ -342,6 +355,9 @@ def select_layer2_candidates(
     if not cfg.get("enabled", False):
         return keyword_only
     min_similarity = float(cfg.get("min_similarity", 0.0))
+    extra = int(cfg.get("extra_semantic_candidates", 2))
+    if extra <= 0:
+        return keyword_only
 
     try:
         index = build_semantic_index(documents)
@@ -360,14 +376,13 @@ def select_layer2_candidates(
         return keyword_only
 
     return {
-        f.id: fuse_rankings(
-            [
-                keyword_rankings[f.id],
-                semantic_ranked_candidates(
-                    f, documents, index=index, query=query_vectors[f.id], min_similarity=min_similarity
-                ),
-            ],
-            limit=MAX_LLM_CANDIDATES,
+        f.id: append_semantic_candidates(
+            keyword_rankings[f.id],
+            semantic_ranked_candidates(
+                f, documents, index=index, query=query_vectors[f.id], min_similarity=min_similarity
+            ),
+            keyword_limit=MAX_LLM_CANDIDATES,
+            extra=extra,
         )
         for f in missing_fields
     }

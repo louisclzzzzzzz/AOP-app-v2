@@ -701,12 +701,26 @@ def call_structured_chat(
 # avec le même plafond de requêtes par seconde.
 
 
+class _EmbeddingBatchTooLarge(RuntimeError):
+    """Lot refusé pour dépassement du plafond de tokens PAR REQUÊTE (erreur 400, code 3210).
+
+    Volontairement PAS une `MistralError` : `_retry` la retenterait à l'identique alors que le
+    refus est parfaitement déterministe, et `record_slot_failure` finirait par mettre la clé en
+    quarantaine alors qu'elle n'y est pour rien. La seule réponse utile est de re-découper."""
+
+
+def _is_batch_too_large(exc: Exception) -> bool:
+    text = str(exc).lower()
+    return "too many tokens" in text or '"code":"3210"' in text
+
+
 def _embedding_batches(texts: list[str], *, max_inputs: int, max_chars: int) -> Iterator[list[str]]:
     """Regroupe les textes en lots bornés à la fois en nombre d'entrées et en volume.
 
     `mistral-embed` est plafonné à 1 requête/s pour 20 M tokens/min
     (§modeles_mistral_limites.md) : le coût d'une vectorisation de dossier se mesure en NOMBRE
-    d'appels, pas en volume — d'où des lots aussi gros que le permet la configuration."""
+    d'appels, pas en volume — d'où des lots aussi gros que le permet la configuration, sous le
+    plafond de tokens par requête (§`embeddings.batch_max_chars` dans models.yaml)."""
     batch: list[str] = []
     batch_chars = 0
     for text in texts:
@@ -733,14 +747,8 @@ def call_embeddings(texts: list[str], *, what: str) -> list[list[float]]:
     max_inputs = int(cfg.get("batch_max_inputs", 128))
     max_chars = int(cfg.get("batch_max_chars", 200_000))
 
-    vectors: list[list[float]] = []
-    total_tokens = 0
-    t0 = time.monotonic()
-    # Une entrée vide fait échouer la requête ENTIÈRE, donc tout le lot : on la neutralise plutôt
-    # que de la retirer, l'appelant comptant sur un vecteur par texte fourni.
-    for batch in _embedding_batches([t or " " for t in texts], max_inputs=max_inputs, max_chars=max_chars):
-
-        def _do(batch: list[str] = batch) -> Any:
+    def _embed_batch(batch: list[str]) -> tuple[list[list[float]], int]:
+        def _do() -> Any:
             slot = _acquire_llm_slot()
             client = get_client(slot)
             try:
@@ -750,19 +758,52 @@ def call_embeddings(texts: list[str], *, what: str) -> list[list[float]]:
                     timeout_ms=int(timeout) * 1000 if timeout else None,
                 )
             except Exception as exc:
+                if _is_batch_too_large(exc):
+                    # Avant `record_slot_failure` : la clé n'est pas en cause, c'est la requête
+                    # qui est trop grosse.
+                    raise _EmbeddingBatchTooLarge(str(exc)) from exc
                 record_slot_failure(slot, exc)
                 raise
             record_slot_success(slot)
             return response
 
-        response = _retry(_do, what=what)
+        try:
+            response = _retry(_do, what=what)
+        except _EmbeddingBatchTooLarge:
+            # Filet de sécurité : la densité en tokens d'un texte varie beaucoup (tableaux, bruit
+            # d'OCR, langues), donc un lot calibré en CARACTÈRES peut dépasser le plafond exprimé
+            # en TOKENS. On re-découpe au lieu d'abandonner la vectorisation du dossier.
+            if len(batch) == 1:
+                raise RuntimeError(
+                    f"Un texte à lui seul dépasse le plafond de tokens par requête pour {what} — "
+                    "réduire `embeddings.chunk_max_chars` dans models.yaml"
+                )
+            mid = (len(batch) + 1) // 2
+            logger.warning(
+                "Lot de %d entrée(s) refusé (plafond de tokens par requête) — re-découpage en deux",
+                len(batch),
+            )
+            first, tokens_first = _embed_batch(batch[:mid])
+            second, tokens_second = _embed_batch(batch[mid:])
+            return first + second, tokens_first + tokens_second
+
+        batch_vectors: list[list[float]] = []
         # `index` positionne chaque vecteur dans son lot : l'ordre de `data` n'est pas garanti.
         for item in sorted(response.data, key=lambda d: d.index):
             if item.embedding is None:
                 raise RuntimeError(f"Vecteur vide renvoyé par {model} pour : {what}")
-            vectors.append(list(item.embedding))
-        if response.usage:
-            total_tokens += response.usage.total_tokens or 0
+            batch_vectors.append(list(item.embedding))
+        return batch_vectors, (response.usage.total_tokens or 0) if response.usage else 0
+
+    vectors: list[list[float]] = []
+    total_tokens = 0
+    t0 = time.monotonic()
+    # Une entrée vide fait échouer la requête ENTIÈRE, donc tout le lot : on la neutralise plutôt
+    # que de la retirer, l'appelant comptant sur un vecteur par texte fourni.
+    for batch in _embedding_batches([t or " " for t in texts], max_inputs=max_inputs, max_chars=max_chars):
+        batch_vectors, batch_tokens = _embed_batch(batch)
+        vectors.extend(batch_vectors)
+        total_tokens += batch_tokens
 
     if len(vectors) != len(texts):
         raise RuntimeError(

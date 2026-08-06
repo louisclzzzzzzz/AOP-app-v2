@@ -75,6 +75,13 @@ embeddings:
   # Passer à false pour revenir au comportement historique (mots-clés seuls). Le pipeline y
   # retombe de lui-même, sans échouer, si l'API embeddings est indisponible.
   enabled: true
+  # Nombre de documents AJOUTÉS par la recherche sémantique, en plus des `MAX_LLM_CANDIDATES`
+  # documents déjà retenus par les mots-clés (jamais à leur place — voir
+  # `append_semantic_candidates` : une version qui fusionnait les deux classements à plafond
+  # constant faisait régresser un champ déjà correct sur le dossier dce_grand_pic2). C'est donc
+  # le seul curseur de surcoût : mesuré sur ce dossier, 16 appels LLM en couche 2 avant, 26 après.
+  # 0 désactive l'apport sémantique aussi sûrement que `enabled: false`.
+  extra_semantic_candidates: 2
   # Taille de découpe des documents avant vectorisation. Un document entier vectorisé d'un bloc
   # dilue le passage pertinent dans le reste du texte : un CCTP de 200 pages ressemble d'abord à
   # un CCTP, quelle que soit la donnée cherchée. ~3000 caractères ≈ 1000 tokens, l'ordre de
@@ -82,8 +89,17 @@ embeddings:
   chunk_max_chars: 3000
   # Un appel /v1/embeddings couvre plusieurs morceaux à la fois. mistral-embed est limité à
   # 1 requête/s mais 20 M tokens/min (§modeles_mistral_limites.md) : le facteur limitant est le
-  # NOMBRE d'appels, jamais le volume — d'où des lots volontairement gros.
-  batch_max_chars: 200000
+  # NOMBRE d'appels, pas le volume — d'où des lots volontairement gros.
+  #
+  # MAIS il existe un plafond de tokens PAR REQUÊTE que la table de rate limits ne mentionne pas
+  # (erreur 400 « Too many tokens overall, split into more batches », code 3210). Mesuré sur
+  # l'API réelle avec le texte OCR du dossier dce_grand_pic2 : 62 239 tokens acceptés, ~70 000
+  # refusés — le plafond est donc ~65 536. Le même texte donne ~2,5 caractères par token, mais ce
+  # ratio chute sur des tableaux ou du bruit d'OCR : 60 000 caractères (~24 000 tokens mesurés,
+  # ~30 000 dans le pire cas) gardent une marge confortable sous le plafond. `call_embeddings`
+  # re-découpe de lui-même un lot malgré tout refusé, donc cette valeur peut être relevée sans
+  # risque de casse — seulement au prix d'un aller-retour perdu.
+  batch_max_chars: 60000
   batch_max_inputs: 128
   # Similarité cosinus minimale pour qu'un document soit proposé au LLM. 0 = aucun plancher, et
   # c'est volontaire : ce qui porte le signal est le CLASSEMENT, pas la valeur absolue. Mesuré sur
