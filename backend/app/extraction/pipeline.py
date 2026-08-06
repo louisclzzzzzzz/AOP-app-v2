@@ -9,8 +9,9 @@ depuis `completeness_validated`, jamais enchaîné automatiquement — même pri
 Un appel LLM par DOCUMENT de référence (pas par champ, §3 OPTIMISATION.md) : on appelle chaque
 document de référence distinct une fois, couvrant tous les champs qu'il concerne (couche 1).
 Un champ introuvable dans ses documents de référence (absents du dossier, ou présents mais sans
-la valeur) déclenche automatiquement une recherche élargie par mots-clés sur l'ensemble du
-dossier (couche 2, `layer2_candidates`/`plan_layer2_calls`), sans action de l'expert — le run
+la valeur) déclenche automatiquement une recherche élargie sur l'ensemble du dossier, par
+mots-clés ET par recherche sémantique (couche 2, `select_layer2_candidates`/`plan_layer2_calls`),
+sans action de l'expert — le run
 standard va donc chercher le maximum d'information disponible en une seule fois. Seuls les
 champs toujours introuvables après cette recherche élargie sont déclarés absents, avec une
 justification explicite. `run_extraction_pipeline(document_ids=...)` reste le seul mécanisme
@@ -32,7 +33,6 @@ from app.extraction.engine import (
     absent_outcome,
     analyze_document,
     generate_synthesis,
-    layer2_candidates,
     merge_document_results,
     plan_layer2_calls,
     plan_manual_calls,
@@ -41,6 +41,7 @@ from app.extraction.engine import (
     resolve_field,
 )
 from app.extraction.extraction_schema import ExtractionField, load_extraction_schema
+from app.extraction.semantic_retrieval import select_layer2_candidates
 from app.ingestion.document_signal import DocumentSignal, build_document_signal, ensure_document_ocr
 from app.pipeline_support import finalize_stage, start_stage
 from app.progress import progress_manager
@@ -297,19 +298,25 @@ async def run_extraction_pipeline(dossier_id: str, *, document_ids: list[str] | 
         }
         await asyncio.to_thread(_persist, absent_outcomes)
     elif missing_fields:
-        layer2_calls = plan_layer2_calls(missing_fields, signals)
+        # Sélection des documents candidats calculée UNE SEULE FOIS pour tous les champs
+        # manquants, puis réutilisée telle quelle par le plan d'appels et par la résolution : elle
+        # vectorise le dossier (`select_layer2_candidates`), ce qu'il serait absurde de refaire à
+        # chaque champ. Ne lève jamais — repli sur les mots-clés seuls si les embeddings sont
+        # indisponibles.
+        layer2_by_field = await asyncio.to_thread(select_layer2_candidates, missing_fields, signals)
+        layer2_calls = plan_layer2_calls(missing_fields, signals, candidates_by_field=layer2_by_field)
         layer2_results = await _run_calls(layer2_calls)
         layer2_outcomes: dict[str, ExtractionOutcome] = {
             f.id: resolve_field(
                 f,
-                candidates=layer2_candidates(f, signals),
+                candidates=layer2_by_field.get(f.id, []),
                 results_by_document=layer2_results,
                 match_layer=MatchLayer.CONTENT.value,
                 cross_check_required=False,
             )
             or absent_outcome(
-                "Aucune valeur trouvée, y compris après recherche élargie par mots-clés sur "
-                "l'ensemble du dossier."
+                "Aucune valeur trouvée, y compris après recherche élargie (mots-clés et recherche "
+                "sémantique) sur l'ensemble du dossier."
             )
             for f in missing_fields
         }

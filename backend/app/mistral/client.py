@@ -691,3 +691,85 @@ def call_structured_chat(
             error=None,
         )
     return parsed, getattr(response, "model", None)
+
+
+# --- Vectorisation (/v1/embeddings) -------------------------------------------------------------
+#
+# Utilisé par la recherche sémantique de la couche 2 de l'extraction
+# (app/extraction/semantic_retrieval.py). Même ordonnancement par clé que les appels chat
+# (`_acquire_llm_slot`, quarantaine, bascule sur clé de secours) : c'est le même compte Mistral,
+# avec le même plafond de requêtes par seconde.
+
+
+def _embedding_batches(texts: list[str], *, max_inputs: int, max_chars: int) -> Iterator[list[str]]:
+    """Regroupe les textes en lots bornés à la fois en nombre d'entrées et en volume.
+
+    `mistral-embed` est plafonné à 1 requête/s pour 20 M tokens/min
+    (§modeles_mistral_limites.md) : le coût d'une vectorisation de dossier se mesure en NOMBRE
+    d'appels, pas en volume — d'où des lots aussi gros que le permet la configuration."""
+    batch: list[str] = []
+    batch_chars = 0
+    for text in texts:
+        if batch and (len(batch) >= max_inputs or batch_chars + len(text) > max_chars):
+            yield batch
+            batch, batch_chars = [], 0
+        batch.append(text)
+        batch_chars += len(text)
+    if batch:
+        yield batch
+
+
+def call_embeddings(texts: list[str], *, what: str) -> list[list[float]]:
+    """Vectorise `texts` et retourne un vecteur par texte, DANS L'ORDRE D'ENTRÉE.
+
+    Lève (`MistralNotConfiguredError`, `MistralError`, `RuntimeError`…) si la vectorisation
+    échoue : c'est à l'appelant de décider quoi en faire — la couche 2 de l'extraction, elle,
+    retombe sur son scoring par mots-clés plutôt que d'interrompre le run."""
+    if not texts:
+        return []
+    cfg = get_models_config().get("embeddings", {})
+    model = cfg.get("model", "mistral-embed")
+    timeout = get_models_config()["llm"].get("timeout_seconds")
+    max_inputs = int(cfg.get("batch_max_inputs", 128))
+    max_chars = int(cfg.get("batch_max_chars", 200_000))
+
+    vectors: list[list[float]] = []
+    total_tokens = 0
+    t0 = time.monotonic()
+    # Une entrée vide fait échouer la requête ENTIÈRE, donc tout le lot : on la neutralise plutôt
+    # que de la retirer, l'appelant comptant sur un vecteur par texte fourni.
+    for batch in _embedding_batches([t or " " for t in texts], max_inputs=max_inputs, max_chars=max_chars):
+
+        def _do(batch: list[str] = batch) -> Any:
+            slot = _acquire_llm_slot()
+            client = get_client(slot)
+            try:
+                response = client.embeddings.create(
+                    model=model,
+                    inputs=batch,
+                    timeout_ms=int(timeout) * 1000 if timeout else None,
+                )
+            except Exception as exc:
+                record_slot_failure(slot, exc)
+                raise
+            record_slot_success(slot)
+            return response
+
+        response = _retry(_do, what=what)
+        # `index` positionne chaque vecteur dans son lot : l'ordre de `data` n'est pas garanti.
+        for item in sorted(response.data, key=lambda d: d.index):
+            if item.embedding is None:
+                raise RuntimeError(f"Vecteur vide renvoyé par {model} pour : {what}")
+            vectors.append(list(item.embedding))
+        if response.usage:
+            total_tokens += response.usage.total_tokens or 0
+
+    if len(vectors) != len(texts):
+        raise RuntimeError(
+            f"Vectorisation incomplète pour {what} : {len(vectors)} vecteur(s) pour {len(texts)} texte(s)"
+        )
+    logger.info(
+        "USAGE embeddings what=%r model=%s inputs=%d total_tokens=%d latency=%.1fs",
+        what, model, len(texts), total_tokens, time.monotonic() - t0,
+    )
+    return vectors

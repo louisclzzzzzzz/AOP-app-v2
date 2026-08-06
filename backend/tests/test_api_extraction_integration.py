@@ -373,6 +373,109 @@ def test_extraction_run_automatically_widens_search_for_missing_fields(isolated_
         assert "élargie" in (entries[fid]["justification"] or "")
 
 
+def _build_zip_with_reworded_soil_annex() -> bytes:
+    """Même dossier de test, mais l'annexe « sol » du CCAP est FORMULÉE AUTREMENT : aucun des
+    `indices` du champ `stratigraphie` (stratigraphie, lithologie, couches du sous-sol, coupe
+    géologique) n'y figure littéralement, alors que l'information s'y trouve bel et bien.
+
+    C'est l'angle mort de la sélection par mots-clés de la couche 2 : score nul, donc document
+    écarté avant même d'être soumis au LLM."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr(
+            "ASS/RC.pdf",
+            _dense_pdf_bytes("Reglement de consultation. Maitre d'ouvrage : Commune de Marly. Montant total HT : 1 000 000 EUR."),
+        )
+        zf.writestr(
+            "ASS/CCAP.pdf",
+            _dense_pdf_bytes(
+                "CCAP assurance. Montant total HT : 950 000 EUR. "
+                "Annexe geotechnique : marne argileuse rencontree a 2m, puis calcaire a 5m."
+            ),
+        )
+    return buf.getvalue()
+
+
+def _fake_soil_aware_embeddings(monkeypatch):
+    """Faux vectoriseur : projette un texte sur trois axes thématiques repérés par des mots
+    TÉMOINS (jamais les `indices` du champ, sinon on ne testerait que du mot-clé déguisé). Deux
+    formulations d'un même thème obtiennent ainsi des vecteurs voisins, ce qui reproduit
+    localement — et de façon déterministe — ce que fait un vrai modèle d'embeddings."""
+    import app.extraction.semantic_retrieval as semantic_retrieval
+
+    axes = (
+        ("sol", ("stratigraphie", "lithologie", "sous-sol", "geotechnique", "marne", "calcaire", "terrain")),
+        ("prix", ("montant", "euros", "eur", "prix")),
+        ("moa", ("ouvrage", "commune", "consultation")),
+    )
+
+    def _fake(texts, *, what):
+        vectors = []
+        for text in texts:
+            lowered = text.lower()
+            vectors.append([float(sum(lowered.count(m) for m in markers)) for _axis, markers in axes] + [0.1])
+        return vectors
+
+    monkeypatch.setattr(semantic_retrieval, "call_embeddings", _fake)
+
+
+def test_layer2_keyword_scoring_alone_misses_a_reworded_document(isolated_workspace, monkeypatch):
+    """Constat de départ (comportement historique, embeddings désactivés) : l'information est dans
+    le CCAP mais formulée autrement que les `indices` du champ — la couche 2 par mots-clés seuls ne
+    propose jamais ce document au LLM, et le champ est déclaré absent à tort."""
+    from app.settings import get_models_config
+
+    monkeypatch.setitem(get_models_config()["embeddings"], "enabled", False)
+    _fake_classification_call(monkeypatch)
+    _fake_completeness_call(monkeypatch)
+    _fake_extraction_call_with_stratigraphie_in_ccap(monkeypatch)
+
+    from app.main import app
+
+    client = TestClient(app)
+    response = client.post(
+        "/api/dossiers", files={"file": ("root.zip", _build_zip_with_reworded_soil_annex(), "application/zip")}
+    )
+    dossier_id = response.json()["id"]
+    _wait_for_status(client, dossier_id, {"classified", "error"})
+    _run_completeness_and_reach_extraction_review(client, dossier_id)
+
+    client.post(f"/api/dossiers/{dossier_id}/extraction/run")
+    _wait_for_status(client, dossier_id, {"extraction_review", "error"})
+
+    entries = {e["field_id"]: e for e in client.get(f"/api/dossiers/{dossier_id}/extraction").json()}
+    assert entries["stratigraphie"]["final_value"] is None
+
+
+def test_layer2_semantic_retrieval_finds_a_reworded_document(isolated_workspace, monkeypatch):
+    """Même dossier, embeddings actifs : le CCAP remonte par proximité de sens malgré un score
+    mots-clés nul, et la valeur est retrouvée. Les champs déjà résolus en couche 1 ne bougent
+    pas — la recherche sémantique ne touche qu'à la sélection des candidats de la couche 2."""
+    _fake_classification_call(monkeypatch)
+    _fake_completeness_call(monkeypatch)
+    _fake_extraction_call_with_stratigraphie_in_ccap(monkeypatch)
+    _fake_soil_aware_embeddings(monkeypatch)
+
+    from app.main import app
+
+    client = TestClient(app)
+    response = client.post(
+        "/api/dossiers", files={"file": ("root.zip", _build_zip_with_reworded_soil_annex(), "application/zip")}
+    )
+    dossier_id = response.json()["id"]
+    _wait_for_status(client, dossier_id, {"classified", "error"})
+    _run_completeness_and_reach_extraction_review(client, dossier_id)
+
+    client.post(f"/api/dossiers/{dossier_id}/extraction/run")
+    _wait_for_status(client, dossier_id, {"extraction_review", "error"})
+
+    entries = {e["field_id"]: e for e in client.get(f"/api/dossiers/{dossier_id}/extraction").json()}
+    assert entries["stratigraphie"]["match_layer"] == "content"
+    assert entries["stratigraphie"]["final_value"] == "Marne argileuse"
+    assert entries["nom_moa"]["final_value"] == "Commune de Marly"
+    assert entries["montants_totaux_ht"]["final_value"] == "1 000 000 EUR"
+
+
 def test_run_extraction_with_manual_document_selection_ignores_reference_categories(isolated_workspace, monkeypatch):
     """Sélection manuelle : en limitant le run au seul CCAP (qui n'est catégorie de référence
     d'aucun champ dans ce dossier de test), `montants_totaux_ht` doit être trouvé UNIQUEMENT

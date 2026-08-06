@@ -63,6 +63,39 @@ extraction:
     - date_debut_travaux
     - date_fin_previsionnelle
 
+embeddings:
+  # Recherche sémantique de la COUCHE 2 de l'extraction (étape 3) : sélection des documents
+  # candidats quand un champ reste absent après la couche 1. Le scoring par mots-clés seul est
+  # aveugle dès que le document formule l'information autrement que ne l'anticipent les `indices`
+  # du schéma (synonyme, tournure, terme technique non prévu) — c'est le seul point du run
+  # automatique où ce risque n'est pas couvert par une validation humaine, contrairement à la
+  # couche 1 qui s'appuie sur une classification déjà validée par l'expert.
+  model: "mistral-embed-2312"
+  fallback_latest: "mistral-embed"
+  # Passer à false pour revenir au comportement historique (mots-clés seuls). Le pipeline y
+  # retombe de lui-même, sans échouer, si l'API embeddings est indisponible.
+  enabled: true
+  # Taille de découpe des documents avant vectorisation. Un document entier vectorisé d'un bloc
+  # dilue le passage pertinent dans le reste du texte : un CCTP de 200 pages ressemble d'abord à
+  # un CCTP, quelle que soit la donnée cherchée. ~3000 caractères ≈ 1000 tokens, l'ordre de
+  # grandeur usuel pour de la recherche de passage.
+  chunk_max_chars: 3000
+  # Un appel /v1/embeddings couvre plusieurs morceaux à la fois. mistral-embed est limité à
+  # 1 requête/s mais 20 M tokens/min (§modeles_mistral_limites.md) : le facteur limitant est le
+  # NOMBRE d'appels, jamais le volume — d'où des lots volontairement gros.
+  batch_max_chars: 200000
+  batch_max_inputs: 128
+  # Similarité cosinus minimale pour qu'un document soit proposé au LLM. 0 = aucun plancher, et
+  # c'est volontaire : ce qui porte le signal est le CLASSEMENT, pas la valeur absolue. Mesuré sur
+  # l'API réelle (mistral-embed-2312, requête du champ `stratigraphie`) : 0.86 pour un passage qui
+  # emploie le mot exact, 0.79 pour le même contenu reformulé sans aucun mot-clé du champ — celui
+  # que la sélection par mots-clés rate — et 0.71 pour un passage franchement hors sujet (délais,
+  # montants). L'écart utile tient donc dans ~0.15 : un plancher mal calibré écarterait la
+  # reformulation, c'est-à-dire précisément l'angle mort qu'on corrige ici. La sélection reste
+  # de toute façon bornée par `MAX_LLM_CANDIDATES`. Les scores réels sont journalisés (INFO) pour
+  # permettre de calibrer ce plancher sur de vrais dossiers avant de le relever.
+  min_similarity: 0.0
+
 completeness:
   # Seuil de confiance OCR en-dessous duquel une correspondance passe en "à vérifier"
   min_ocr_confidence_for_certain: 0.80
