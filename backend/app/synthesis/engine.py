@@ -38,6 +38,7 @@ from pydantic import BaseModel
 
 from app.classify.taxonomy import Taxonomy
 from app.ingestion.document_signal import DocumentSignal
+from app.mistral import call_log
 from app.mistral.client import call_structured_chat, document_summary_max_tokens
 from app.synthesis.schema import SynthesisSchema, SynthesisTopic
 
@@ -379,7 +380,31 @@ def _build_topic_context(
                 topic.id,
                 doc.filename,
             )
+            if call_log.is_enabled():
+                call_log.log_truncation(
+                    source="synthesis_context_fallback",
+                    document=doc.filename,
+                    original_chars=len(doc.content_excerpt or ""),
+                    kept_chars=0,
+                    limit_name="SYNTHESIS_FALLBACK_TOTAL_MAX_CHARS",
+                    limit_value=fallback_total_budget,
+                    extra={"topic": topic.id, "reason": "fallback_budget_exhausted"},
+                )
             continue
+        if call_log.is_enabled() and len(excerpt) < len(doc.content_excerpt or ""):
+            call_log.log_truncation(
+                source="synthesis_context_fallback",
+                document=doc.filename,
+                original_chars=len(doc.content_excerpt or ""),
+                kept_chars=len(excerpt),
+                limit_name=(
+                    "SYNTHESIS_FALLBACK_PER_DOCUMENT_MAX_CHARS"
+                    if cap == fallback_per_document_budget
+                    else "SYNTHESIS_FALLBACK_TOTAL_MAX_CHARS"
+                ),
+                limit_value=cap,
+                extra={"topic": topic.id},
+            )
         blocks.append(f"{header} — relevé indisponible, extrait brut du document (tronqué) :\n{excerpt}")
         used.append(doc.filename)
         degraded.append(doc.filename)

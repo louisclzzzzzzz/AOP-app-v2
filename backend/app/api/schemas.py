@@ -199,11 +199,33 @@ class ExtractionFieldOut(BaseModel):
     reference_categories: list[str]
 
 
+class CitationLocationOut(BaseModel):
+    """Où se trouve, dans le document, le passage cité à l'appui d'une valeur extraite.
+
+    Interrogé AVANT d'afficher une image de page : l'écran de validation ne promet une preuve
+    visuelle que s'il en existe une, plutôt que d'ouvrir une visionneuse pour rien."""
+
+    found: bool
+    page: int | None = None  # index 0
+    page_count: int | None = None
+    # False quand la page a bien été trouvée mais sans coordonnées (PDF scanné, sans couche de
+    # texte) : l'image est rendue, le passage n'est pas encadré.
+    highlighted: bool = False
+    # "not_a_pdf" | "not_found" | "scanned_page_only"
+    reason: str | None = None
+    filename: str | None = None
+
+
 class ExtractionSourceOut(BaseModel):
     document_id: str
     filename: str
     value: str
     confidence: float | None
+    # "semantic" : document proposé par la seule recherche sémantique de la couche 2 — il ne
+    # contient aucun mot-clé du champ (§app/extraction/semantic_retrieval.py). Affiché comme un
+    # badge à l'écran de validation : c'est là que se concentre le risque d'une valeur plausible
+    # mais tirée d'un document qui ne répond pas vraiment à la question posée.
+    selection: str | None = None
 
 
 class ExtractionEntryOut(BaseModel):

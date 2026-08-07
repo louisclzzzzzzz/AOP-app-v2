@@ -1,4 +1,5 @@
 import type {
+  CitationLocation,
   ClassificationCorrection,
   ClassificationEntry,
   CompletenessApplyResult,
@@ -67,6 +68,30 @@ export async function getDocumentText(dossierId: string, documentId: string): Pr
  * une valeur extraite ou une pièce de complétude sans quitter l'application. */
 export function documentFileUrl(dossierId: string, documentId: string): string {
   return `/api/dossiers/${dossierId}/documents/${documentId}/file`
+}
+
+/** Où se trouve le passage cité à l'appui d'une valeur extraite — interrogé avant d'afficher
+ * quoi que ce soit, pour ne promettre une preuve visuelle que s'il en existe une. */
+export async function locateCitation(
+  dossierId: string,
+  documentId: string,
+  citation: string,
+): Promise<CitationLocation> {
+  const params = new URLSearchParams({ citation })
+  const res = await fetch(`/api/dossiers/${dossierId}/documents/${documentId}/citation?${params}`)
+  return handle<CitationLocation>(res)
+}
+
+/** Image de la page, passage surligné (rendue côté serveur). */
+export function citationImageUrl(
+  dossierId: string,
+  documentId: string,
+  citation: string,
+  page: number,
+  scale: number,
+): string {
+  const params = new URLSearchParams({ citation, page: String(page), scale: String(scale) })
+  return `/api/dossiers/${dossierId}/documents/${documentId}/citation.png?${params}`
 }
 
 export async function getTaxonomy(): Promise<TaxonomyCategory[]> {

@@ -7,9 +7,11 @@ en sidecar pour permettre plus tard une citation précise (page + position) dans
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from app.mistral import call_log
 from app.mistral.client import call_ocr, ocr_slot, upload_file_for_ocr
 from app.settings import get_models_config
 
@@ -39,9 +41,11 @@ def run_ocr(path: Path, *, pages: list[int] | None = None) -> OcrCallOutcome:
     un sous-ensemble de pages — utilisé pour l'OCR de contrôle sur PDF partiellement natif."""
     # Un seul créneau (donc une seule clé API) pour l'upload ET le traitement : le file_id rendu
     # par l'upload n'existe que dans le compte qui l'a uploadé.
+    t0 = time.monotonic()
     with ocr_slot() as slot:
         file_id = upload_file_for_ocr(path, slot=slot)
         response = call_ocr(file_id=file_id, pages=pages, slot=slot)
+    latency_ms = (time.monotonic() - t0) * 1000
     if response.usage_info:
         logger.info(
             "USAGE ocr file=%s pages_processed=%s doc_size_bytes=%s",
@@ -68,6 +72,28 @@ def run_ocr(path: Path, *, pages: list[int] | None = None) -> OcrCallOutcome:
     )
     confidences = [p.avg_confidence for p in page_outcomes if p.avg_confidence is not None]
     avg_confidence = sum(confidences) / len(confidences) if confidences else None
+
+    if call_log.is_enabled():
+        call_log.log_ocr_call(
+            document=path.name,
+            pages_requested=pages,
+            model=response.model,
+            pages_processed=response.usage_info.pages_processed if response.usage_info else None,
+            doc_size_bytes=response.usage_info.doc_size_bytes if response.usage_info else None,
+            avg_confidence=avg_confidence,
+            pages_output=[
+                {
+                    "index": p.index,
+                    "char_count": p.char_count,
+                    "avg_confidence": p.avg_confidence,
+                    "min_confidence": p.min_confidence,
+                    "markdown": p.markdown,
+                }
+                for p in page_outcomes
+            ],
+            combined_markdown=combined_markdown,
+            latency_ms=latency_ms,
+        )
 
     return OcrCallOutcome(
         model=response.model,

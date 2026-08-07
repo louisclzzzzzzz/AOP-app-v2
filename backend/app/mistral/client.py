@@ -25,6 +25,7 @@ from mistralai.extra.utils.response_format import (
 )
 from pydantic import BaseModel
 
+from app.mistral import call_log
 from app.settings import get_models_config, get_settings
 
 logger = logging.getLogger(__name__)
@@ -603,10 +604,13 @@ def call_structured_chat(
     # réseau/API MistralError) — d'où cette seconde boucle. Chaque rattrapage relève légèrement la
     # température ET ajoute une consigne de réparation explicite : à consigne inchangée, le seul
     # effet de la température est de recasser le JSON ailleurs (0% de rattrapage mesuré).
+    t0 = time.monotonic()
     response = None
     parsed: ModelT | None = None
+    attempts = 0
     last_parse_error: Exception | None = None
     for attempt in range(parse_retries + 1):
+        attempts = attempt + 1
         temperature = base_temperature if attempt == 0 else min(0.4, base_temperature + 0.2 * attempt)
         prompt = user_prompt if attempt == 0 else user_prompt + _JSON_REPAIR_INSTRUCTION
         response = _retry(lambda: _do(temperature, prompt), what=what)
@@ -650,15 +654,163 @@ def call_structured_chat(
                     len(content),
                     len(content) - len(content.rstrip()),
                 )
-    if parsed is None:
-        raise RuntimeError(
-            f"Réponse structurée non parsable après {parse_retries + 1} tentative(s) pour {what} : {last_parse_error}"
-        )
 
-    assert response is not None
-    if response.usage:
+    latency_ms = (time.monotonic() - t0) * 1000
+    usage_dict = None
+    if response is not None and response.usage:
+        usage_dict = {
+            "prompt_tokens": response.usage.prompt_tokens,
+            "completion_tokens": response.usage.completion_tokens,
+            "total_tokens": response.usage.total_tokens,
+        }
         logger.info(
             "USAGE llm what=%r model=%s prompt_tokens=%s completion_tokens=%s total_tokens=%s",
             what, model, response.usage.prompt_tokens, response.usage.completion_tokens, response.usage.total_tokens,
         )
+    if parsed is None:
+        if call_log.is_enabled():
+            call_log.log_llm_call(
+                what=what, model_requested=model, model_served=getattr(response, "model", None),
+                system_prompt=system_prompt, user_prompt=user_prompt,
+                output=None, usage=usage_dict, latency_ms=latency_ms, attempts=attempts,
+                error=str(last_parse_error),
+            )
+        raise RuntimeError(
+            f"Réponse structurée non parsable après {parse_retries + 1} tentative(s) pour {what} : {last_parse_error}"
+        )
+    assert response is not None
+    if call_log.is_enabled():
+        try:
+            output_dump = parsed.model_dump(mode="json")
+        except Exception:
+            output_dump = None
+        call_log.log_llm_call(
+            what=what, model_requested=model, model_served=getattr(response, "model", None),
+            system_prompt=system_prompt, user_prompt=user_prompt,
+            output=output_dump, usage=usage_dict, latency_ms=latency_ms, attempts=attempts,
+            error=None,
+        )
     return parsed, getattr(response, "model", None)
+
+
+# --- Vectorisation (/v1/embeddings) -------------------------------------------------------------
+#
+# Utilisé par la recherche sémantique de la couche 2 de l'extraction
+# (app/extraction/semantic_retrieval.py). Même ordonnancement par clé que les appels chat
+# (`_acquire_llm_slot`, quarantaine, bascule sur clé de secours) : c'est le même compte Mistral,
+# avec le même plafond de requêtes par seconde.
+
+
+class _EmbeddingBatchTooLarge(RuntimeError):
+    """Lot refusé pour dépassement du plafond de tokens PAR REQUÊTE (erreur 400, code 3210).
+
+    Volontairement PAS une `MistralError` : `_retry` la retenterait à l'identique alors que le
+    refus est parfaitement déterministe, et `record_slot_failure` finirait par mettre la clé en
+    quarantaine alors qu'elle n'y est pour rien. La seule réponse utile est de re-découper."""
+
+
+def _is_batch_too_large(exc: Exception) -> bool:
+    text = str(exc).lower()
+    return "too many tokens" in text or '"code":"3210"' in text
+
+
+def _embedding_batches(texts: list[str], *, max_inputs: int, max_chars: int) -> Iterator[list[str]]:
+    """Regroupe les textes en lots bornés à la fois en nombre d'entrées et en volume.
+
+    `mistral-embed` est plafonné à 1 requête/s pour 20 M tokens/min
+    (§modeles_mistral_limites.md) : le coût d'une vectorisation de dossier se mesure en NOMBRE
+    d'appels, pas en volume — d'où des lots aussi gros que le permet la configuration, sous le
+    plafond de tokens par requête (§`embeddings.batch_max_chars` dans models.yaml)."""
+    batch: list[str] = []
+    batch_chars = 0
+    for text in texts:
+        if batch and (len(batch) >= max_inputs or batch_chars + len(text) > max_chars):
+            yield batch
+            batch, batch_chars = [], 0
+        batch.append(text)
+        batch_chars += len(text)
+    if batch:
+        yield batch
+
+
+def call_embeddings(texts: list[str], *, what: str) -> list[list[float]]:
+    """Vectorise `texts` et retourne un vecteur par texte, DANS L'ORDRE D'ENTRÉE.
+
+    Lève (`MistralNotConfiguredError`, `MistralError`, `RuntimeError`…) si la vectorisation
+    échoue : c'est à l'appelant de décider quoi en faire — la couche 2 de l'extraction, elle,
+    retombe sur son scoring par mots-clés plutôt que d'interrompre le run."""
+    if not texts:
+        return []
+    cfg = get_models_config().get("embeddings", {})
+    model = cfg.get("model", "mistral-embed")
+    timeout = get_models_config()["llm"].get("timeout_seconds")
+    max_inputs = int(cfg.get("batch_max_inputs", 128))
+    max_chars = int(cfg.get("batch_max_chars", 200_000))
+
+    def _embed_batch(batch: list[str]) -> tuple[list[list[float]], int]:
+        def _do() -> Any:
+            slot = _acquire_llm_slot()
+            client = get_client(slot)
+            try:
+                response = client.embeddings.create(
+                    model=model,
+                    inputs=batch,
+                    timeout_ms=int(timeout) * 1000 if timeout else None,
+                )
+            except Exception as exc:
+                if _is_batch_too_large(exc):
+                    # Avant `record_slot_failure` : la clé n'est pas en cause, c'est la requête
+                    # qui est trop grosse.
+                    raise _EmbeddingBatchTooLarge(str(exc)) from exc
+                record_slot_failure(slot, exc)
+                raise
+            record_slot_success(slot)
+            return response
+
+        try:
+            response = _retry(_do, what=what)
+        except _EmbeddingBatchTooLarge:
+            # Filet de sécurité : la densité en tokens d'un texte varie beaucoup (tableaux, bruit
+            # d'OCR, langues), donc un lot calibré en CARACTÈRES peut dépasser le plafond exprimé
+            # en TOKENS. On re-découpe au lieu d'abandonner la vectorisation du dossier.
+            if len(batch) == 1:
+                raise RuntimeError(
+                    f"Un texte à lui seul dépasse le plafond de tokens par requête pour {what} — "
+                    "réduire `embeddings.chunk_max_chars` dans models.yaml"
+                )
+            mid = (len(batch) + 1) // 2
+            logger.warning(
+                "Lot de %d entrée(s) refusé (plafond de tokens par requête) — re-découpage en deux",
+                len(batch),
+            )
+            first, tokens_first = _embed_batch(batch[:mid])
+            second, tokens_second = _embed_batch(batch[mid:])
+            return first + second, tokens_first + tokens_second
+
+        batch_vectors: list[list[float]] = []
+        # `index` positionne chaque vecteur dans son lot : l'ordre de `data` n'est pas garanti.
+        for item in sorted(response.data, key=lambda d: d.index):
+            if item.embedding is None:
+                raise RuntimeError(f"Vecteur vide renvoyé par {model} pour : {what}")
+            batch_vectors.append(list(item.embedding))
+        return batch_vectors, (response.usage.total_tokens or 0) if response.usage else 0
+
+    vectors: list[list[float]] = []
+    total_tokens = 0
+    t0 = time.monotonic()
+    # Une entrée vide fait échouer la requête ENTIÈRE, donc tout le lot : on la neutralise plutôt
+    # que de la retirer, l'appelant comptant sur un vecteur par texte fourni.
+    for batch in _embedding_batches([t or " " for t in texts], max_inputs=max_inputs, max_chars=max_chars):
+        batch_vectors, batch_tokens = _embed_batch(batch)
+        vectors.extend(batch_vectors)
+        total_tokens += batch_tokens
+
+    if len(vectors) != len(texts):
+        raise RuntimeError(
+            f"Vectorisation incomplète pour {what} : {len(vectors)} vecteur(s) pour {len(texts)} texte(s)"
+        )
+    logger.info(
+        "USAGE embeddings what=%r model=%s inputs=%d total_tokens=%d latency=%.1fs",
+        what, model, len(texts), total_tokens, time.monotonic() - t0,
+    )
+    return vectors

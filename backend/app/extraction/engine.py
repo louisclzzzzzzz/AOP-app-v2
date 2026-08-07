@@ -14,10 +14,13 @@ plutôt que sur le nombre d'appels (§3 OPTIMISATION.md) :
    référence (absents du dossier, ou présents mais sans la valeur) déclenche automatiquement une
    recherche élargie (couche 2, ci-dessous) — le run standard va chercher le maximum
    d'information possible sans action supplémentaire de l'expert.
-4. **Approfondissement automatique** (`layer2_candidates`/`plan_layer2_calls`) : pour chaque champ
-   resté absent après la couche 1, une recherche élargie par mots-clés sur tout le dossier
-   (plafond `MAX_LLM_CANDIDATES` documents candidats) est lancée par `run_extraction_pipeline`
-   lui-même, en un seul passage groupé par document candidat commun — pas une action séparée.
+4. **Approfondissement automatique** (`plan_layer2_calls`) : pour chaque champ resté absent après
+   la couche 1, une recherche élargie sur tout le dossier (plafond `MAX_LLM_CANDIDATES` documents
+   candidats) est lancée par `run_extraction_pipeline` lui-même, en un seul passage groupé par
+   document candidat commun — pas une action séparée. Les candidats sont choisis en fusionnant le
+   scoring par mots-clés (`layer2_candidates`) et une recherche sémantique par embeddings
+   (`app/extraction/semantic_retrieval.py`) : les mots-clés seuls ne voient jamais un document qui
+   formule l'information autrement que ne l'anticipent les `indices` du champ.
 5. **Sélection manuelle de documents** (`plan_manual_calls`) : alternative au run standard,
    déclenchée en amont — l'expert restreint tout le run à une liste de documents choisis dans
    l'arborescence organisée ; chaque document sélectionné est alors interrogé pour l'ensemble
@@ -34,6 +37,7 @@ from pydantic import BaseModel, create_model
 
 from app.extraction.extraction_schema import ExtractionField
 from app.ingestion.document_signal import DocumentSignal
+from app.mistral import call_log
 from app.mistral.client import call_structured_chat
 from app.mistral.validation import confidence_validator
 from app.settings import get_models_config
@@ -153,27 +157,53 @@ def _score_candidate(doc: DocumentSignal, extraction_field: ExtractionField) -> 
     return sum(1 for p in extraction_field.indices if p.search(doc.content_excerpt))
 
 
-def layer2_candidates(extraction_field: ExtractionField, documents: list[DocumentSignal]) -> list[DocumentSignal]:
-    """Documents candidats pour un approfondissement ponctuel (§ point 4 ci-dessus) : scorés par
-    mots-clés (`indices` du champ) sur tout le dossier, plafonnés à `MAX_LLM_CANDIDATES`."""
+def keyword_ranked_candidates(
+    extraction_field: ExtractionField, documents: list[DocumentSignal]
+) -> list[DocumentSignal]:
+    """Classement COMPLET (non plafonné) des documents du dossier contenant au moins un `indice`
+    du champ, du plus au moins couvrant. `layer2_candidates` n'en prend que la tête ; la fusion
+    avec la recherche sémantique (`app/extraction/semantic_retrieval.py`) a besoin des rangs
+    suivants pour pondérer les deux classements."""
     return sorted(
         (d for d in documents if d.content_excerpt and _score_candidate(d, extraction_field) > 0),
         key=lambda d: _score_candidate(d, extraction_field),
         reverse=True,
-    )[:MAX_LLM_CANDIDATES]
+    )
+
+
+def layer2_candidates(extraction_field: ExtractionField, documents: list[DocumentSignal]) -> list[DocumentSignal]:
+    """Documents candidats pour un approfondissement ponctuel (§ point 4 ci-dessus) : scorés par
+    mots-clés (`indices` du champ) sur tout le dossier, plafonnés à `MAX_LLM_CANDIDATES`.
+
+    Sélection par mots-clés SEULS — aveugle à toute formulation que les `indices` n'anticipent
+    pas. Le pipeline lui préfère `semantic_retrieval.select_layer2_candidates`, qui fusionne ce
+    classement avec une recherche sémantique ; celui-ci reste le repli utilisé quand les
+    embeddings sont désactivés ou indisponibles."""
+    return keyword_ranked_candidates(extraction_field, documents)[:MAX_LLM_CANDIDATES]
 
 
 def plan_layer2_calls(
-    missing_fields: list[ExtractionField], documents: list[DocumentSignal]
+    missing_fields: list[ExtractionField],
+    documents: list[DocumentSignal],
+    *,
+    candidates_by_field: dict[str, list[DocumentSignal]] | None = None,
 ) -> list[tuple[DocumentSignal, list[ExtractionField]]]:
-    """Un appel par document candidat (scoré par mots-clés), regroupant les champs demandés
-    pertinents pour ce candidat — utilisé par l'approfondissement ponctuel, un ou plusieurs
-    champs à la fois."""
+    """Un appel par document candidat, regroupant les champs demandés pertinents pour ce candidat
+    — utilisé par l'approfondissement ponctuel, un ou plusieurs champs à la fois.
+
+    `candidates_by_field` : sélection déjà calculée par champ (§`select_layer2_candidates`, qui
+    vectorise le dossier une seule fois pour tous les champs manquants). Par défaut, retombe sur
+    la sélection par mots-clés seuls."""
     doc_to_fields: dict[str, list[ExtractionField]] = {}
     doc_by_id = {d.document_id: d for d in documents}
     order: list[str] = []
     for extraction_field in missing_fields:
-        for d in layer2_candidates(extraction_field, documents):
+        selected = (
+            candidates_by_field.get(extraction_field.id, [])
+            if candidates_by_field is not None
+            else layer2_candidates(extraction_field, documents)
+        )
+        for d in selected:
             if d.document_id not in doc_to_fields:
                 doc_to_fields[d.document_id] = []
                 order.append(d.document_id)
@@ -187,7 +217,10 @@ def plan_layer2_calls(
 
 # --- Sélection de contexte par pertinence (§3 OPTIMISATION.md, sans embeddings) -----------------
 
-def _split_paragraphs(text: str) -> list[str]:
+def split_paragraphs(text: str) -> list[str]:
+    """Public : partagé avec le découpage en morceaux de la recherche sémantique
+    (`app/extraction/semantic_retrieval.py`), pour que les deux voient le même texte découpé de
+    la même façon."""
     parts = re.split(r"\n\s*\n", text)
     return [p.strip() for p in parts if p.strip()]
 
@@ -210,7 +243,7 @@ def _select_relevant_excerpt(
     if len(text) <= max_chars:
         return text
 
-    paragraphs = _split_paragraphs(text)
+    paragraphs = split_paragraphs(text)
     if not paragraphs:
         return text[:max_chars]
 
@@ -316,6 +349,16 @@ def analyze_document(doc: DocumentSignal, fields: list[ExtractionField]) -> Docu
     field_ids = tuple(f.id for f in fields)
     response_model = _document_response_model(field_ids)
     excerpt = _select_relevant_excerpt(doc, fields)
+    if len(doc.content_excerpt) > len(excerpt):
+        call_log.log_truncation(
+            source="extraction_relevant_excerpt",
+            document=doc.filename,
+            original_chars=len(doc.content_excerpt),
+            kept_chars=len(excerpt),
+            limit_name="DOCUMENT_EXCERPT_MAX_CHARS",
+            limit_value=DOCUMENT_EXCERPT_MAX_CHARS,
+            extra={"method": "scored_paragraph_selection"},
+        )
 
     try:
         decision, api_model_name = call_structured_chat(

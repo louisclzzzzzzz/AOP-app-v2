@@ -28,6 +28,7 @@ from pydantic import BaseModel
 from app.audit.georisques import GeorisquesReport, format_aspects_grounding, format_full_md
 from app.audit.schema import LOT_FILTERED_CATEGORIES, AuditSchema, AuditSection
 from app.ingestion.document_signal import DocumentSignal
+from app.mistral import call_log
 from app.mistral.client import call_structured_chat, document_summary_max_tokens
 
 logger = logging.getLogger(__name__)
@@ -309,6 +310,15 @@ def extract_chantier_address(documents: list[DocumentSignal]) -> str | None:
     if source is None:
         return None
 
+    if len(source.content_excerpt) > _ADDRESS_EXCERPT_MAX_CHARS:
+        call_log.log_truncation(
+            source="audit_address_fallback",
+            document=source.filename,
+            original_chars=len(source.content_excerpt),
+            kept_chars=_ADDRESS_EXCERPT_MAX_CHARS,
+            limit_name="_ADDRESS_EXCERPT_MAX_CHARS",
+            limit_value=_ADDRESS_EXCERPT_MAX_CHARS,
+        )
     try:
         parsed, _ = call_structured_chat(
             system_prompt=_ADDRESS_SYSTEM_PROMPT,
@@ -509,7 +519,31 @@ def _build_section_context(
                 section.id,
                 doc.filename,
             )
+            if call_log.is_enabled():
+                call_log.log_truncation(
+                    source="audit_context_fallback",
+                    document=doc.filename,
+                    original_chars=len(doc.content_excerpt or ""),
+                    kept_chars=0,
+                    limit_name="AUDIT_FALLBACK_TOTAL_MAX_CHARS",
+                    limit_value=fallback_total_budget,
+                    extra={"section": section.id, "reason": "fallback_budget_exhausted"},
+                )
             continue
+        if call_log.is_enabled() and len(excerpt) < len(doc.content_excerpt or ""):
+            call_log.log_truncation(
+                source="audit_context_fallback",
+                document=doc.filename,
+                original_chars=len(doc.content_excerpt or ""),
+                kept_chars=len(excerpt),
+                limit_name=(
+                    "AUDIT_FALLBACK_PER_DOCUMENT_MAX_CHARS"
+                    if cap == fallback_per_document_budget
+                    else "AUDIT_FALLBACK_TOTAL_MAX_CHARS"
+                ),
+                limit_value=cap,
+                extra={"section": section.id},
+            )
         blocks.append(f"{header} — relevé indisponible, extrait brut du document (tronqué) :\n{excerpt}")
         used.append(doc.filename)
         degraded.append(doc.filename)

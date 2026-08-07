@@ -694,3 +694,109 @@ def test_call_structured_chat_moves_to_the_backup_after_the_primary_is_rejected(
     assert parsed.x == 1
     assert used == [0, 1]  # 1re tentative sur la principale, 2e sur le secours
     assert client_mod.api_slots_health()[0]["quarantined"] is True
+
+
+# --- Vectorisation (/v1/embeddings) -------------------------------------------------------------
+
+class _FakeEmbeddingItem:
+    def __init__(self, index: int, embedding: list[float]):
+        self.index = index
+        self.embedding = embedding
+
+
+class _FakeEmbeddingResponse:
+    def __init__(self, data, usage=None):
+        self.data = data
+        self.usage = usage
+
+
+def _install_embeddings_stub(monkeypatch, *, refuse_batches_larger_than: int | None = None,
+                             batch_max_chars: int = 60000, batch_max_inputs: int = 128):
+    """Faux client d'embeddings. `refuse_batches_larger_than` reproduit le refus 400/3210 de
+    l'API réelle (« Too many tokens overall ») au-delà d'une certaine taille de lot."""
+    import app.mistral.client as client_mod
+
+    seen: list[list[str]] = []
+
+    class _Embeddings:
+        def create(self, **kwargs):
+            inputs = kwargs["inputs"]
+            seen.append(list(inputs))
+            if refuse_batches_larger_than is not None and len(inputs) > refuse_batches_larger_than:
+                raise RuntimeError(
+                    'API error occurred: Status 400. Body: {"object":"error",'
+                    '"message":"Too many tokens overall, split into more batches.","code":"3210"}'
+                )
+            # Vecteur trivial mais distinct par entrée, renvoyé DANS LE DÉSORDRE pour vérifier que
+            # `call_embeddings` se fie à `index` et non à l'ordre de `data`.
+            items = [_FakeEmbeddingItem(i, [float(len(text)), float(i)]) for i, text in enumerate(inputs)]
+            return _FakeEmbeddingResponse(list(reversed(items)))
+
+    class _Client:
+        embeddings = _Embeddings()
+
+    monkeypatch.setattr(client_mod, "get_client", lambda slot=0: _Client())
+    monkeypatch.setattr(client_mod, "_acquire_llm_slot", lambda: 0)
+    monkeypatch.setattr(
+        client_mod, "get_models_config",
+        lambda: {
+            "llm": {"model": "mistral-large-test", "max_retries": 3, "timeout_seconds": 10},
+            "embeddings": {"model": "mistral-embed-test", "batch_max_chars": batch_max_chars,
+                           "batch_max_inputs": batch_max_inputs},
+        },
+    )
+    return client_mod, seen
+
+
+def test_call_embeddings_returns_one_vector_per_input_in_order(isolated_workspace, monkeypatch):
+    client_mod, _seen = _install_embeddings_stub(monkeypatch)
+
+    vectors = client_mod.call_embeddings(["a", "bb", "ccc"], what="test")
+
+    # L'API renvoie `data` dans le désordre : c'est `index` qui fait foi.
+    assert [v[0] for v in vectors] == [1.0, 2.0, 3.0]
+
+
+def test_call_embeddings_splits_by_char_budget(isolated_workspace, monkeypatch):
+    client_mod, seen = _install_embeddings_stub(monkeypatch, batch_max_chars=10)
+
+    client_mod.call_embeddings(["a" * 6, "b" * 6, "c" * 6], what="test")
+
+    assert [len(batch) for batch in seen] == [1, 1, 1]
+
+
+def test_call_embeddings_resplits_a_batch_refused_for_too_many_tokens(isolated_workspace, monkeypatch):
+    """La densité en tokens d'un texte varie (tableaux, bruit d'OCR) : un lot calibré en
+    CARACTÈRES peut dépasser le plafond exprimé en TOKENS. Le lot doit être re-découpé, pas
+    abandonné — et sans retenter à l'identique, le refus étant déterministe."""
+    client_mod, seen = _install_embeddings_stub(monkeypatch, refuse_batches_larger_than=2)
+
+    vectors = client_mod.call_embeddings(["a", "b", "c", "d"], what="test")
+
+    assert len(vectors) == 4
+    assert [len(batch) for batch in seen] == [4, 2, 2]  # refus, puis les deux moitiés
+
+
+def test_call_embeddings_does_not_quarantine_the_key_on_a_too_large_batch(isolated_workspace, monkeypatch):
+    """Un lot trop gros n'est pas la faute de la clé : la mettre en quarantaine priverait le
+    dossier de sa clé principale pendant plusieurs minutes pour une erreur de calibrage."""
+    client_mod, _seen = _install_embeddings_stub(monkeypatch, refuse_batches_larger_than=1)
+    failures = []
+    monkeypatch.setattr(client_mod, "record_slot_failure", lambda slot, exc: failures.append(exc))
+
+    client_mod.call_embeddings(["a", "b"], what="test")
+
+    assert failures == []
+
+
+def test_call_embeddings_reports_a_single_text_over_the_limit(isolated_workspace, monkeypatch):
+    client_mod, _seen = _install_embeddings_stub(monkeypatch, refuse_batches_larger_than=0)
+
+    with pytest.raises(RuntimeError, match="chunk_max_chars"):
+        client_mod.call_embeddings(["a"], what="test")
+
+
+def test_call_embeddings_on_empty_input_makes_no_call(isolated_workspace, monkeypatch):
+    client_mod, seen = _install_embeddings_stub(monkeypatch)
+    assert client_mod.call_embeddings([], what="test") == []
+    assert seen == []

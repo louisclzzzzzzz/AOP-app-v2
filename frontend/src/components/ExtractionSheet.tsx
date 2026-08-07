@@ -16,6 +16,7 @@ import type { Dossier, DocumentItem, DossierStatus, ExtractionEntry } from '../t
 import { isAtOrAfter } from '../statusFlow'
 import { HOVER_HINT_CLASS } from '../ui'
 import { CERTAINTY_LABELS, PRESENCE_LABELS } from './CompletenessChecklist'
+import { CitationPreview } from './CitationPreview'
 import { CollapsiblePanel } from './CollapsiblePanel'
 import { Markdown } from './Markdown'
 import { collectDocumentIds, OrganizedTree, reorgReportEntriesToTree, treeToMarkdownFoldersOnly, type TreeNode } from './OrganizedTree'
@@ -87,6 +88,9 @@ export function ExtractionSheet({ dossierId, dossier, documents, onApplied }: Pr
   const [error, setError] = useState<string | null>(null)
   const [generatingSynthesis, setGeneratingSynthesis] = useState(false)
   const [generatingAudit, setGeneratingAudit] = useState(false)
+
+  // Champ dont on affiche la preuve visuelle (page du PDF, passage surligné).
+  const [proofOf, setProofOf] = useState<ExtractionEntry | null>(null)
 
   // --- Sélection manuelle de documents avant lancement (arborescence de l'étape 1) -----------
   const [showManualPicker, setShowManualPicker] = useState(false)
@@ -574,6 +578,16 @@ ${auditMd}
                         {entry.is_manually_corrected && (
                           <span className="ml-1 rounded bg-slate-100 px-1 text-[10px] text-slate-500">corrigé</span>
                         )}
+                        {entry.citation && entry.sources.length > 0 && (
+                          <button
+                            type="button"
+                            onClick={() => setProofOf(entry)}
+                            className="ml-1.5 rounded border border-slate-300 px-1 text-[10px] text-slate-500 hover:bg-slate-100 hover:text-slate-800"
+                            title="Voir le passage surligné dans le document d'origine"
+                          >
+                            preuve
+                          </button>
+                        )}
                       </td>
                       <td className="px-3 py-1.5 text-slate-500">
                         {entry.sources.length > 0
@@ -589,6 +603,14 @@ ${auditMd}
                                 >
                                   {documentPathById.get(s.document_id) ?? s.filename}
                                 </a>
+                                {s.selection === 'semantic' && (
+                                  <span
+                                    className={`ml-1 rounded bg-amber-100 px-1 text-[10px] text-amber-700 ${HOVER_HINT_CLASS}`}
+                                    title="Document rapproché par recherche sémantique : il ne contient aucun mot-clé de cette donnée. La valeur est plausible mais mérite une relecture de la citation."
+                                  >
+                                    sémantique
+                                  </span>
+                                )}
                               </span>
                             ))
                           : '—'}
@@ -615,6 +637,20 @@ ${auditMd}
           </tbody>
         </table>
       </div>
+
+      {proofOf && proofOf.citation && proofOf.sources.length > 0 && (
+        <CitationPreview
+          dossierId={dossierId}
+          // La citation vient de la décision retenue, donc du document le plus confiant en cas de
+          // recoupement multi-sources (§`_reconcile_cross_check`) : la chercher dans un autre
+          // document du lot ne donnerait rien.
+          source={proofOf.sources.reduce((best, s) => ((s.confidence ?? 0) > (best.confidence ?? 0) ? s : best))}
+          libelle={proofOf.libelle}
+          value={proofOf.final_value}
+          citation={proofOf.citation}
+          onClose={() => setProofOf(null)}
+        />
+      )}
     </div>
   )
 }

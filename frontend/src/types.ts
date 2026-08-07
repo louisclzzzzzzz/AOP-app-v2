@@ -250,11 +250,27 @@ export interface ExtractionFieldItem {
   reference_categories: string[]
 }
 
+/** Localisation du passage cité dans le document d'origine — support de la preuve visuelle
+ *  affichée à l'étape 3 (`CitationPreview`). */
+export interface CitationLocation {
+  found: boolean
+  /** Index 0. */
+  page: number | null
+  page_count: number | null
+  /** false : page trouvée mais passage non encadrable (PDF scanné, sans couche de texte). */
+  highlighted: boolean
+  reason: 'not_a_pdf' | 'not_found' | 'scanned_page_only' | null
+  filename: string | null
+}
+
 export interface ExtractionSource {
   document_id: string
   filename: string
   value: string
   confidence: number | null
+  /** 'semantic' : document proposé par la seule recherche sémantique de la couche 2 — il ne
+   *  contient aucun mot-clé du champ, la valeur mérite donc une relecture de la citation. */
+  selection?: 'semantic' | null
 }
 
 export interface ExtractionEntry {

@@ -63,6 +63,55 @@ extraction:
     - date_debut_travaux
     - date_fin_previsionnelle
 
+embeddings:
+  # Recherche sémantique de la COUCHE 2 de l'extraction (étape 3) : sélection des documents
+  # candidats quand un champ reste absent après la couche 1. Le scoring par mots-clés seul est
+  # aveugle dès que le document formule l'information autrement que ne l'anticipent les `indices`
+  # du schéma (synonyme, tournure, terme technique non prévu) — c'est le seul point du run
+  # automatique où ce risque n'est pas couvert par une validation humaine, contrairement à la
+  # couche 1 qui s'appuie sur une classification déjà validée par l'expert.
+  model: "mistral-embed-2312"
+  fallback_latest: "mistral-embed"
+  # Passer à false pour revenir au comportement historique (mots-clés seuls). Le pipeline y
+  # retombe de lui-même, sans échouer, si l'API embeddings est indisponible.
+  enabled: true
+  # Nombre de documents AJOUTÉS par la recherche sémantique, en plus des `MAX_LLM_CANDIDATES`
+  # documents déjà retenus par les mots-clés (jamais à leur place — voir
+  # `append_semantic_candidates` : une version qui fusionnait les deux classements à plafond
+  # constant faisait régresser un champ déjà correct sur le dossier dce_grand_pic2). C'est donc
+  # le seul curseur de surcoût : mesuré sur ce dossier, 16 appels LLM en couche 2 avant, 26 après.
+  # 0 désactive l'apport sémantique aussi sûrement que `enabled: false`.
+  extra_semantic_candidates: 2
+  # Taille de découpe des documents avant vectorisation. Un document entier vectorisé d'un bloc
+  # dilue le passage pertinent dans le reste du texte : un CCTP de 200 pages ressemble d'abord à
+  # un CCTP, quelle que soit la donnée cherchée. ~3000 caractères ≈ 1000 tokens, l'ordre de
+  # grandeur usuel pour de la recherche de passage.
+  chunk_max_chars: 3000
+  # Un appel /v1/embeddings couvre plusieurs morceaux à la fois. mistral-embed est limité à
+  # 1 requête/s mais 20 M tokens/min (§modeles_mistral_limites.md) : le facteur limitant est le
+  # NOMBRE d'appels, pas le volume — d'où des lots volontairement gros.
+  #
+  # MAIS il existe un plafond de tokens PAR REQUÊTE que la table de rate limits ne mentionne pas
+  # (erreur 400 « Too many tokens overall, split into more batches », code 3210). Mesuré sur
+  # l'API réelle avec le texte OCR du dossier dce_grand_pic2 : 62 239 tokens acceptés, ~70 000
+  # refusés — le plafond est donc ~65 536. Le même texte donne ~2,5 caractères par token, mais ce
+  # ratio chute sur des tableaux ou du bruit d'OCR : 60 000 caractères (~24 000 tokens mesurés,
+  # ~30 000 dans le pire cas) gardent une marge confortable sous le plafond. `call_embeddings`
+  # re-découpe de lui-même un lot malgré tout refusé, donc cette valeur peut être relevée sans
+  # risque de casse — seulement au prix d'un aller-retour perdu.
+  batch_max_chars: 60000
+  batch_max_inputs: 128
+  # Similarité cosinus minimale pour qu'un document soit proposé au LLM. 0 = aucun plancher, et
+  # c'est volontaire : ce qui porte le signal est le CLASSEMENT, pas la valeur absolue. Mesuré sur
+  # l'API réelle (mistral-embed-2312, requête du champ `stratigraphie`) : 0.86 pour un passage qui
+  # emploie le mot exact, 0.79 pour le même contenu reformulé sans aucun mot-clé du champ — celui
+  # que la sélection par mots-clés rate — et 0.71 pour un passage franchement hors sujet (délais,
+  # montants). L'écart utile tient donc dans ~0.15 : un plancher mal calibré écarterait la
+  # reformulation, c'est-à-dire précisément l'angle mort qu'on corrige ici. La sélection reste
+  # de toute façon bornée par `MAX_LLM_CANDIDATES`. Les scores réels sont journalisés (INFO) pour
+  # permettre de calibrer ce plancher sur de vrais dossiers avant de le relever.
+  min_similarity: 0.0
+
 completeness:
   # Seuil de confiance OCR en-dessous duquel une correspondance passe en "à vérifier"
   min_ocr_confidence_for_certain: 0.80
