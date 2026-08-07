@@ -21,6 +21,13 @@ frontend/.vite/
 workspace/*
 !workspace/.gitkeep
 
+# Dossiers de test réels (DCE clients) et campagnes de test locales - jamais versionnés
+# (confidentialité + volumétrie, cf. test-runs/README.md pour l'index local)
+test-runs/
+
+# Codes d'accès réels (AOP_ACCESS_CODES) - jamais versionnés
+acces-code
+
 # Empaquetage Windows (PyInstaller) - artefacts de build locaux, jamais versionnés
 /build/
 /dist/
