@@ -278,7 +278,10 @@ export function VeillePanel({ onDossierStarted }: { onDossierStarted: (dossierId
               <NoticeRow
                 key={notice.id}
                 notice={notice}
-                busy={busyId === notice.id || busyId === notice.dossier_id}
+                // `busyId` et `notice.dossier_id` valent tous les deux `null` par défaut
+                // (aucune action en cours / DCE pas encore récupéré) : les comparer sans
+                // garde désactivait tous les boutons en permanence, `null === null` étant vrai.
+                busy={busyId !== null && (busyId === notice.id || busyId === notice.dossier_id)}
                 onRetrieve={handleRetrieve}
                 onDismiss={handleDismiss}
                 onAnalyse={handleAnalyse}
