@@ -109,6 +109,14 @@ prioriser les consultations pertinentes — le retrait automatique étant un bon
 possible. Chaque avis reste immédiatement exploitable à la main : lien vers l'avis, lien vers
 la plateforme, et dépôt du zip par le canal habituel.
 
+**Retrait au bouton par défaut, jamais silencieux.** Même sur une plateforme automatisable, le
+retrait ne se déclenche pas tout seul à l'issue d'une recherche : télécharger un fichier
+depuis un tiers et créer un dossier n'est pas un effet anodin d'un balayage, c'est une décision
+par avis. C'est le bouton « Récupérer le DCE » sur chaque avis qui déclenche `fetch_dce()`.
+`AOP_VEILLE_AUTO_RETRIEVAL=true` change ce comportement et enchaîne le retrait dès qu'un
+nouvel avis automatisable est trouvé — désactivé par défaut, même logique que le balayage
+quotidien ci-dessous.
+
 ### Identité de retrait
 
 Les plateformes exigent nom, prénom et e-mail — y compris en mode « téléchargement anonyme »

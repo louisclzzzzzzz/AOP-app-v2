@@ -51,6 +51,43 @@ def _patch_sources(monkeypatch, boamp: list[Notice], ted: list[Notice], errors: 
     monkeypatch.setattr(pipeline, "search_ted", lambda criteria, since: (ted, []))
 
 
+async def test_par_defaut_le_scan_ne_telecharge_aucun_dce(isolated_workspace, monkeypatch):
+    """Le retrait ne doit jamais être un effet de bord silencieux d'une recherche : sans
+    `AOP_VEILLE_AUTO_RETRIEVAL=true` explicite, un avis automatisable reste `new`, pas
+    `retrieved` — c'est le bouton « Récupérer le DCE » qui décide, avis par avis."""
+    from app.settings import get_settings
+    from app.veille.criteria import get_veille_criteria
+    from app.veille.pipeline import run_scan
+
+    get_veille_criteria.cache_clear()
+    get_settings.cache_clear()  # pas de monkeypatch de AOP_VEILLE_AUTO_RETRIEVAL : vrai défaut
+
+    _patch_sources(
+        monkeypatch,
+        boamp=[],
+        ted=[
+            _notice(
+                "ted",
+                "44-2026",
+                "Assurance dommages ouvrage",
+                dce="https://portail.fr/?page=Entreprise.EntrepriseDetailsConsultation&id=X",
+            )
+        ],
+    )
+
+    report = await run_scan()
+    assert report.dce_retrieved == 0
+
+    with session_scope() as session:
+        notice = list_notices(session)[0]
+        assert notice.status == VeilleNoticeStatus.NEW.value
+        assert notice.dossier_id is None
+        assert session.query(Dossier).count() == 0
+
+    get_veille_criteria.cache_clear()
+    get_settings.cache_clear()
+
+
 async def test_scan_ne_retient_que_les_avis_d_assurance_construction(veille_env, monkeypatch):
     from app.veille.pipeline import run_scan
 

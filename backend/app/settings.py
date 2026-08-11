@@ -95,10 +95,14 @@ class Settings(BaseSettings):
     veille_daily_scan: bool = False
     veille_scan_hour: int = 6  # heure locale du balayage quotidien
 
-    # Retrait automatique du DCE après un balayage. Ne concerne que les plateformes prises en
-    # charge (§app/veille/retrieval/) : ailleurs l'avis attend un retrait manuel, quoi qu'il
-    # arrive. Aucun appel LLM n'est déclenché — le dossier créé reste en attente de traitement.
-    veille_auto_retrieval: bool = True
+    # Retrait automatique du DCE après un balayage. OFF par défaut, même principe que
+    # `veille_daily_scan` ci-dessus : télécharger un fichier depuis une plateforme tierce et
+    # créer un dossier n'est pas un effet anodin d'une recherche, ça doit rester une décision
+    # explicite. La recherche des avis reste automatique ; c'est le retrait du DCE de chaque
+    # avis qui se fait au bouton (§app/api/veille.py `trigger_retrieval`), plateforme par
+    # plateforme. Ne concerne de toute façon que les plateformes prises en charge
+    # (§app/veille/retrieval/) — ailleurs l'avis attend un retrait manuel, quoi qu'il arrive.
+    veille_auto_retrieval: bool = False
 
     # Identité déclarée au profil d'acheteur lors d'un retrait de DCE. Sans nom/prénom/e-mail,
     # le retrait automatique est simplement désactivé (§app/veille/retrieval/atexo.py) : on ne
