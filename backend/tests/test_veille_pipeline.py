@@ -242,3 +242,37 @@ async def test_retrait_impossible_est_signale_sans_creer_de_dossier(veille_env, 
         assert notice.dossier_id is None
         assert notice.retrieval_attempted_at is not None
         assert session.query(Dossier).count() == 0
+
+
+async def test_les_avis_expires_ne_remontent_pas_en_tete(veille_env, monkeypatch):
+    """Un tri naïf par date limite croissante mettrait les avis EXPIRÉS en premier, puisque
+    leur date est la plus ancienne. L'ordre attendu est : à venir (le plus proche d'abord),
+    puis échéance inconnue, puis expirés."""
+    from app.veille.pipeline import run_scan
+
+    now = dt.datetime.now(dt.timezone.utc)
+
+    def avis(source_id: str, buyer: str, deadline: dt.datetime | None):
+        notice = _notice("boamp", source_id, f"Assurance dommages ouvrage — {source_id}", buyer=buyer)
+        notice.deadline_at = deadline  # `_notice` impose une date par défaut
+        return notice
+
+    _patch_sources(
+        monkeypatch,
+        boamp=[
+            avis("expire", "A", now - dt.timedelta(days=5)),
+            avis("lointain", "B", now + dt.timedelta(days=40)),
+            avis("proche", "C", now + dt.timedelta(days=3)),
+            avis("inconnu", "D", None),
+        ],
+        ted=[],
+    )
+
+    await run_scan()
+    with session_scope() as session:
+        assert [n.source_id for n in list_notices(session)] == [
+            "proche",
+            "lointain",
+            "inconnu",
+            "expire",
+        ]

@@ -9,7 +9,7 @@ import datetime as dt
 import json
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import case, select
 from sqlalchemy.orm import Session
 
 from app.store.models import VeilleNotice, VeilleNoticeStatus, VeilleScan
@@ -45,13 +45,25 @@ def find_notice(session: Session, source: str, source_id: str) -> VeilleNotice |
 def list_notices(
     session: Session, *, statuses: list[str] | None = None, limit: int = 200
 ) -> list[VeilleNotice]:
-    """Avis les plus urgents d'abord : date limite la plus proche en tête, avis sans date
-    limite connue à la fin (ils ne sont pas urgents, ils sont indéterminés)."""
+    """Avis les plus actionnables d'abord, en trois groupes :
+
+    1. échéance à venir, la plus proche en tête — c'est ce sur quoi il faut agir ;
+    2. échéance inconnue — indéterminé, pas urgent ;
+    3. échéance passée — plus rien à en faire, mais conservé (l'avis reste consultable).
+
+    Un simple tri par date limite croissante mettrait au contraire les avis EXPIRÉS en tête,
+    puisque leur date est la plus ancienne : exactement l'inverse de l'usage attendu."""
+    now = dt.datetime.now(dt.timezone.utc)
+    bucket = case(
+        (VeilleNotice.deadline_at.is_(None), 1),
+        (VeilleNotice.deadline_at < now, 2),
+        else_=0,
+    )
     stmt = select(VeilleNotice)
     if statuses:
         stmt = stmt.where(VeilleNotice.status.in_(statuses))
     stmt = stmt.order_by(
-        VeilleNotice.deadline_at.is_(None), VeilleNotice.deadline_at.asc(), VeilleNotice.first_seen_at.desc()
+        bucket.asc(), VeilleNotice.deadline_at.asc(), VeilleNotice.first_seen_at.desc()
     ).limit(limit)
     return list(session.scalars(stmt))
 
