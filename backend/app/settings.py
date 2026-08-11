@@ -88,6 +88,31 @@ class Settings(BaseSettings):
     # désactivé par défaut (None), à ne renseigner que pour un run e2e instrumenté (§app/mistral/call_log.py).
     api_call_log_dir: Path | None = None
 
+    # --- Veille automatique BOAMP / JOUE (§app/veille/) -------------------------------------
+    # Le balayage quotidien est OFF par défaut : il sort seul vers des API externes, ce qui ne
+    # doit jamais démarrer sans décision explicite (poste de test, exécutable Windows distribué,
+    # suite de tests). La recherche à la demande depuis l'UI, elle, reste toujours disponible.
+    veille_daily_scan: bool = False
+    veille_scan_hour: int = 6  # heure locale du balayage quotidien
+
+    # Retrait automatique du DCE après un balayage. Ne concerne que les plateformes prises en
+    # charge (§app/veille/retrieval/) : ailleurs l'avis attend un retrait manuel, quoi qu'il
+    # arrive. Aucun appel LLM n'est déclenché — le dossier créé reste en attente de traitement.
+    veille_auto_retrieval: bool = True
+
+    # Identité déclarée au profil d'acheteur lors d'un retrait de DCE. Sans nom/prénom/e-mail,
+    # le retrait automatique est simplement désactivé (§app/veille/retrieval/atexo.py) : on ne
+    # soumet jamais d'identité fabriquée à un acheteur public.
+    veille_contact_nom: str = ""
+    veille_contact_prenom: str = ""
+    veille_contact_email: str = ""
+    veille_contact_raison_sociale: str = ""
+    veille_contact_siret: str = ""
+    veille_contact_telephone: str = ""
+    veille_contact_adresse: str = ""
+    veille_contact_code_postal: str = ""
+    veille_contact_ville: str = ""
+
     def model_post_init(self, __context: Any) -> None:
         resolved = Path(self.workspace_dir).resolve()
         if not self.database_url:

@@ -9,7 +9,7 @@ import datetime as dt
 import enum
 import uuid
 
-from sqlalchemy import DateTime, Float, ForeignKey, Integer, String, Text
+from sqlalchemy import DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -451,3 +451,98 @@ class UserApiKey(Base):
     updated_at: Mapped[dt.datetime] = mapped_column(
         DateTime(timezone=True), default=_now, onupdate=_now
     )
+
+
+class VeilleNoticeStatus(str, enum.Enum):
+    """Où en est un avis repéré par la veille, du point de vue de l'utilisateur."""
+
+    NEW = "new"  # repéré, DCE pas encore récupéré
+    MANUAL_REQUIRED = "manual_required"  # plateforme non automatisable : retrait à faire à la main
+    RETRIEVING = "retrieving"
+    RETRIEVED = "retrieved"  # DCE téléchargé, dossier créé, en attente de lancement du traitement
+    RETRIEVAL_FAILED = "retrieval_failed"
+    DISMISSED = "dismissed"  # écarté manuellement : hors périmètre, doublon, déjà traité ailleurs
+
+
+class VeilleNotice(Base):
+    """Un avis de marché repéré par la veille automatique (§app/veille/).
+
+    Découplé de `Dossier` à dessein : un avis existe et vaut d'être suivi bien avant qu'un DCE
+    n'ait pu être récupéré — et pour la majorité des plateformes (captcha, moteur non pris en
+    charge) il n'y en aura jamais automatiquement. `dossier_id` n'est renseigné que lorsqu'un
+    DCE a effectivement été rapatrié et un dossier créé.
+    """
+
+    __tablename__ = "veille_notices"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+
+    # (source, source_id) est l'identité de l'avis chez son émetteur : c'est cette paire qui
+    # rend un balayage idempotent — repasser sur le même avis le met à jour au lieu de le
+    # dupliquer (contrainte d'unicité ci-dessous).
+    source: Mapped[str] = mapped_column(String(16))
+    source_id: Mapped[str] = mapped_column(String(64))
+
+    objet: Mapped[str] = mapped_column(Text)
+    buyer_name: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    published_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    deadline_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    notice_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    dce_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    cpv_codes: Mapped[str | None] = mapped_column(Text, nullable=True)  # JSON
+    departments: Mapped[str | None] = mapped_column(Text, nullable=True)  # JSON
+    procedure: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    notice_type: Mapped[str | None] = mapped_column(String(128), nullable=True)
+
+    # Autres publications de la même consultation (BOAMP <-> TED), au format JSON
+    # [{"source": …, "source_id": …, "notice_url": …}] — conservées plutôt qu'écrasées : la
+    # fusion doit rester vérifiable par l'utilisateur (§app/veille/dedup.py).
+    also_published_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # Termes de `veille_criteres.yaml` qui ont retenu cet avis — pour que le tri soit
+    # explicable et les critères ajustables plutôt que subis.
+    matched_terms: Mapped[str | None] = mapped_column(Text, nullable=True)  # JSON
+
+    status: Mapped[str] = mapped_column(String(24), default=VeilleNoticeStatus.NEW.value)
+    retrieval_platform: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    retrieval_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    retrieval_attempted_at: Mapped[dt.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    dossier_id: Mapped[str | None] = mapped_column(
+        ForeignKey("dossiers.id", ondelete="SET NULL"), nullable=True
+    )
+
+    first_seen_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    updated_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True), default=_now, onupdate=_now
+    )
+
+    __table_args__ = (UniqueConstraint("source", "source_id", name="uq_veille_notice_source"),)
+
+
+class VeilleScan(Base):
+    """Trace d'un passage de veille (planifié ou manuel).
+
+    Sans cette trace, une veille silencieuse est indistinguable d'une veille en panne : c'est
+    elle qui permet d'affirmer « rien de neuf » plutôt que de supposer.
+    """
+
+    __tablename__ = "veille_scans"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    started_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    finished_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    triggered_by: Mapped[str] = mapped_column(String(16), default="manual")  # manual | schedule
+
+    notices_seen: Mapped[int] = mapped_column(Integer, default=0)
+    notices_retained: Mapped[int] = mapped_column(Integer, default=0)
+    notices_new: Mapped[int] = mapped_column(Integer, default=0)
+    dce_retrieved: Mapped[int] = mapped_column(Integer, default=0)
+
+    errors: Mapped[str | None] = mapped_column(Text, nullable=True)  # JSON

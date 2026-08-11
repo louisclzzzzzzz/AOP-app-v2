@@ -10,6 +10,7 @@ import { DossierProgress } from './components/DossierProgress'
 import { LoginForm } from './components/LoginForm'
 import { ApiKeyGuide } from './components/ApiKeyGuide'
 import { WelcomeTour } from './components/WelcomeTour'
+import { VeillePanel } from './components/VeillePanel'
 
 export default function App() {
   // undefined = vérification en cours ; false = accès ouvert (AOP_REQUIRE_AUTH off — usage
@@ -90,6 +91,14 @@ export default function App() {
   const handleBack = useCallback(() => {
     setSelectedId(null)
     refresh()
+  }, [refresh])
+
+  // Un dossier issu de la veille existe déjà côté serveur (son DCE a été rapatrié) mais son
+  // traitement vient seulement d'être lancé : on bascule dessus et on rafraîchit la liste, qui
+  // ne le contenait pas encore.
+  const handleVeilleDossierStarted = useCallback((dossierId: string) => {
+    refresh()
+    setSelectedId(dossierId)
   }, [refresh])
 
   const handleDelete = useCallback(async (id: string) => {
@@ -176,6 +185,8 @@ export default function App() {
                 </p>
               )}
             </section>
+
+            <VeillePanel onDossierStarted={handleVeilleDossierStarted} />
 
             <section>
               <h2 className="mb-3 text-sm font-medium text-slate-600">Dossiers</h2>

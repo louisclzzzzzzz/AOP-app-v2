@@ -22,11 +22,13 @@ from app.api.extraction import extraction_schema_router
 from app.api.extraction import router as extraction_router
 from app.api.me import router as me_router
 from app.api.project_synthesis import router as project_synthesis_router
+from app.api.veille import router as veille_router
 from app.api.websocket import router as websocket_router
 from app.auth.dependencies import require_auth, require_auth_ws
 from app.mistral.client import api_slots_health
 from app.settings import get_bundle_dir, get_settings
 from app.store.db import init_db
+from app.veille.scheduler import start_scheduler, stop_scheduler
 
 logging.basicConfig(level=logging.INFO)
 
@@ -41,7 +43,10 @@ FRONTEND_DIST = (
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
+    # No-op tant que AOP_VEILLE_DAILY_SCAN n'est pas activé (§app/veille/scheduler.py).
+    start_scheduler()
     yield
+    await stop_scheduler()
 
 
 app = FastAPI(title="AOP v2", lifespan=lifespan)
@@ -86,6 +91,7 @@ app.include_router(extraction_router, dependencies=_auth)
 app.include_router(extraction_schema_router, dependencies=_auth)
 app.include_router(project_synthesis_router, dependencies=_auth)
 app.include_router(audit_router, dependencies=_auth)
+app.include_router(veille_router, dependencies=_auth)
 app.include_router(websocket_router, dependencies=_auth_ws)
 
 
