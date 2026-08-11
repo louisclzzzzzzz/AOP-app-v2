@@ -55,6 +55,15 @@ export const JETON_ALERTE = `${JETON_BASE} bg-ambre-clair text-ambre`
 /** Incohérence franche entre sources. */
 export const JETON_ERREUR = `${JETON_BASE} bg-rouge-clair text-rouge`
 
+/** Jeton de source, seul à porter un texte de longueur libre (un nom de document
+ * peut faire 50 caractères). `block` et non `inline-flex` : `text-overflow: ellipsis`
+ * n'a aucun effet sur un conteneur flex, le texte serait tronqué net en plein milieu
+ * d'un mot au lieu d'afficher « … ». Le nom complet reste en `title`. */
+const JETON_SOURCE_BASE =
+  'block max-w-full truncate rounded px-1.5 py-0.5 font-mono text-[11px] font-medium'
+export const JETON_SOURCE = `${JETON_SOURCE_BASE} bg-surface-3 text-encre-2`
+export const JETON_SOURCE_ACTIF = `${JETON_SOURCE_BASE} bg-ardoise text-white`
+
 // ── Pastilles de filtre ────────────────────────────────────────────────────
 const PUCE_BASE =
   'cursor-pointer rounded-full border px-3 py-1 text-xs font-semibold transition-colors'

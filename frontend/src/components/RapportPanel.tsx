@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { generateAuditRisques, generateProjectSynthesis } from '../api'
 import type { Dossier } from '../types'
+import { telechargerRapportDocx } from '../rapport'
 import { BTN, BTN_PRIMAIRE, ERREUR } from '../ui'
 import { Markdown } from './Markdown'
 
@@ -40,8 +41,12 @@ const TEXTES: Record<
   },
 }
 
+const AIDE_RAPPORT =
+  "Rapport d'analyse complet du dossier au format Word : arborescence, pièces de l'étape 2, tableau d'extraction, synthèse projet et audit des risques."
+
 export function RapportPanel({ dossierId, dossier, kind, onApplied }: Props) {
   const [lancement, setLancement] = useState(false)
+  const [telechargement, setTelechargement] = useState(false)
   const [erreur, setErreur] = useState<string | null>(null)
 
   const textes = TEXTES[kind]
@@ -73,6 +78,18 @@ export function RapportPanel({ dossierId, dossier, kind, onApplied }: Props) {
     }
   }, [dossierId, kind, onApplied, textes.titre])
 
+  const handleDownload = useCallback(async () => {
+    setTelechargement(true)
+    setErreur(null)
+    try {
+      await telechargerRapportDocx(dossierId, dossier)
+    } catch (e) {
+      setErreur(e instanceof Error ? e.message : 'Échec de la génération du rapport')
+    } finally {
+      setTelechargement(false)
+    }
+  }, [dossierId, dossier])
+
   // L'audit relit la synthèse comme socle : le proposer avant elle produirait un
   // rapport sans contexte projet.
   const bloqueParSynthese = kind === 'audit' && !dossier.synthese_projet_md
@@ -84,16 +101,26 @@ export function RapportPanel({ dossierId, dossier, kind, onApplied }: Props) {
           <h3 className="text-base font-bold tracking-tight">{textes.titre}</h3>
           <p className="text-[13px] text-encre-2">{textes.sousTitre}</p>
         </div>
-        {!bloqueParSynthese && (
-          <button
-            onClick={handleGenerate}
-            disabled={lancement || enCours}
-            title={textes.aide}
-            className={md ? BTN : BTN_PRIMAIRE}
-          >
-            {enCours ? 'Génération en cours…' : md ? textes.regenerer : textes.generer}
-          </button>
-        )}
+        <div className="flex flex-wrap items-center gap-2">
+          {/* L'audit est le bout de la chaîne : c'est là qu'on se dit « j'ai fini,
+              donnez-moi le livrable ». Le rapport couvre tout le dossier, pas seulement
+              l'audit — d'où le libellé explicite. */}
+          {kind === 'audit' && (
+            <button onClick={handleDownload} disabled={telechargement} className={BTN} title={AIDE_RAPPORT}>
+              {telechargement ? 'Génération…' : 'Télécharger le rapport (.docx)'}
+            </button>
+          )}
+          {!bloqueParSynthese && (
+            <button
+              onClick={handleGenerate}
+              disabled={lancement || enCours}
+              title={textes.aide}
+              className={md ? BTN : BTN_PRIMAIRE}
+            >
+              {enCours ? 'Génération en cours…' : md ? textes.regenerer : textes.generer}
+            </button>
+          )}
+        </div>
       </div>
 
       {erreur && <p className={ERREUR}>{erreur}</p>}

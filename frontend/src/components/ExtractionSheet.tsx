@@ -1,8 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
-  exportReportDocx,
   extractionExcelUrl,
-  getCompleteness,
   getExtraction,
   getReorganizationReport,
   reopenExtraction,
@@ -11,24 +9,24 @@ import {
 } from '../api'
 import type { Dossier, DocumentItem, DossierStatus, ExtractionEntry } from '../types'
 import { isAtOrAfter } from '../statusFlow'
+import { telechargerRapportDocx } from '../rapport'
 import {
   BTN,
   BTN_PRIMAIRE,
   CADRE,
   ERREUR,
-  JETON,
-  JETON_ACTIF,
   JETON_ALERTE,
   JETON_ERREUR,
   JETON_RECOUPE,
+  JETON_SOURCE,
+  JETON_SOURCE_ACTIF,
   LIEN,
   PUCE,
   PUCE_ACTIVE,
   SECTION_TITRE,
 } from '../ui'
-import { CERTAINTY_LABELS, PRESENCE_LABELS } from './CompletenessChecklist'
 import { CitationPreview } from './CitationPreview'
-import { collectDocumentIds, OrganizedTree, reorgReportEntriesToTree, treeToMarkdownFoldersOnly, type TreeNode } from './OrganizedTree'
+import { collectDocumentIds, OrganizedTree, reorgReportEntriesToTree, type TreeNode } from './OrganizedTree'
 import { ReopenButton } from './ReopenButton'
 
 interface Props {
@@ -54,42 +52,6 @@ function matchFiltre(entry: ExtractionEntry, filtre: Filtre): boolean {
   if (filtre === 'recoupes') return entry.cross_check_status === 'coherent'
   if (filtre === 'incoherents') return entry.cross_check_status === 'incoherent'
   return true
-}
-
-function formatDuration(startIso: string, endIso: string): string {
-  const ms = new Date(endIso).getTime() - new Date(startIso).getTime()
-  if (!Number.isFinite(ms) || ms <= 0) return '—'
-  const totalMinutes = Math.round(ms / 60000)
-  const hours = Math.floor(totalMinutes / 60)
-  const minutes = totalMinutes % 60
-  if (hours > 0) return `${hours} h ${String(minutes).padStart(2, '0')} min`
-  if (minutes > 0) return `${minutes} min`
-  return `${Math.round(ms / 1000)} s`
-}
-
-function escapeMd(value: string): string {
-  return value.replace(/\|/g, '\\|').replace(/\r?\n/g, ' ')
-}
-
-/** Retire le titre `# ...` en première ligne d'un rapport IA (synthèse projet, audit des
- * risques) avant de l'inclure sous un titre `##` déjà porté par la section englobante. */
-function stripLeadingHeading(md: string): string {
-  const lines = md.split('\n')
-  if (lines[0]?.startsWith('# ')) {
-    return lines.slice(1).join('\n').replace(/^\n+/, '')
-  }
-  return md
-}
-
-function downloadBlob(filename: string, blob: Blob) {
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url
-  a.download = filename
-  document.body.appendChild(a)
-  a.click()
-  document.body.removeChild(a)
-  URL.revokeObjectURL(url)
 }
 
 export function ExtractionSheet({ dossierId, dossier, documents, onApplied }: Props) {
@@ -227,98 +189,13 @@ export function ExtractionSheet({ dossierId, dossier, documents, onApplied }: Pr
     setDownloadingReport(true)
     setError(null)
     try {
-      const [reorgReport, completenessEntries] = await Promise.all([
-        getReorganizationReport(dossierId).catch(() => null),
-        getCompleteness(dossierId).catch(() => []),
-      ])
-
-      const treeMd = reorgReport
-        ? treeToMarkdownFoldersOnly(reorgReportEntriesToTree(reorgReport.entries))
-        : '_Arborescence non disponible._'
-
-      const selectedPieces = completenessEntries.filter((e) => e.is_selected)
-      const piecesMd =
-        selectedPieces.length > 0
-          ? [
-              '| Pièce | Statut | Sûreté |',
-              '|---|---|---|',
-              ...selectedPieces.map(
-                (p) =>
-                  `| ${escapeMd(p.libelle)} | ${PRESENCE_LABELS[p.final_presence ?? ''] ?? '—'} | ${CERTAINTY_LABELS[p.final_certainty ?? ''] ?? '—'} |`,
-              ),
-            ].join('\n')
-          : '_Aucune pièce sélectionnée._'
-
-      const sortedSections = [...bySection.keys()]
-      const extractionMd =
-        sortedSections.length > 0
-          ? sortedSections
-              .map((section) => {
-                const rows = (bySection.get(section) ?? [])
-                  .map((entry) => {
-                    const sources =
-                      entry.sources.map((s) => documentPathById.get(s.document_id) ?? s.filename).join(', ') || '—'
-                    return `| ${escapeMd(entry.libelle)} | ${escapeMd(entry.final_value ?? 'Non trouvée')} | ${escapeMd(sources)} |`
-                  })
-                return [
-                  `### ${sectionLabels.get(section) ?? section}`,
-                  '',
-                  '| Donnée | Valeur | Sources |',
-                  '|---|---|---|',
-                  ...rows,
-                ].join('\n')
-              })
-              .join('\n\n')
-          : '_Aucune donnée extraite._'
-
-      const duration = formatDuration(dossier.created_at, dossier.extraction_validated_at ?? dossier.updated_at)
-
-      // La synthèse projet et l'audit des risques portent déjà leur propre titre `# ...` en
-      // première ligne : on le retire pour que le titre de section `##` ci-dessous fasse
-      // office de titre unique, cohérent avec le reste du rapport (Arborescence, Pièces,
-      // Extraction).
-      const syntheseMd = dossier.synthese_projet_md
-        ? stripLeadingHeading(dossier.synthese_projet_md)
-        : '_Synthèse projet non générée._'
-      const auditMd = dossier.audit_risques_md
-        ? stripLeadingHeading(dossier.audit_risques_md)
-        : '_Audit des risques non généré._'
-
-      const md = `# Rapport d'analyse — ${dossier.original_filename}
-
-Généré le ${new Date().toLocaleString('fr-FR')}
-Temps de traitement du dossier : **${duration}**
-
-## Arborescence proposée
-
-${treeMd}
-
-## Pièces — étape 2 (complétude)
-
-${piecesMd}
-
-## Extraction des données — étape 3
-
-${extractionMd}
-
-## Synthèse projet — Phase 1
-
-${syntheseMd}
-
-## Audit des risques — Phase 2
-
-${auditMd}
-`
-
-      const safeName = dossier.original_filename.replace(/\.[^./]+$/, '').replace(/[^a-zA-Z0-9._-]+/g, '_')
-      const blob = await exportReportDocx(dossierId, md)
-      downloadBlob(`rapport_${safeName}.docx`, blob)
+      await telechargerRapportDocx(dossierId, dossier)
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Échec de la génération du rapport')
     } finally {
       setDownloadingReport(false)
     }
-  }, [dossierId, dossier, bySection, documentPathById])
+  }, [dossierId, dossier])
 
   if (!isAtOrAfter(status, 'completeness_validated')) {
     return null
@@ -454,13 +331,20 @@ ${auditMd}
           <span className="ml-auto font-mono text-xs text-encre-3">{bySection.size} sections</span>
         </div>
 
-        <div className={CADRE}>
+        {/* UNE seule grille pour tout le tableau, dont chaque ligne reprend les colonnes
+            par `subgrid`. Sans cela, chaque ligne était une grille indépendante : la
+            colonne de source, dimensionnée sur son contenu, décalait le libellé et la
+            valeur d'une ligne à l'autre selon la longueur du nom de document — rien ne
+            s'alignait verticalement. */}
+        <div
+          className={`${CADRE} grid grid-cols-[minmax(0,1fr)_minmax(0,1.3fr)_minmax(0,15rem)] [&>*:last-child>*:last-child]:border-b-0`}
+        >
           {[...bySection.keys()].map((section) => {
             const lignes = (bySection.get(section) ?? []).filter((e) => matchFiltre(e, filtre))
             if (lignes.length === 0) return null
             return (
-              <div key={section}>
-                <div className={SECTION_TITRE}>{sectionLabels.get(section) ?? section}</div>
+              <div key={section} className="col-span-3 grid grid-cols-subgrid">
+                <div className={`col-span-3 ${SECTION_TITRE}`}>{sectionLabels.get(section) ?? section}</div>
                 {lignes.map((entry) => {
                   const actif = proofOf?.field_id === entry.field_id
                   const consultable = Boolean(entry.citation && entry.sources.length > 0)
@@ -471,13 +355,13 @@ ${auditMd}
                       disabled={!consultable}
                       onClick={() => setProofOf(entry)}
                       title={consultable ? 'Afficher le passage surligné dans le document d’origine' : undefined}
-                      className={`grid w-full grid-cols-[1fr_1.25fr_auto] items-baseline gap-3.5 border-b border-bord border-l-[3px] px-3.5 py-2 text-left last:border-b-0 ${
+                      className={`col-span-3 grid grid-cols-subgrid items-baseline gap-3.5 border-b border-bord border-l-[3px] px-3.5 py-2 text-left ${
                         actif
                           ? 'border-l-ardoise bg-ardoise-clair'
                           : `border-l-transparent ${consultable ? 'hover:bg-surface-2' : ''}`
                       } ${consultable ? 'cursor-pointer' : 'cursor-default'}`}
                     >
-                      <span className="text-[13px] text-encre-2">{entry.libelle}</span>
+                      <span className="min-w-0 text-[13px] text-encre-2">{entry.libelle}</span>
 
                       <span className="min-w-0 text-[13.5px]">
                         {entry.final_value ? (
@@ -492,7 +376,9 @@ ${auditMd}
                         )}
                       </span>
 
-                      <span className="flex shrink-0 items-center gap-1.5">
+                      {/* Les jetons se rangent contre le bord droit : ils forment ainsi une
+                          colonne franche, au lieu de flotter au gré de la longueur du nom. */}
+                      <span className="flex min-w-0 items-center justify-end gap-1.5">
                         {entry.sources.some((s) => s.selection === 'semantic') && (
                           <span
                             className={JETON_ALERTE}
@@ -515,7 +401,7 @@ ${auditMd}
                         ) : null}
                         {entry.sources.length > 0 ? (
                           <span
-                            className={actif ? JETON_ACTIF : JETON}
+                            className={`min-w-0 ${actif ? JETON_SOURCE_ACTIF : JETON_SOURCE}`}
                             title={entry.sources.map((s) => documentPathById.get(s.document_id) ?? s.filename).join(', ')}
                           >
                             {sourceCourte(documentPathById.get(entry.sources[0].document_id) ?? entry.sources[0].filename)}
