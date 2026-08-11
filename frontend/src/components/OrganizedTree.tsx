@@ -123,7 +123,7 @@ interface SelectionProps {
 }
 
 function TreeConnector() {
-  return <span aria-hidden="true" className="absolute -left-4 top-1/2 h-px w-4 -translate-y-1/2 bg-slate-300" />
+  return <span aria-hidden="true" className="absolute -left-4 top-1/2 h-px w-4 -translate-y-1/2 bg-bord-fort" />
 }
 
 function FolderRow({
@@ -157,7 +157,7 @@ function FolderRow({
 
   return (
     <div>
-      <div className="relative flex w-full items-center gap-2 rounded px-1.5 py-1.5 hover:bg-blue-50">
+      <div className="relative flex w-full items-center gap-2 rounded px-1.5 py-1.5 hover:bg-ardoise-clair">
         {!isRoot && <TreeConnector />}
         {selectable && folderDocumentIds.length > 0 && (
           <input
@@ -176,17 +176,17 @@ function FolderRow({
           onClick={() => onToggle(node.path)}
           className="flex flex-1 items-center gap-2 text-left text-sm"
         >
-          <span className={`w-3 shrink-0 text-[10px] ${expanded ? 'text-blue-500' : 'text-slate-300'}`}>
+          <span className={`w-3 shrink-0 text-[10px] ${expanded ? 'text-ardoise' : 'text-bord-fort'}`}>
             {expanded ? '▾' : '▸'}
           </span>
-          <span className="truncate font-semibold text-slate-700">{node.name}</span>
-          <span className="ml-auto shrink-0 rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-medium text-slate-500">
+          <span className="truncate font-semibold text-encre">{node.name}</span>
+          <span className="ml-auto shrink-0 rounded-full bg-surface-3 px-2 py-0.5 text-[10px] font-medium text-encre-2">
             {selectable && folderDocumentIds.length > 0 ? `${folderSelectedCount}/${total} sélectionné(s)` : `${total} fichier${total > 1 ? 's' : ''}`}
           </span>
         </button>
       </div>
       {expanded && hasVisibleChildren && (
-        <div className="ml-2 border-l border-slate-200 pl-4">
+        <div className="ml-2 border-l border-bord pl-4">
           {childFolders.map((child) => (
             <FolderRow
               key={child.path}
@@ -204,7 +204,7 @@ function FolderRow({
             files.map((file, i) => (
               <div
                 key={i}
-                className="relative flex items-center gap-1.5 px-1.5 py-1 text-xs text-slate-500"
+                className="relative flex items-center gap-1.5 px-1.5 py-1 text-xs text-encre-2"
                 title={file.name}
               >
                 <TreeConnector />
@@ -216,11 +216,11 @@ function FolderRow({
                     className="shrink-0"
                   />
                 ) : (
-                  <span className="shrink-0 text-slate-300">·</span>
+                  <span className="shrink-0 text-bord-fort">·</span>
                 )}
                 <span className="truncate">{file.name}</span>
                 {file.meta && (
-                  <span className="ml-1 shrink-0 rounded bg-amber-100 px-1 text-[10px] text-amber-700">
+                  <span className="ml-1 shrink-0 rounded bg-ambre-clair px-1 text-[10px] text-ambre">
                     {file.meta}
                   </span>
                 )}
@@ -245,7 +245,7 @@ export function OrganizedTree({
   const [showFiles, setShowFiles] = useState(true)
 
   if (topFolders.length === 0 && root.files.length === 0) {
-    return <p className="text-xs text-slate-400">Aucun fichier à afficher.</p>
+    return <p className="text-xs text-encre-3">Aucun fichier à afficher.</p>
   }
 
   const totalFiles = countFiles(root)
@@ -273,22 +273,22 @@ export function OrganizedTree({
   const effectiveShowFiles = selectable ? true : showFiles
 
   return (
-    <div className="overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm">
-      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 bg-slate-50 px-3 py-2">
+    <div className="overflow-hidden rounded-lg border border-bord bg-white shadow-sm">
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-bord bg-surface-2 px-3 py-2">
         <div className="flex items-center gap-2">
-          <span className="text-sm font-semibold text-slate-700">{title ?? 'Arborescence'}</span>
-          <span className="rounded-full bg-blue-100 px-2 py-0.5 text-[11px] font-medium text-blue-700">
+          <span className="text-sm font-semibold text-encre">{title ?? 'Arborescence'}</span>
+          <span className="rounded-full bg-ardoise-clair px-2 py-0.5 text-[11px] font-medium text-ardoise-fonce">
             {totalFiles} fichier{totalFiles > 1 ? 's' : ''}
           </span>
         </div>
         {!selectable && (
-          <div className="flex overflow-hidden rounded border border-slate-200">
+          <div className="flex overflow-hidden rounded border border-bord">
             <button
               type="button"
               onClick={() => handleSetMode('folded')}
               aria-pressed={!showFiles}
               className={`px-2 py-1 text-[11px] font-medium ${
-                !showFiles ? 'bg-blue-600 text-white' : 'bg-white text-slate-600 hover:bg-slate-100'
+                !showFiles ? 'bg-ardoise text-white' : 'bg-white text-encre-2 hover:bg-surface-3'
               }`}
             >
               Vue pliée (dossiers)
@@ -297,8 +297,8 @@ export function OrganizedTree({
               type="button"
               onClick={() => handleSetMode('expanded')}
               aria-pressed={showFiles}
-              className={`border-l border-slate-200 px-2 py-1 text-[11px] font-medium ${
-                showFiles ? 'bg-blue-600 text-white' : 'bg-white text-slate-600 hover:bg-slate-100'
+              className={`border-l border-bord px-2 py-1 text-[11px] font-medium ${
+                showFiles ? 'bg-ardoise text-white' : 'bg-white text-encre-2 hover:bg-surface-3'
               }`}
             >
               Vue dépliée (dossiers + fichiers)

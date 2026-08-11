@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { markTourSeen } from '../tour'
+import { BTN_PRIMAIRE } from '../ui'
 
 interface Props {
   onDone: () => void
@@ -44,27 +45,27 @@ export function WelcomeTour({ onDone }: Props) {
   }
 
   return (
-    <div className="fixed inset-0 z-40 flex min-h-screen items-center justify-center bg-slate-50 px-6">
-      <div className="w-full max-w-lg rounded-xl border border-slate-200 bg-white p-8 shadow-sm">
-        <p className="text-xs font-medium uppercase tracking-wide text-slate-400">
+    <div className="fixed inset-0 z-40 flex min-h-screen items-center justify-center bg-surface-2 px-6">
+      <div className="w-full max-w-lg rounded-xl border border-bord bg-white p-8 shadow-sm">
+        <p className="text-xs font-medium uppercase tracking-wide text-encre-3">
           {stepIndex + 1} / {STEPS.length}
         </p>
-        <h1 className="mt-1 text-xl font-semibold text-slate-800">{step.title}</h1>
-        <p className="mt-3 text-sm leading-relaxed text-slate-500">{step.body}</p>
+        <h1 className="mt-1 text-xl font-semibold text-encre">{step.title}</h1>
+        <p className="mt-3 text-sm leading-relaxed text-encre-2">{step.body}</p>
 
         <div className="mt-6 flex items-center justify-center gap-1.5">
           {STEPS.map((s, i) => (
             <span
               key={s.title}
               className={`h-1.5 rounded-full transition-all ${
-                i === stepIndex ? 'w-5 bg-blue-600' : 'w-1.5 bg-slate-200'
+                i === stepIndex ? 'w-5 bg-ardoise' : 'w-1.5 bg-bord'
               }`}
             />
           ))}
         </div>
 
         <div className="mt-6 flex items-center justify-between">
-          <button type="button" onClick={finish} className="text-sm text-slate-400 hover:text-slate-600">
+          <button type="button" onClick={finish} className="text-sm text-encre-3 hover:text-encre-2">
             Passer le tutoriel
           </button>
           <div className="flex items-center gap-2">
@@ -72,7 +73,7 @@ export function WelcomeTour({ onDone }: Props) {
               <button
                 type="button"
                 onClick={() => setStepIndex((i) => i - 1)}
-                className="rounded-md border border-slate-300 px-3 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50"
+                className="rounded-md border border-bord-fort px-3 py-2 text-sm font-medium text-encre-2 hover:bg-surface-2"
               >
                 Précédent
               </button>
@@ -80,7 +81,7 @@ export function WelcomeTour({ onDone }: Props) {
             <button
               type="button"
               onClick={isLast ? finish : () => setStepIndex((i) => i + 1)}
-              className="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700"
+              className={BTN_PRIMAIRE}
             >
               {isLast ? 'Commencer' : 'Suivant'}
             </button>

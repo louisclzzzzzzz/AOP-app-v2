@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { deleteApiKey, getApiKeyStatus, saveApiKey } from '../auth'
 import type { ApiKeyStatus } from '../auth'
+import { BTN_PRIMAIRE } from '../ui'
 
 interface Props {
   /** 'onboarding' : plein écran, pas de fermeture possible tant qu'aucune clé n'est enregistrée
@@ -93,9 +94,9 @@ export function ApiKeyGuide({ mode, onConfigured, onClose }: Props) {
   const content = (
     <div className="mx-auto max-w-3xl px-6 py-10">
       <header className="mb-8">
-        <p className="text-xs font-medium uppercase tracking-wide text-slate-400">Configuration requise</p>
-        <h1 className="mt-1 text-2xl font-semibold text-slate-800">Clé API Mistral personnelle</h1>
-        <p className="mt-2 text-sm leading-relaxed text-slate-500">
+        <p className="text-xs font-medium uppercase tracking-wide text-encre-3">Configuration requise</p>
+        <h1 className="mt-1 text-2xl font-semibold text-encre">Clé API Mistral personnelle</h1>
+        <p className="mt-2 text-sm leading-relaxed text-encre-2">
           AOP s’appuie sur l’API Mistral pour analyser vos dossiers. Chaque personne utilise sa propre clé, obtenue
           gratuitement sur la console Mistral — suivez les étapes ci-dessous, puis collez-la en bas de page.
         </p>
@@ -103,19 +104,19 @@ export function ApiKeyGuide({ mode, onConfigured, onClose }: Props) {
 
       <ol className="flex flex-col gap-4">
         {STEPS.map((step, i) => (
-          <li key={step.title} className="rounded-lg border border-slate-200 bg-white">
-            <div className="flex items-center gap-3 border-b border-slate-100 px-4 py-3">
-              <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-slate-800 text-xs font-semibold text-white">
+          <li key={step.title} className="rounded-lg border border-bord bg-white">
+            <div className="flex items-center gap-3 border-b border-surface-3 px-4 py-3">
+              <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-encre text-xs font-semibold text-white">
                 {i + 1}
               </span>
-              <h2 className="text-sm font-medium text-slate-800">{step.title}</h2>
+              <h2 className="text-sm font-medium text-encre">{step.title}</h2>
             </div>
             <div className="grid grid-cols-1 gap-4 p-4 sm:grid-cols-[1fr_1.2fr]">
-              <p className="text-sm leading-relaxed text-slate-500">{step.body}</p>
+              <p className="text-sm leading-relaxed text-encre-2">{step.body}</p>
               <button
                 type="button"
                 onClick={() => setZoomedImage(step.image)}
-                className="overflow-hidden rounded-md border border-slate-200 bg-slate-50"
+                className="overflow-hidden rounded-md border border-bord bg-surface-2"
               >
                 <img src={step.image} alt={step.title} className="w-full" loading="lazy" />
               </button>
@@ -128,16 +129,16 @@ export function ApiKeyGuide({ mode, onConfigured, onClose }: Props) {
         href="https://console.mistral.ai"
         target="_blank"
         rel="noopener noreferrer"
-        className="mt-6 inline-flex items-center text-sm font-medium text-blue-600 hover:underline"
+        className="mt-6 inline-flex items-center text-sm font-medium text-ardoise hover:underline"
       >
         Ouvrir console.mistral.ai ↗
       </a>
 
-      <section className="mt-8 rounded-lg border border-slate-200 bg-white p-5">
-        <h2 className="text-sm font-medium text-slate-800">Votre clé</h2>
+      <section className="mt-8 rounded-lg border border-bord bg-white p-5">
+        <h2 className="text-sm font-medium text-encre">Votre clé</h2>
 
         {status?.configured && (
-          <p className="mt-2 rounded-md bg-slate-50 px-3 py-2 text-sm text-slate-600">
+          <p className="mt-2 rounded-md bg-surface-2 px-3 py-2 text-sm text-encre-2">
             Clé enregistrée : <span className="font-mono">{status.masked}</span>
           </p>
         )}
@@ -150,12 +151,12 @@ export function ApiKeyGuide({ mode, onConfigured, onClose }: Props) {
               onChange={(e) => setApiKey(e.target.value)}
               placeholder="Collez votre clé API Mistral"
               autoComplete="off"
-              className="w-full rounded-md border border-slate-300 px-3 py-2 pr-10 font-mono text-sm focus:border-blue-500 focus:outline-none"
+              className="w-full rounded-md border border-bord-fort px-3 py-2 pr-10 font-mono text-sm focus:border-ardoise focus:outline-none"
             />
             <button
               type="button"
               onClick={() => setShowKey((v) => !v)}
-              className="absolute right-2 top-1/2 -translate-y-1/2 text-xs text-slate-400 hover:text-slate-600"
+              className="absolute right-2 top-1/2 -translate-y-1/2 text-xs text-encre-3 hover:text-encre-2"
             >
               {showKey ? 'Masquer' : 'Afficher'}
             </button>
@@ -163,31 +164,31 @@ export function ApiKeyGuide({ mode, onConfigured, onClose }: Props) {
           <button
             type="submit"
             disabled={isSaving || apiKey.trim().length === 0}
-            className="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-slate-300"
+            className={BTN_PRIMAIRE}
           >
             {isSaving ? 'Vérification…' : 'Enregistrer'}
           </button>
         </form>
 
-        {error && <p className="mt-2 rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p>}
+        {error && <p className="mt-2 rounded-md bg-rouge-clair px-3 py-2 text-sm text-rouge">{error}</p>}
 
         {status?.configured && (
           <button
             type="button"
             onClick={handleRemove}
-            className="mt-3 text-xs text-slate-400 hover:text-red-600 hover:underline"
+            className="mt-3 text-xs text-encre-3 hover:text-rouge hover:underline"
           >
             Retirer cette clé
           </button>
         )}
 
-        <p className="mt-5 border-t border-slate-100 pt-4 text-xs text-slate-400">
+        <p className="mt-5 border-t border-surface-3 pt-4 text-xs text-encre-3">
           Pour suivre votre consommation, consultez{' '}
           <a
             href="https://admin.mistral.ai/subscription"
             target="_blank"
             rel="noopener noreferrer"
-            className="underline hover:text-slate-600"
+            className="underline hover:text-encre-2"
           >
             admin.mistral.ai/subscription
           </a>
@@ -200,7 +201,7 @@ export function ApiKeyGuide({ mode, onConfigured, onClose }: Props) {
           type="button"
           onClick={onClose}
           disabled={!status?.configured}
-          className="mt-6 rounded-md border border-slate-300 px-4 py-2 text-sm font-medium text-slate-600 transition-colors hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+          className="mt-6 rounded-md border border-bord-fort px-4 py-2 text-sm font-medium text-encre-2 transition-colors hover:bg-surface-2 disabled:cursor-not-allowed disabled:opacity-50"
         >
           Retour aux dossiers
         </button>
@@ -209,14 +210,14 @@ export function ApiKeyGuide({ mode, onConfigured, onClose }: Props) {
   )
 
   return (
-    <div className={mode === 'onboarding' ? 'min-h-screen bg-slate-50' : 'fixed inset-0 z-40 overflow-y-auto bg-slate-50'}>
+    <div className={mode === 'onboarding' ? 'min-h-screen bg-surface-2' : 'fixed inset-0 z-40 overflow-y-auto bg-surface-2'}>
       {mode === 'panel' && (
-        <div className="sticky top-0 z-10 border-b border-slate-200 bg-white px-6 py-3">
+        <div className="sticky top-0 z-10 border-b border-bord bg-white px-6 py-3">
           <button
             type="button"
             onClick={onClose}
             disabled={!status?.configured}
-            className="text-sm text-slate-500 hover:text-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
+            className="text-sm text-encre-2 hover:text-encre disabled:cursor-not-allowed disabled:opacity-50"
           >
             ← Retour aux dossiers
           </button>
@@ -226,7 +227,7 @@ export function ApiKeyGuide({ mode, onConfigured, onClose }: Props) {
 
       {zoomedImage && (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/70 p-6"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-graphite/70 p-6"
           onClick={() => setZoomedImage(null)}
         >
           <img src={zoomedImage} alt="Aperçu agrandi" className="max-h-full max-w-full rounded-md shadow-lg" />

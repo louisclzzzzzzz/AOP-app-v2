@@ -9,7 +9,7 @@ import {
 } from '../api'
 import type { ClassificationEntry, DossierStatus, ReorgReport, TaxonomyCategory } from '../types'
 import { isAtOrAfter } from '../statusFlow'
-import { HOVER_HINT_CLASS } from '../ui'
+import { BTN_PRIMAIRE, HOVER_HINT_CLASS } from '../ui'
 import { CollapsiblePanel } from './CollapsiblePanel'
 import { OrganizedTree, classificationEntriesToTree, reorgReportEntriesToTree } from './OrganizedTree'
 import { ReopenButton } from './ReopenButton'
@@ -104,7 +104,7 @@ export function ReorganizationPlan({ dossierId, status, onApplied }: Props) {
     return (
       <div className="flex flex-col gap-4">
         <div className="flex items-start justify-between gap-3">
-          <h3 className="text-sm font-medium text-slate-600">
+          <h3 className="text-sm font-medium text-encre-2">
             Copie triée appliquée{report ? ` — ${report.total_files} fichiers` : ''}
           </h3>
           {REOPENABLE_REORG_STATUSES.includes(status) && (
@@ -119,29 +119,29 @@ export function ReorganizationPlan({ dossierId, status, onApplied }: Props) {
             />
           )}
         </div>
-        <p className="text-sm text-slate-500">
+        <p className="text-sm text-encre-2">
           La source d’origine n’a pas été modifiée. Les fichiers ont été copiés dans le dossier{' '}
-          <code className="rounded bg-slate-100 px-1 py-0.5 text-xs">organized/</code>.
+          <code className="rounded bg-surface-3 px-1 py-0.5 text-xs">organized/</code>.
         </p>
         {reportTree && <OrganizedTree root={reportTree} title="Arborescence obtenue" />}
         {report && (
           <CollapsiblePanel title="Détail source → cible" subtitle={`${report.entries.length} fichiers`}>
             <div className="max-h-96 overflow-y-auto">
               <table className="w-full text-left text-xs">
-                <thead className="sticky top-0 bg-slate-100 text-slate-500">
+                <thead className="sticky top-0 bg-surface-3 text-encre-2">
                   <tr>
                     <th className="px-3 py-2">Source</th>
                     <th className="px-3 py-2">Cible</th>
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-slate-100">
+                <tbody className="divide-y divide-surface-3">
                   {report.entries.map((e) => (
                     <tr key={e.document_id}>
-                      <td className="px-3 py-1.5 text-slate-500">{e.source}</td>
+                      <td className="px-3 py-1.5 text-encre-2">{e.source}</td>
                       <td className="px-3 py-1.5">
                         {e.target}
                         {e.manually_corrected && (
-                          <span className="ml-1 rounded bg-slate-100 px-1 text-[10px] text-slate-500">corrigé</span>
+                          <span className="ml-1 rounded bg-surface-3 px-1 text-[10px] text-encre-2">corrigé</span>
                         )}
                       </td>
                     </tr>
@@ -160,34 +160,34 @@ export function ReorganizationPlan({ dossierId, status, onApplied }: Props) {
   }
 
   if (!entries) {
-    return <p className="text-sm text-slate-400">Chargement du plan de réorganisation…</p>
+    return <p className="text-sm text-encre-3">Chargement du plan de réorganisation…</p>
   }
 
   return (
     <div className="flex flex-col gap-4">
       <div className="flex items-center justify-between">
-        <h3 className="text-sm font-medium text-slate-600">
+        <h3 className="text-sm font-medium text-encre-2">
           Plan de réorganisation — étape 1 ({entries.length} fichiers)
         </h3>
         <button
           onClick={handleApply}
           disabled={applying || status === 'reorganizing'}
-          className="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+          className={BTN_PRIMAIRE}
         >
           {applying || status === 'reorganizing' ? 'Application en cours…' : 'Appliquer la copie triée'}
         </button>
       </div>
-      <p className="text-sm text-slate-500">
+      <p className="text-sm text-encre-2">
         Corrigez la catégorie, le lot ou le nom cible si nécessaire avant d’appliquer. La source
         d’origine ne sera jamais modifiée — seule une copie est créée.
       </p>
-      {error && <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p>}
+      {error && <p className="rounded-md bg-rouge-clair px-3 py-2 text-sm text-rouge">{error}</p>}
 
       {classificationTree && <OrganizedTree root={classificationTree} title="Arborescence proposée" />}
 
-      <div className="max-h-[32rem] overflow-y-auto rounded-lg border border-slate-200">
+      <div className="max-h-[32rem] overflow-y-auto rounded-lg border border-bord">
         <table className="w-full text-left text-xs">
-          <thead className="sticky top-0 bg-slate-100 text-slate-500">
+          <thead className="sticky top-0 bg-surface-3 text-encre-2">
             <tr>
               <th className="px-3 py-2">Chemin d’origine</th>
               <th className="px-3 py-2">Catégorie finale</th>
@@ -196,15 +196,15 @@ export function ReorganizationPlan({ dossierId, status, onApplied }: Props) {
               <th className="px-3 py-2">Justification</th>
             </tr>
           </thead>
-          <tbody className="divide-y divide-slate-100">
+          <tbody className="divide-y divide-surface-3">
             {entries.map((entry) => (
               <tr key={entry.document_id} className={savingId === entry.document_id ? 'opacity-50' : ''}>
-                <td className="px-3 py-1.5 text-slate-500">{entry.relative_path}</td>
+                <td className="px-3 py-1.5 text-encre-2">{entry.relative_path}</td>
                 <td className="px-3 py-1.5">
                   <select
                     value={entry.final_category ?? ''}
                     onChange={(e) => handleCorrection(entry, { category: e.target.value })}
-                    className="w-full rounded border border-slate-200 bg-white px-1.5 py-1"
+                    className="w-full rounded border border-bord bg-white px-1.5 py-1"
                   >
                     {taxonomy?.map((c) => (
                       <option key={c.path} value={c.path}>
@@ -222,7 +222,7 @@ export function ReorganizationPlan({ dossierId, status, onApplied }: Props) {
                         handleCorrection(entry, { lot: e.target.value || null })
                       }
                     }}
-                    className="w-16 rounded border border-slate-200 px-1.5 py-1"
+                    className="w-16 rounded border border-bord px-1.5 py-1"
                   />
                 </td>
                 <td className="px-3 py-1.5">
@@ -234,18 +234,18 @@ export function ReorganizationPlan({ dossierId, status, onApplied }: Props) {
                         handleCorrection(entry, { filename: e.target.value })
                       }
                     }}
-                    className="w-64 rounded border border-slate-200 px-1.5 py-1"
+                    className="w-64 rounded border border-bord px-1.5 py-1"
                   />
                   {entry.is_manually_corrected && (
-                    <span className="ml-1 rounded bg-slate-100 px-1 text-[10px] text-slate-500">corrigé</span>
+                    <span className="ml-1 rounded bg-surface-3 px-1 text-[10px] text-encre-2">corrigé</span>
                   )}
                 </td>
                 <td
-                  className={`max-w-xs truncate px-3 py-1.5 text-slate-500 ${entry.justification ? HOVER_HINT_CLASS : ''}`}
+                  className={`max-w-xs truncate px-3 py-1.5 text-encre-2 ${entry.justification ? HOVER_HINT_CLASS : ''}`}
                   title={entry.justification ?? ''}
                 >
                   {entry.classification_error ? (
-                    <span className="text-red-600">{entry.classification_error}</span>
+                    <span className="text-rouge">{entry.classification_error}</span>
                   ) : (
                     entry.justification ?? '—'
                   )}

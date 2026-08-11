@@ -1,10 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
-  documentFileUrl,
   exportReportDocx,
   extractionExcelUrl,
-  generateAuditRisques,
-  generateProjectSynthesis,
   getCompleteness,
   getExtraction,
   getReorganizationReport,
@@ -14,11 +11,23 @@ import {
 } from '../api'
 import type { Dossier, DocumentItem, DossierStatus, ExtractionEntry } from '../types'
 import { isAtOrAfter } from '../statusFlow'
-import { HOVER_HINT_CLASS } from '../ui'
+import {
+  BTN,
+  BTN_PRIMAIRE,
+  CADRE,
+  ERREUR,
+  JETON,
+  JETON_ACTIF,
+  JETON_ALERTE,
+  JETON_ERREUR,
+  JETON_RECOUPE,
+  LIEN,
+  PUCE,
+  PUCE_ACTIVE,
+  SECTION_TITRE,
+} from '../ui'
 import { CERTAINTY_LABELS, PRESENCE_LABELS } from './CompletenessChecklist'
 import { CitationPreview } from './CitationPreview'
-import { CollapsiblePanel } from './CollapsiblePanel'
-import { Markdown } from './Markdown'
 import { collectDocumentIds, OrganizedTree, reorgReportEntriesToTree, treeToMarkdownFoldersOnly, type TreeNode } from './OrganizedTree'
 import { ReopenButton } from './ReopenButton'
 
@@ -29,19 +38,22 @@ interface Props {
   onApplied: () => void
 }
 
-const CROSS_CHECK_LABELS: Record<string, string> = {
-  coherent: 'Recoupement cohérent',
-  incoherent: '⚠ Incohérence',
-  single_source: 'Source unique',
-}
-
 const RUNNABLE_STATUSES: DossierStatus[] = ['completeness_validated']
 
-function crossCheckTone(status: string | null): string {
-  if (status === 'coherent') return 'bg-green-100 text-green-700'
-  if (status === 'incoherent') return 'bg-red-100 text-red-700'
-  if (status === 'single_source') return 'bg-slate-100 text-slate-500'
-  return ''
+type Filtre = 'tous' | 'absents' | 'recoupes' | 'incoherents'
+
+const FILTRES: { value: Filtre; label: string }[] = [
+  { value: 'tous', label: 'Tous' },
+  { value: 'absents', label: 'Non trouvés' },
+  { value: 'recoupes', label: 'Recoupés' },
+  { value: 'incoherents', label: 'Incohérents' },
+]
+
+function matchFiltre(entry: ExtractionEntry, filtre: Filtre): boolean {
+  if (filtre === 'absents') return !entry.final_value
+  if (filtre === 'recoupes') return entry.cross_check_status === 'coherent'
+  if (filtre === 'incoherents') return entry.cross_check_status === 'incoherent'
+  return true
 }
 
 function formatDuration(startIso: string, endIso: string): string {
@@ -86,11 +98,11 @@ export function ExtractionSheet({ dossierId, dossier, documents, onApplied }: Pr
   const [running, setRunning] = useState(false)
   const [downloadingReport, setDownloadingReport] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [generatingSynthesis, setGeneratingSynthesis] = useState(false)
-  const [generatingAudit, setGeneratingAudit] = useState(false)
 
-  // Champ dont on affiche la preuve visuelle (page du PDF, passage surligné).
+  // Champ dont on affiche la preuve visuelle (page du PDF, passage surligné) dans
+  // le volet de droite. Un seul à la fois : le volet est ancré, pas empilable.
   const [proofOf, setProofOf] = useState<ExtractionEntry | null>(null)
+  const [filtre, setFiltre] = useState<Filtre>('tous')
 
   // --- Sélection manuelle de documents avant lancement (arborescence de l'étape 1) -----------
   const [showManualPicker, setShowManualPicker] = useState(false)
@@ -121,48 +133,6 @@ export function ExtractionSheet({ dossierId, dossier, documents, onApplied }: Pr
         .catch((e) => setError(e instanceof Error ? e.message : "Échec de la validation de l'extraction"))
     }
   }, [status, dossierId, onApplied])
-
-  // Génération de la synthèse projet (Phase 1) : action annexe, en arrière-plan côté serveur —
-  // on relit périodiquement le dossier tant qu'elle est en cours plutôt que d'écouter le
-  // WebSocket de progression (celui-ci réassigne `Dossier.status` en bloc à chaque évènement).
-  useEffect(() => {
-    if (dossier.synthese_projet_status !== 'generating') return
-    const timer = setTimeout(() => onApplied(), 3000)
-    return () => clearTimeout(timer)
-  }, [dossier.synthese_projet_status, onApplied])
-
-  // Audit des risques (Phase 2) : même mécanique en arrière-plan que la synthèse projet.
-  useEffect(() => {
-    if (dossier.audit_risques_status !== 'generating') return
-    const timer = setTimeout(() => onApplied(), 3000)
-    return () => clearTimeout(timer)
-  }, [dossier.audit_risques_status, onApplied])
-
-  const handleGenerateSynthesis = useCallback(async () => {
-    setGeneratingSynthesis(true)
-    setError(null)
-    try {
-      await generateProjectSynthesis(dossierId)
-      onApplied()
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Échec du lancement de la synthèse projet')
-    } finally {
-      setGeneratingSynthesis(false)
-    }
-  }, [dossierId, onApplied])
-
-  const handleGenerateAudit = useCallback(async () => {
-    setGeneratingAudit(true)
-    setError(null)
-    try {
-      await generateAuditRisques(dossierId)
-      onApplied()
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Échec du lancement de l'audit des risques")
-    } finally {
-      setGeneratingAudit(false)
-    }
-  }, [dossierId, onApplied])
 
   const documentPathById = useMemo(() => {
     const map = new Map<string, string>()
@@ -356,9 +326,9 @@ ${auditMd}
 
   if (status === 'extracting') {
     return (
-      <div className="flex flex-col gap-2">
-        <h3 className="text-sm font-medium text-slate-600">Extraction de données — étape 3</h3>
-        <p className="text-sm text-slate-400">
+      <div className="px-6 py-5">
+        <h3 className="text-sm font-bold">Extraction de données — étape 3</h3>
+        <p className="mt-1 text-sm text-encre-2">
           Extraction en cours (fichiers de référence, recherche élargie, recoupement)…
         </p>
       </div>
@@ -367,50 +337,41 @@ ${auditMd}
 
   if (RUNNABLE_STATUSES.includes(status)) {
     return (
-      <div className="flex flex-col gap-3">
-        <div className="flex items-center justify-between">
-          <h3 className="text-sm font-medium text-slate-600">Extraction de données — étape 3</h3>
+      <div className="mx-auto flex max-w-4xl flex-col gap-3 px-6 py-5">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <h3 className="text-sm font-bold">Extraction de données — étape 3</h3>
           <div className="flex items-center gap-2">
-            <button
-              onClick={handleToggleManualPicker}
-              disabled={running}
-              className="rounded-md border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50 disabled:opacity-50"
-            >
+            <button onClick={handleToggleManualPicker} disabled={running} className={BTN}>
               {showManualPicker ? 'Masquer la sélection de documents' : 'Sélectionner des documents manuellement…'}
             </button>
-            <button
-              onClick={handleRun}
-              disabled={running}
-              className="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
-            >
+            <button onClick={handleRun} disabled={running} className={BTN_PRIMAIRE}>
               {running ? 'Lancement…' : "Lancer l'extraction"}
             </button>
           </div>
         </div>
-        {error && <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p>}
+        {error && <p className={ERREUR}>{error}</p>}
 
         {showManualPicker && (
-          <div className="flex flex-col gap-2 rounded-lg border border-slate-200 bg-slate-50 p-3">
-            <p className="text-xs text-slate-500">
-              Restreint TOUTE l'extraction (les 30 champs) aux seuls documents cochés ci-dessous, sans tenir
-              compte des catégories de référence habituelles — utile pour cibler une recherche sur des
-              documents précis.
+          <div className="flex flex-col gap-2 rounded-lg border border-bord bg-surface-2 p-3">
+            <p className="text-xs text-encre-2">
+              Restreint TOUTE l'extraction aux seuls documents cochés ci-dessous, sans tenir compte des
+              catégories de référence habituelles — utile pour cibler une recherche sur des documents précis.
             </p>
-            {manualTreeError && <p className="text-xs text-red-600">{manualTreeError}</p>}
+            {manualTreeError && <p className="text-xs text-rouge">{manualTreeError}</p>}
             {manualTree && (
               <>
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-3">
                   <button
                     type="button"
                     onClick={() => setSelectedDocIds(new Set(collectDocumentIds(manualTree)))}
-                    className="text-xs font-medium text-blue-600 hover:underline"
+                    className={`text-xs ${LIEN}`}
                   >
                     Tout sélectionner
                   </button>
                   <button
                     type="button"
                     onClick={() => setSelectedDocIds(new Set())}
-                    className="text-xs font-medium text-slate-500 hover:underline"
+                    className="text-xs font-medium text-encre-2 underline-offset-2 hover:underline"
                   >
                     Tout désélectionner
                   </button>
@@ -424,14 +385,14 @@ ${auditMd}
                   onToggleFolder={handleToggleFolder}
                 />
                 <div className="flex items-center justify-between">
-                  <span className="text-xs text-slate-500">
+                  <span className="text-xs text-encre-2">
                     {selectedDocIds.size} document{selectedDocIds.size > 1 ? 's' : ''} sélectionné
                     {selectedDocIds.size > 1 ? 's' : ''}
                   </span>
                   <button
                     onClick={handleRunManual}
                     disabled={running || selectedDocIds.size === 0}
-                    className="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+                    className={BTN_PRIMAIRE}
                   >
                     {running ? 'Lancement…' : `Lancer l'extraction sur la sélection (${selectedDocIds.size})`}
                   </button>
@@ -445,52 +406,21 @@ ${auditMd}
   }
 
   if (!entries) {
-    return <p className="text-sm text-slate-400">Chargement des données extraites…</p>
+    return <p className="px-6 py-5 text-sm text-encre-3">Chargement des données extraites…</p>
   }
 
-  const foundCount = entries.filter((e) => e.final_value).length
+  const compte: Record<Filtre, number> = {
+    tous: entries.length,
+    absents: entries.filter((e) => !e.final_value).length,
+    recoupes: entries.filter((e) => e.cross_check_status === 'coherent').length,
+    incoherents: entries.filter((e) => e.cross_check_status === 'incoherent').length,
+  }
 
   return (
-    <div className="flex flex-col gap-4">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <div className="flex items-center gap-2">
-          <h3 className="text-sm font-medium text-slate-600">
-            Extraction de données — étape 3 ({entries.length} champ{entries.length > 1 ? 's' : ''})
-          </h3>
-          <span className="rounded-full bg-green-100 px-2 py-0.5 text-[11px] font-medium text-green-700">
-            {foundCount} trouvée{foundCount > 1 ? 's' : ''}
-          </span>
-        </div>
-        <div className="flex items-center gap-2">
-          {!dossier.synthese_projet_md && (
-            <button
-              onClick={handleGenerateSynthesis}
-              disabled={generatingSynthesis || dossier.synthese_projet_status === 'generating'}
-              title="Rapport narratif exhaustif du projet (identité, RICT, géotechnique…), relisant directement les documents pivots — Phase 1 du protocole d'analyse"
-              className="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
-            >
-              {dossier.synthese_projet_status === 'generating' ? 'Génération en cours…' : 'Générer la synthèse projet (IA)'}
-            </button>
-          )}
-          {dossier.synthese_projet_md && (
-            <button
-              onClick={handleGenerateAudit}
-              disabled={generatingAudit || dossier.audit_risques_status === 'generating'}
-              title="Audit critique des risques DO/TRC section par section (fondations, structure, couverture, façades, équipements, aménagements), croisant les CCTP/RICT/étude de sol et les données publiques Géorisques — Phase 2 du protocole d'analyse"
-              className="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
-            >
-              {dossier.audit_risques_status === 'generating'
-                ? 'Génération en cours…'
-                : dossier.audit_risques_md
-                  ? "Régénérer l'audit des risques (IA)"
-                  : "Générer l'audit des risques (IA)"}
-            </button>
-          )}
-          <button
-            onClick={handleDownloadReport}
-            disabled={downloadingReport}
-            className="rounded-md border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50 disabled:opacity-50"
-          >
+    <div className="grid min-h-0 flex-1 grid-cols-1 xl:grid-cols-[minmax(0,1fr)_23rem]">
+      <div className="min-w-0 px-6 py-5">
+        <div className="mb-3 flex flex-wrap items-center justify-end gap-2">
+          <button onClick={handleDownloadReport} disabled={downloadingReport} className={BTN}>
             {downloadingReport ? 'Génération…' : 'Télécharger le rapport (.docx)'}
           </button>
           {/* Lien direct plutôt qu'un fetch + Blob : le serveur régénère le classeur à la volée
@@ -498,159 +428,142 @@ ${auditMd}
           <a
             href={extractionExcelUrl(dossierId)}
             title="Tableau d'extraction au format Excel — une ligne par donnée de la feuille de référence, avec valeur, sources, preuve et confiance"
-            className="rounded-md border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50"
+            className={BTN}
           >
             Exporter le tableau (.xlsx)
           </a>
-          {status === 'extraction_validated' && (
-            <ReopenButton label="Modifier l'extraction" onReopen={handleReopen} />
-          )}
+          {status === 'extraction_validated' && <ReopenButton label="Modifier l'extraction" onReopen={handleReopen} />}
         </div>
-      </div>
-      {error && <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p>}
-      {dossier.synthese_projet_status === 'error' && dossier.synthese_projet_error && (
-        <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">
-          Échec de la synthèse projet : {dossier.synthese_projet_error}
-        </p>
-      )}
 
-      {dossier.synthese_projet_md && (
-        <CollapsiblePanel
-          title="Synthèse projet — Phase 1"
-          subtitle="Rapport généré par IA"
-          defaultCollapsed={false}
-        >
-          <div className="max-h-[40rem] overflow-y-auto p-4">
-            <Markdown text={dossier.synthese_projet_md} />
-          </div>
-        </CollapsiblePanel>
-      )}
+        {error && <p className={`mb-3 ${ERREUR}`}>{error}</p>}
 
-      {dossier.audit_risques_status === 'error' && dossier.audit_risques_error && (
-        <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">
-          Échec de l'audit des risques : {dossier.audit_risques_error}
-        </p>
-      )}
+        {/* Les filtres sont le vrai point d'entrée du travail de validation : sur 50
+            champs, ce sont les absents et les incohérents qui appellent une action. */}
+        <div className="mb-3 flex flex-wrap items-center gap-2">
+          {FILTRES.map(({ value, label }) => (
+            <button
+              key={value}
+              type="button"
+              onClick={() => setFiltre(value)}
+              aria-pressed={filtre === value}
+              className={filtre === value ? PUCE_ACTIVE : PUCE}
+            >
+              {label} <span className="font-mono text-[11px] opacity-70">{compte[value]}</span>
+            </button>
+          ))}
+          <span className="ml-auto font-mono text-xs text-encre-3">{bySection.size} sections</span>
+        </div>
 
-      {dossier.audit_risques_md && (
-        <CollapsiblePanel
-          title="Audit des risques — Phase 2"
-          subtitle="Rapport généré par IA (Géorisques inclus)"
-          defaultCollapsed={false}
-        >
-          <div className="max-h-[40rem] overflow-y-auto p-4">
-            <Markdown text={dossier.audit_risques_md} />
-          </div>
-        </CollapsiblePanel>
-      )}
+        <div className={CADRE}>
+          {[...bySection.keys()].map((section) => {
+            const lignes = (bySection.get(section) ?? []).filter((e) => matchFiltre(e, filtre))
+            if (lignes.length === 0) return null
+            return (
+              <div key={section}>
+                <div className={SECTION_TITRE}>{sectionLabels.get(section) ?? section}</div>
+                {lignes.map((entry) => {
+                  const actif = proofOf?.field_id === entry.field_id
+                  const consultable = Boolean(entry.citation && entry.sources.length > 0)
+                  return (
+                    <button
+                      key={entry.field_id}
+                      type="button"
+                      disabled={!consultable}
+                      onClick={() => setProofOf(entry)}
+                      title={consultable ? 'Afficher le passage surligné dans le document d’origine' : undefined}
+                      className={`grid w-full grid-cols-[1fr_1.25fr_auto] items-baseline gap-3.5 border-b border-bord border-l-[3px] px-3.5 py-2 text-left last:border-b-0 ${
+                        actif
+                          ? 'border-l-ardoise bg-ardoise-clair'
+                          : `border-l-transparent ${consultable ? 'hover:bg-surface-2' : ''}`
+                      } ${consultable ? 'cursor-pointer' : 'cursor-default'}`}
+                    >
+                      <span className="text-[13px] text-encre-2">{entry.libelle}</span>
 
-      <div className="max-h-[32rem] overflow-y-auto rounded-lg border border-slate-200">
-        <table className="w-full text-left text-xs">
-          <thead className="sticky top-0 bg-slate-100 text-slate-500">
-            <tr>
-              <th className="px-3 py-2">Donnée</th>
-              <th className="px-3 py-2">Valeur</th>
-              <th className="px-3 py-2">Sources</th>
-              <th className="px-3 py-2">Recoupement</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-slate-100">
-            {[...bySection.keys()]
-              .flatMap((section) => [
-                <tr key={`section-${section}`} className="bg-slate-50">
-                  <td colSpan={4} className="px-3 py-1.5 font-medium text-slate-600">
-                    {sectionLabels.get(section) ?? section}
-                  </td>
-                </tr>,
-                ...(bySection.get(section) ?? [])
-                  .map((entry) => (
-                    <tr key={entry.field_id}>
-                      <td className="px-3 py-1.5">{entry.libelle}</td>
-                      <td className="px-3 py-1.5">
+                      <span className="min-w-0 text-[13.5px]">
                         {entry.final_value ? (
-                          <span className="inline-flex items-center gap-1.5">
-                            <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-green-500" />
-                            <span className="font-semibold text-slate-800">{entry.final_value}</span>
-                          </span>
+                          <span className="font-semibold">{entry.final_value}</span>
                         ) : (
-                          <span className="italic text-slate-400">Non trouvée</span>
+                          <span className="italic text-encre-3">Non trouvée</span>
                         )}
                         {entry.is_manually_corrected && (
-                          <span className="ml-1 rounded bg-slate-100 px-1 text-[10px] text-slate-500">corrigé</span>
+                          <span className="ml-1.5 rounded bg-surface-3 px-1 font-mono text-[10px] text-encre-2">
+                            corrigé
+                          </span>
                         )}
-                        {entry.citation && entry.sources.length > 0 && (
-                          <button
-                            type="button"
-                            onClick={() => setProofOf(entry)}
-                            className="ml-1.5 rounded border border-slate-300 px-1 text-[10px] text-slate-500 hover:bg-slate-100 hover:text-slate-800"
-                            title="Voir le passage surligné dans le document d'origine"
-                          >
-                            preuve
-                          </button>
-                        )}
-                      </td>
-                      <td className="px-3 py-1.5 text-slate-500">
-                        {entry.sources.length > 0
-                          ? entry.sources.map((s, i) => (
-                              <span key={s.document_id}>
-                                {i > 0 && ', '}
-                                <a
-                                  href={documentFileUrl(dossierId, s.document_id)}
-                                  target="_blank"
-                                  rel="noreferrer"
-                                  className="text-blue-600 hover:underline"
-                                  title="Ouvrir le document original dans un nouvel onglet"
-                                >
-                                  {documentPathById.get(s.document_id) ?? s.filename}
-                                </a>
-                                {s.selection === 'semantic' && (
-                                  <span
-                                    className={`ml-1 rounded bg-amber-100 px-1 text-[10px] text-amber-700 ${HOVER_HINT_CLASS}`}
-                                    title="Document rapproché par recherche sémantique : il ne contient aucun mot-clé de cette donnée. La valeur est plausible mais mérite une relecture de la citation."
-                                  >
-                                    sémantique
-                                  </span>
-                                )}
-                              </span>
-                            ))
-                          : '—'}
-                      </td>
-                      <td className="px-3 py-1.5">
-                        {entry.cross_check_status && entry.cross_check_status !== 'not_applicable' ? (
+                      </span>
+
+                      <span className="flex shrink-0 items-center gap-1.5">
+                        {entry.sources.some((s) => s.selection === 'semantic') && (
                           <span
-                            className={`rounded px-1.5 py-0.5 text-[10px] ${crossCheckTone(entry.cross_check_status)} ${entry.cross_check_status === 'incoherent' ? HOVER_HINT_CLASS : ''}`}
-                            title={
-                              entry.cross_check_status === 'incoherent'
-                                ? entry.sources.map((s) => `${s.value} (${s.filename})`).join(' vs ')
-                                : undefined
-                            }
+                            className={JETON_ALERTE}
+                            title="Document rapproché par recherche sémantique : il ne contient aucun mot-clé de cette donnée. La valeur est plausible mais mérite une relecture de la citation."
                           >
-                            {CROSS_CHECK_LABELS[entry.cross_check_status] ?? entry.cross_check_status}
+                            sémantique
+                          </span>
+                        )}
+                        {entry.cross_check_status === 'incoherent' ? (
+                          <span
+                            className={JETON_ERREUR}
+                            title={entry.sources.map((s) => `${s.value} (${s.filename})`).join(' vs ')}
+                          >
+                            incohérence
+                          </span>
+                        ) : entry.cross_check_status === 'coherent' ? (
+                          <span className={JETON_RECOUPE} title="Valeur confirmée par plusieurs documents concordants">
+                            recoupé ×{entry.sources.length}
+                          </span>
+                        ) : null}
+                        {entry.sources.length > 0 ? (
+                          <span
+                            className={actif ? JETON_ACTIF : JETON}
+                            title={entry.sources.map((s) => documentPathById.get(s.document_id) ?? s.filename).join(', ')}
+                          >
+                            {sourceCourte(documentPathById.get(entry.sources[0].document_id) ?? entry.sources[0].filename)}
                           </span>
                         ) : (
-                          '—'
+                          <span className={JETON_ALERTE}>à demander</span>
                         )}
-                      </td>
-                    </tr>
-                  )),
-              ])}
-          </tbody>
-        </table>
+                      </span>
+                    </button>
+                  )
+                })}
+              </div>
+            )
+          })}
+        </div>
       </div>
 
-      {proofOf && proofOf.citation && proofOf.sources.length > 0 && (
-        <CitationPreview
-          dossierId={dossierId}
-          // La citation vient de la décision retenue, donc du document le plus confiant en cas de
-          // recoupement multi-sources (§`_reconcile_cross_check`) : la chercher dans un autre
-          // document du lot ne donnerait rien.
-          source={proofOf.sources.reduce((best, s) => ((s.confidence ?? 0) > (best.confidence ?? 0) ? s : best))}
-          libelle={proofOf.libelle}
-          value={proofOf.final_value}
-          citation={proofOf.citation}
-          onClose={() => setProofOf(null)}
-        />
-      )}
+      {/* Volet de preuve ancré : « aucune valeur inventée » cesse d'être une promesse
+          pour devenir une colonne de l'écran. `sticky` + hauteur d'écran : la liste des
+          50 champs défile, la preuve reste en face — sans quoi le volet disparaîtrait
+          dès le troisième champ et ne vaudrait pas mieux qu'une fenêtre modale. */}
+      <aside className="flex min-h-0 flex-col border-t border-bord bg-surface-2 xl:sticky xl:top-0 xl:h-screen xl:border-l xl:border-t-0">
+        {proofOf && proofOf.citation && proofOf.sources.length > 0 ? (
+          <CitationPreview
+            dossierId={dossierId}
+            // La citation vient de la décision retenue, donc du document le plus confiant en cas de
+            // recoupement multi-sources (§`_reconcile_cross_check`) : la chercher dans un autre
+            // document du lot ne donnerait rien.
+            source={proofOf.sources.reduce((best, s) => ((s.confidence ?? 0) > (best.confidence ?? 0) ? s : best))}
+            libelle={proofOf.libelle}
+            value={proofOf.final_value}
+            citation={proofOf.citation}
+          />
+        ) : (
+          <div className="flex flex-1 items-center justify-center p-8 text-center">
+            <p className="text-sm text-encre-3">
+              Sélectionnez une donnée pour afficher le passage qui la justifie, surligné dans le document d'origine.
+            </p>
+          </div>
+        )}
+      </aside>
     </div>
   )
+}
+
+/** Un chemin de document organisé est long (`TECH/CCTP TRAVAUX/lot_02_gros_oeuvre.pdf`) :
+ * le jeton n'affiche que le nom de fichier, le chemin complet reste en `title`. */
+function sourceCourte(chemin: string): string {
+  const nom = chemin.split('/').pop() ?? chemin
+  return nom.replace(/\.[^.]+$/, '')
 }

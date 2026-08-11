@@ -3,6 +3,11 @@
 Propositions de refonte visuelle de l'interface AOP. Objectif : une interface plus
 aboutie, qui reste professionnelle et corporate.
 
+> **Décision : la direction B « Poste de souscription » a été retenue et implémentée.**
+> Ces deux fichiers restent la référence visuelle de la refonte. Voir la section
+> « Ce qui a été implémenté » en fin de document pour les écarts entre la maquette et
+> l'application livrée.
+
 Les deux maquettes sont des fichiers HTML autonomes (aucune dépendance, aucun build) :
 ouvrez-les directement dans un navigateur.
 
@@ -97,19 +102,32 @@ Les deux ne sont pas exclusives : le volet de preuve de B peut être repris dans
 prose serif de A peut servir aux écrans Synthèse/Audit de B. Si une combinaison vous
 intéresse, elle se maquette rapidement à partir de ces deux fichiers.
 
-## Ce qui reste à faire pour implémenter
+## Ce qui a été implémenté (direction B)
 
-Les maquettes sont en CSS autonome ; l'application est en Tailwind v4 sans configuration.
-Passer de l'une à l'autre suppose :
+- **Tokens** dans `@theme` de `frontend/src/index.css` (Tailwind v4 se configure en CSS,
+  aucun `tailwind.config.js`). Toute l'ancienne palette Tailwind par défaut a disparu du
+  code : plus un seul `slate-*`, `blue-*`, `green-*`, `amber-*`, `red-*`.
+- **Fontes auto-hébergées** dans `frontend/public/fonts/` + `frontend/src/fonts.css`
+  (sous-ensembles latin et latin-ext, ~84 ko au total). Aucun appel à un CDN : l'app doit
+  fonctionner hors ligne, et l'exécutable Windows embarque `frontend/dist` en entier.
+- **Vocabulaire partagé** dans `frontend/src/ui.ts` (boutons, jetons, pastilles de filtre,
+  cadres). Les composants y puisent au lieu de recopier des classes — c'est cette dérive
+  qui faisait paraître l'interface précédente non finie.
+- **Rail d'outils** (`App.tsx`), **cartes de dossier** (`DossierList.tsx`), **barre
+  d'étapes segmentée** (`DossierProgress.tsx`).
+- **Volet de preuve ancré** : `CitationPreview.tsx` n'est plus une fenêtre modale mais une
+  colonne `sticky` de l'écran d'extraction, qui reste en face de la liste des champs
+  pendant qu'elle défile.
+- **Filtres d'extraction** (Tous / Non trouvés / Recoupés / Incohérents) : le point
+  d'entrée du travail de validation sur 50 champs.
 
-1. Déclarer les tokens (couleurs, familles, échelle typographique) dans `@theme` de
-   `frontend/src/index.css` — Tailwind v4 se configure en CSS, aucun `tailwind.config.js`
-   à créer.
-2. Auto-héberger les fontes (les maquettes les chargent depuis Google Fonts ; l'app doit
-   fonctionner hors ligne, et l'exécutable Windows embarque le frontend).
-3. Reprendre les composants existants un par un — `DossierProgress.tsx` porte le
-   cartouche et la cotation, `ExtractionSheet.tsx` la table et le volet de preuve (la
-   brique `CitationPreview.tsx` existe déjà et affiche la page PDF surlignée).
+### Deux écarts assumés par rapport à la maquette
 
-Aucun code applicatif n'a été modifié à ce stade : ces fichiers sont uniquement des
-maquettes à valider.
+1. **Les rapports sont des onglets, pas des panneaux.** La maquette les montre en onglets ;
+   le code les empilait en blocs repliés au-dessus du tableau des 50 champs. Ils vivent
+   désormais dans `RapportPanel.tsx`, en onglets 4 et 5 — un audit de 30 risques n'est pas
+   lisible sous une autre lecture. L'onglet suivi automatiquement reste la dernière *étape*
+   atteinte (1-3), jamais un onglet de rapport, qui s'ouvrirait sur un écran vide.
+2. **La maquette invente des données que l'application n'a pas** à ce niveau (nom de
+   l'opération, répartition des risques sur la liste des dossiers). Les cartes affichent
+   les compteurs réellement disponibles, choisis selon l'étape atteinte.

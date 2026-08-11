@@ -13,23 +13,23 @@ export function CollapsiblePanel({ title, subtitle, defaultCollapsed = true, chi
   const [collapsed, setCollapsed] = useState(defaultCollapsed)
 
   return (
-    <div className="rounded-lg border border-slate-200 bg-white">
+    <div className="rounded-lg border border-bord bg-white">
       <button
         type="button"
         onClick={() => setCollapsed((v) => !v)}
         className="flex w-full items-center justify-between gap-2 px-3 py-2 text-left"
       >
-        <span className="flex items-center gap-2 text-sm font-medium text-slate-600">
+        <span className="flex items-center gap-2 text-sm font-medium text-encre-2">
           <span
-            className={`inline-block text-[10px] text-slate-400 transition-transform ${collapsed ? '' : 'rotate-90'}`}
+            className={`inline-block text-[10px] text-encre-3 transition-transform ${collapsed ? '' : 'rotate-90'}`}
           >
             ▸
           </span>
           {title}
         </span>
-        {subtitle && <span className="text-xs text-slate-400">{subtitle}</span>}
+        {subtitle && <span className="text-xs text-encre-3">{subtitle}</span>}
       </button>
-      {!collapsed && <div className="border-t border-slate-200">{children}</div>}
+      {!collapsed && <div className="border-t border-bord">{children}</div>}
     </div>
   )
 }

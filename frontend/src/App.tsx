@@ -4,6 +4,7 @@ import { checkSession, getApiKeyStatus, logout } from './auth'
 import type { ApiKeyStatus } from './auth'
 import type { Dossier } from './types'
 import { hasSeenTour } from './tour'
+import { ERREUR } from './ui'
 import { UploadDropzone } from './components/UploadDropzone'
 import { DossierList } from './components/DossierList'
 import { DossierProgress } from './components/DossierProgress'
@@ -132,58 +133,87 @@ export default function App() {
   }
 
   return (
-    <div className="min-h-screen bg-slate-50">
-      <header className="border-b border-slate-200 bg-white">
-        <div className="mx-auto flex max-w-4xl items-center justify-between px-6 py-4">
-          <div>
-            <h1 className="text-xl font-semibold text-slate-800">AOP</h1>
-            <p className="text-sm text-slate-400">Analyse de DCE</p>
-          </div>
-          {hasSession && (
-            <div className="flex items-center gap-4">
-              <button onClick={() => setShowTour(true)} className="text-sm text-slate-500 hover:text-slate-800">
-                Visite guidée
-              </button>
-              <button
-                onClick={() => setShowApiKeyPanel(true)}
-                className="text-sm text-slate-500 hover:text-slate-800"
-              >
-                Clé API
-              </button>
-              <button onClick={handleLogout} className="text-sm text-blue-600 hover:underline">
-                Déconnexion
-              </button>
-            </div>
-          )}
-        </div>
-      </header>
+    <div className="grid min-h-screen grid-cols-[3.5rem_1fr] bg-surface">
+      {/* Rail d'outils : l'ossature graphite qui tient l'écran. Il reste identique
+          d'un écran à l'autre — c'est le seul repère fixe quand l'expert navigue
+          entre la liste et les 5 onglets d'un dossier. */}
+      <nav className="flex flex-col items-center gap-1 bg-graphite py-3" aria-label="Navigation principale">
+        <span className="pt-1.5 pb-3 text-[13px] font-bold tracking-wide text-white">AOP</span>
+        <RailBouton
+          label="Dossiers"
+          actif={selectedId === null}
+          onClick={handleBack}
+          d="M3 7h6l2 2h10v10H3z"
+        />
+        {hasSession && (
+          <>
+            <RailBouton label="Visite guidée" onClick={() => setShowTour(true)} d="M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18M9.5 9.5a2.5 2.5 0 1 1 3.2 2.4c-.5.2-.7.6-.7 1.1v.5M12 16.5v.5" />
+            <RailBouton
+              label="Clé API"
+              onClick={() => setShowApiKeyPanel(true)}
+              d="M8 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8M12 12h9M18 12v4"
+              className="mt-auto"
+            />
+            <RailBouton label="Déconnexion" onClick={handleLogout} d="M14 4h5v16h-5M11 16l-4-4 4-4M7 12h9" />
+          </>
+        )}
+      </nav>
 
-      <main className="mx-auto max-w-4xl px-6 py-8">
+      <main className="min-w-0">
         {selectedId ? (
           <DossierProgress dossierId={selectedId} onBack={handleBack} onSelectDossier={setSelectedId} />
         ) : (
-          <div className="flex flex-col gap-8">
+          <div className="mx-auto flex max-w-6xl flex-col gap-6 px-6 py-6">
             <section>
               <UploadDropzone
                 onFileSelected={handleFileSelected}
                 onInvalidFile={handleInvalidFile}
                 disabled={isUploading}
               />
-              {isUploading && <p className="mt-2 text-sm text-slate-400">Envoi en cours…</p>}
-              {uploadError && (
-                <p className="mt-2 rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">
-                  {uploadError}
-                </p>
-              )}
+              {isUploading && <p className="mt-2 text-sm text-encre-3">Envoi en cours…</p>}
+              {uploadError && <p className={`mt-2 ${ERREUR}`}>{uploadError}</p>}
             </section>
 
             <section>
-              <h2 className="mb-3 text-sm font-medium text-slate-600">Dossiers</h2>
               <DossierList dossiers={dossiers} onSelect={setSelectedId} onDelete={handleDelete} />
             </section>
           </div>
         )}
       </main>
     </div>
+  )
+}
+
+/** Bouton du rail : icône seule, intitulé porté par `title`/`aria-label` — la
+ * largeur du rail est trop étroite pour un libellé lisible, et les 4 entrées
+ * sont assez stables pour être mémorisées. */
+function RailBouton({
+  label,
+  d,
+  onClick,
+  actif = false,
+  className = '',
+}: {
+  label: string
+  d: string
+  onClick: () => void
+  actif?: boolean
+  className?: string
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title={label}
+      aria-label={label}
+      aria-current={actif ? 'page' : undefined}
+      className={`grid h-9.5 w-9.5 place-items-center rounded-md transition-colors ${
+        actif ? 'bg-ardoise text-white' : 'text-encre-3 hover:bg-graphite-2 hover:text-surface-3'
+      } ${className}`}
+    >
+      <svg className="h-[18px] w-[18px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.6}>
+        <path d={d} strokeLinecap="round" strokeLinejoin="round" />
+      </svg>
+    </button>
   )
 }

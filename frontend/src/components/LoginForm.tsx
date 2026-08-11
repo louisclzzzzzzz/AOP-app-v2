@@ -1,5 +1,6 @@
 import { useCallback, useState } from 'react'
 import { login } from '../auth'
+import { BTN_PRIMAIRE } from '../ui'
 
 interface Props {
   onLoggedIn: () => void
@@ -28,14 +29,14 @@ export function LoginForm({ onLoggedIn }: Props) {
   )
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-slate-50">
+    <div className="flex min-h-screen items-center justify-center bg-surface-2">
       <form
         onSubmit={handleSubmit}
-        className="flex w-full max-w-xs flex-col gap-4 rounded-xl border border-slate-200 bg-white p-8 shadow-sm"
+        className="flex w-full max-w-xs flex-col gap-4 rounded-xl border border-bord bg-white p-8 shadow-sm"
       >
         <div>
-          <h1 className="text-xl font-semibold text-slate-800">AOP</h1>
-          <p className="text-sm text-slate-400">Code d’accès requis</p>
+          <h1 className="text-xl font-semibold text-encre">AOP</h1>
+          <p className="text-sm text-encre-3">Code d’accès requis</p>
         </div>
 
         <input
@@ -47,15 +48,15 @@ export function LoginForm({ onLoggedIn }: Props) {
           required
           value={code}
           onChange={(e) => setCode(e.target.value.replace(/\D/g, '').slice(0, 4))}
-          className="rounded-md border border-slate-300 px-3 py-2 text-center text-2xl tracking-[0.5em] focus:border-blue-500 focus:outline-none"
+          className="rounded-md border border-bord-fort px-3 py-2 text-center text-2xl tracking-[0.5em] focus:border-ardoise focus:outline-none"
         />
 
-        {error && <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p>}
+        {error && <p className="rounded-md bg-rouge-clair px-3 py-2 text-sm text-rouge">{error}</p>}
 
         <button
           type="submit"
           disabled={isSubmitting || code.length !== 4}
-          className="rounded-md bg-blue-600 px-3 py-2 text-sm font-medium text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-slate-300"
+          className={BTN_PRIMAIRE}
         >
           {isSubmitting ? 'Connexion…' : 'Se connecter'}
         </button>
