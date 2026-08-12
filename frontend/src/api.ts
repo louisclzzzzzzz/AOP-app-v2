@@ -82,18 +82,6 @@ export async function locateCitation(
   return handle<CitationLocation>(res)
 }
 
-/** Image de la page, passage surligné (rendue côté serveur). */
-export function citationImageUrl(
-  dossierId: string,
-  documentId: string,
-  citation: string,
-  page: number,
-  scale: number,
-): string {
-  const params = new URLSearchParams({ citation, page: String(page), scale: String(scale) })
-  return `/api/dossiers/${dossierId}/documents/${documentId}/citation.png?${params}`
-}
-
 export async function getTaxonomy(): Promise<TaxonomyCategory[]> {
   const res = await fetch('/api/taxonomy')
   return handle<TaxonomyCategory[]>(res)

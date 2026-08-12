@@ -1,7 +1,6 @@
 """Endpoints REST : upload d'un dossier (zip), liste, détail, inventaire, texte extrait."""
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import json
 import logging
@@ -13,16 +12,17 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException, Request, Response
 from fastapi.responses import FileResponse, PlainTextResponse
 from sqlalchemy.orm import Session
 
-from app.api.schemas import CitationLocationOut, CountersOut, DocumentOut, DocumentTextOut, DossierOut
+from app.api.schemas import (
+    CitationLocationOut,
+    CitationRectOut,
+    CountersOut,
+    DocumentOut,
+    DocumentTextOut,
+    DossierOut,
+)
 from app.auth.dependencies import get_current_user_id
 from app.classify.pipeline import run_classification_pipeline
-from app.extraction.citation_preview import (
-    DEFAULT_SCALE,
-    CitationLocation,
-    locate_in_ocr_pages,
-    locate_in_pdf,
-    render_page,
-)
+from app.extraction.citation_preview import CitationLocation, locate_in_ocr_pages, locate_in_pdf
 from app.ingestion.pipeline import run_ingestion_pipeline
 from app.ocr.cache import delete_text_cache_files, read_text_cache
 from app.pipeline_support import owner_api_key, run_pipeline_safely
@@ -355,8 +355,9 @@ def _ocr_page_texts(document_id: str) -> list[str]:
 async def locate_document_citation(dossier_id: str, document_id: str, citation: str) -> CitationLocationOut:
     """Où se trouve, dans le document, le passage cité à l'appui d'une valeur extraite.
 
-    Sépare la localisation du rendu : l'écran de validation a besoin de savoir s'il peut proposer
-    une preuve visuelle (et sur quelle page) AVANT d'aller chercher une image de page."""
+    Rend la page seul le frontend (PDF.js, sur le fichier servi par `/file`) : ce endpoint ne
+    renvoie que ce que le serveur seul sait calculer — la correspondance entre la citation
+    (reformulée par le LLM) et les coordonnées réelles du texte dans le PDF."""
     file_path, filename = _resolve_document_path(dossier_id, document_id)
     if file_path.suffix.lower() != ".pdf":
         # Les .docx/.xlsx du dossier n'ont pas de rendu paginé : l'expert garde le lien
@@ -373,32 +374,5 @@ async def locate_document_citation(dossier_id: str, document_id: str, citation: 
         highlighted=bool(location.rects),
         reason=None if location.rects else "scanned_page_only",
         filename=filename,
+        rects=[CitationRectOut(x0=r.x0, top=r.top, x1=r.x1, bottom=r.bottom) for r in location.rects],
     )
-
-
-@router.get("/{dossier_id}/documents/{document_id}/citation.png")
-async def render_document_citation(
-    dossier_id: str, document_id: str, citation: str, page: int = 0, scale: float = DEFAULT_SCALE
-) -> Response:
-    """Image de la page, passage surligné — la preuve que l'expert regarde à l'étape 3.
-
-    Rendue côté serveur (pypdfium2 + Pillow) plutôt que par un lecteur PDF embarqué : rien à
-    empaqueter côté navigateur, et un PDF scanné se surligne aussi mal dans les deux cas mais se
-    RENVOIE aussi bien, ce qui laisse au moins l'expert sur la bonne page."""
-    file_path, _filename = _resolve_document_path(dossier_id, document_id)
-    if file_path.suffix.lower() != ".pdf":
-        raise HTTPException(400, "La prévisualisation n'est disponible que pour les PDF")
-
-    location = _locate_citation(file_path, document_id, citation)
-    rects = location.rects if location is not None and location.page == page else []
-    try:
-        png = await asyncio.to_thread(render_page, file_path, page, rects, scale=scale)
-    except IndexError:
-        raise HTTPException(404, "Page inexistante dans ce document") from None
-    except Exception:
-        logger.exception("Rendu de page impossible pour %s page %d", file_path.name, page)
-        raise HTTPException(500, "Rendu de la page impossible") from None
-
-    # Le fichier source ne change jamais (§`get_document_file`) : la même page rendue pour la même
-    # citation est identique d'un appel à l'autre, autant la laisser en cache navigateur.
-    return Response(content=png, media_type="image/png", headers={"Cache-Control": "private, max-age=3600"})

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   extractionExcelUrl,
   getExtraction,
@@ -25,9 +25,12 @@ import {
   PUCE_ACTIVE,
   SECTION_TITRE,
 } from '../ui'
-import { CitationPreview } from './CitationPreview'
 import { collectDocumentIds, OrganizedTree, reorgReportEntriesToTree, type TreeNode } from './OrganizedTree'
 import { ReopenButton } from './ReopenButton'
+
+// PDF.js (~700 Ko) ne doit peser que sur l'écran qui en a besoin : import paresseux, chargé
+// seulement quand l'expert clique un premier champ sourcé, pas au chargement de l'étape 3.
+const CitationPreview = lazy(() => import('./CitationPreview').then((m) => ({ default: m.CitationPreview })))
 
 interface Props {
   dossierId: string
@@ -294,7 +297,11 @@ export function ExtractionSheet({ dossierId, dossier, documents, onApplied }: Pr
   }
 
   return (
-    <div className="grid min-h-0 flex-1 grid-cols-1 xl:grid-cols-[minmax(0,1fr)_23rem]">
+    // Le volet de preuve porte l'image d'une page de PDF : il a besoin de place pour
+    // rester lisible. Largeur en pourcentage bornée par un minimum (34%, jamais moins de
+    // 28rem) plutôt qu'une valeur fixe — elle profite des grands écrans sans écraser le
+    // tableau des champs sur un moniteur plus modeste.
+    <div className="grid min-h-0 flex-1 grid-cols-1 xl:grid-cols-[minmax(0,1fr)_minmax(28rem,34%)]">
       <div className="min-w-0 px-6 py-5">
         <div className="mb-3 flex flex-wrap items-center justify-end gap-2">
           <button onClick={handleDownloadReport} disabled={downloadingReport} className={BTN}>
@@ -425,16 +432,20 @@ export function ExtractionSheet({ dossierId, dossier, documents, onApplied }: Pr
           dès le troisième champ et ne vaudrait pas mieux qu'une fenêtre modale. */}
       <aside className="flex min-h-0 flex-col border-t border-bord bg-surface-2 xl:sticky xl:top-0 xl:h-screen xl:border-l xl:border-t-0">
         {proofOf && proofOf.citation && proofOf.sources.length > 0 ? (
-          <CitationPreview
-            dossierId={dossierId}
-            // La citation vient de la décision retenue, donc du document le plus confiant en cas de
-            // recoupement multi-sources (§`_reconcile_cross_check`) : la chercher dans un autre
-            // document du lot ne donnerait rien.
-            source={proofOf.sources.reduce((best, s) => ((s.confidence ?? 0) > (best.confidence ?? 0) ? s : best))}
-            libelle={proofOf.libelle}
-            value={proofOf.final_value}
-            citation={proofOf.citation}
-          />
+          <Suspense
+            fallback={<p className="flex-1 p-8 text-center text-sm text-encre-3">Chargement du visualisateur…</p>}
+          >
+            <CitationPreview
+              dossierId={dossierId}
+              // La citation vient de la décision retenue, donc du document le plus confiant en cas de
+              // recoupement multi-sources (§`_reconcile_cross_check`) : la chercher dans un autre
+              // document du lot ne donnerait rien.
+              source={proofOf.sources.reduce((best, s) => ((s.confidence ?? 0) > (best.confidence ?? 0) ? s : best))}
+              libelle={proofOf.libelle}
+              value={proofOf.final_value}
+              citation={proofOf.citation}
+            />
+          </Suspense>
         ) : (
           <div className="flex flex-1 items-center justify-center p-8 text-center">
             <p className="text-sm text-encre-3">

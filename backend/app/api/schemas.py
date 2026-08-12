@@ -199,21 +199,34 @@ class ExtractionFieldOut(BaseModel):
     reference_categories: list[str]
 
 
+class CitationRectOut(BaseModel):
+    """Rectangle en points PDF, origine en haut à gauche — un par ligne du passage surligné.
+    Le frontend les redessine par-dessus la page qu'il rend lui-même (PDF.js)."""
+
+    x0: float
+    top: float
+    x1: float
+    bottom: float
+
+
 class CitationLocationOut(BaseModel):
     """Où se trouve, dans le document, le passage cité à l'appui d'une valeur extraite.
 
-    Interrogé AVANT d'afficher une image de page : l'écran de validation ne promet une preuve
-    visuelle que s'il en existe une, plutôt que d'ouvrir une visionneuse pour rien."""
+    Interrogé AVANT d'afficher le visualisateur : l'écran de validation ne promet une preuve
+    visuelle que s'il en existe une, plutôt que d'ouvrir un PDF pour rien. Le rendu de la page
+    est fait côté client (PDF.js) ; seule cette localisation reste côté serveur, car elle seule
+    sait faire correspondre la citation (reformulée par le LLM) au texte réel du PDF."""
 
     found: bool
     page: int | None = None  # index 0
     page_count: int | None = None
     # False quand la page a bien été trouvée mais sans coordonnées (PDF scanné, sans couche de
-    # texte) : l'image est rendue, le passage n'est pas encadré.
+    # texte) : la page est affichée, le passage n'est pas encadré.
     highlighted: bool = False
     # "not_a_pdf" | "not_found" | "scanned_page_only"
     reason: str | None = None
     filename: str | None = None
+    rects: list[CitationRectOut] = []
 
 
 class ExtractionSourceOut(BaseModel):
