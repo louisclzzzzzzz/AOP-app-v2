@@ -77,6 +77,24 @@ body {
   outline-offset: 2px;
 }
 
+/* Surlignage du passage cité dans un aperçu .docx (CitationPreview.tsx, highlightInDocx) : posé
+   via l'API CSS Custom Highlight plutôt qu'en enveloppant le texte d'un <mark>, pour ne jamais
+   risquer de casser la structure DOM générée par docx-preview (tableaux, numérotation…). */
+::highlight(citation-surlignage) {
+  background-color: rgba(255, 214, 0, 0.55);
+}
+
+/* Aperçu .docx (docx-preview) : la page doit se détacher du fond gris du volet, comme sur les
+   pages PDF juste au-dessus dans la même liste de champs. */
+.docx-apercu :where(.docx-wrapper) {
+  background: transparent;
+  padding: 0;
+}
+.docx-apercu :where(.docx) {
+  box-shadow: 0 1px 3px rgba(29, 34, 41, 0.15) !important;
+  margin-bottom: 0 !important;
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

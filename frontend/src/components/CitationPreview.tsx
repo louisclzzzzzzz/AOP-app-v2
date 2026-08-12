@@ -1,12 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
-import * as pdfjsLib from 'pdfjs-dist'
 import type { PDFDocumentProxy, PDFPageProxy, RenderTask } from 'pdfjs-dist'
+import type * as PdfjsLib from 'pdfjs-dist'
 import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url'
 import { documentFileUrl, locateCitation } from '../api'
 import type { CitationLocation, CitationRect, ExtractionSource } from '../types'
 import { BTN_PETIT, CLE } from '../ui'
-
-pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl
 
 interface Props {
   dossierId: string
@@ -20,8 +18,8 @@ interface Props {
 /** Message affiché quand la preuve visuelle n'est pas disponible. Toujours explicite sur la
  * RAISON : « pas trouvé » et « document scanné » n'appellent pas la même réaction de l'expert. */
 const REASONS: Record<string, string> = {
-  not_a_pdf:
-    "Ce document n'est pas un PDF : il n'a pas de rendu page par page. Ouvrez-le pour vérifier la citation.",
+  unsupported:
+    "Ce type de fichier n'a pas d'aperçu intégré (seuls les PDF et les documents Word sont pris en charge). Ouvrez-le pour vérifier la citation.",
   not_found:
     "Le passage cité n'a pas été retrouvé tel quel dans le document. Cela arrive quand le texte est reformulé — le document reste consultable ci-dessous pour vérifier à l'œil.",
   scanned_page_only:
@@ -46,18 +44,14 @@ interface Box {
 /** Transforme les rectangles du surlignage (points PDF, origine en haut à gauche — même
  * convention que pdfplumber côté serveur) en boîtes CSS dans l'espace du viewport pdf.js
  * actuel, quels que soient le zoom et la rotation de la page. */
-function highlightBoxes(page: PDFPageProxy, viewport: pdfjsLib.PageViewport, rects: CitationRect[]): Box[] {
+function highlightBoxes(page: PDFPageProxy, viewport: PdfjsLib.PageViewport, rects: CitationRect[]): Box[] {
   const pageHeight = page.view[3] - page.view[1]
   return rects.map((r) => {
     // pdf.js travaille en espace PDF natif (origine en bas à gauche) : on ré-y-inverse les
-    // coordonnées avant de les confier à `convertToViewportRectangle`, qui gère ensuite
-    // rotation et mise à l'échelle sans qu'on ait à s'en soucier ici.
-    const [vx0, vy0, vx1, vy1] = viewport.convertToViewportRectangle([
-      r.x0,
-      pageHeight - r.bottom,
-      r.x1,
-      pageHeight - r.top,
-    ])
+    // coordonnées avant de convertir chaque coin séparément (`convertToViewportRectangle` a
+    // disparu en v6), en laissant `convertToViewportPoint` gérer rotation et mise à l'échelle.
+    const [vx0, vy0] = viewport.convertToViewportPoint(r.x0, pageHeight - r.bottom)
+    const [vx1, vy1] = viewport.convertToViewportPoint(r.x1, pageHeight - r.top)
     return {
       left: Math.min(vx0, vx1),
       top: Math.min(vy0, vy1),
@@ -67,20 +61,135 @@ function highlightBoxes(page: PDFPageProxy, viewport: pdfjsLib.PageViewport, rec
   })
 }
 
-/** Preuve visuelle d'une valeur extraite : la page du PDF, passage surligné.
+// --- Recherche de la citation dans le texte déjà rendu d'un .docx -----------------------------
+// docx-preview ne fournit aucune coordonnée (contrairement à pdfplumber côté serveur pour les
+// PDF) : la seule source de vérité disponible est le texte HTML rendu lui-même. On reprend donc
+// ici, en TypeScript, la même stratégie de normalisation et de repli sur préfixe que le moteur
+// serveur (§`backend/app/extraction/citation_preview.py`) — la citation vient du même LLM, avec
+// les mêmes reformulations d'accents/guillemets/espaces à absorber.
+
+const DOCX_HIGHLIGHT_NAME = 'citation-surlignage'
+const MIN_MATCH_CHARS = 25
+const MATCH_PREFIX_LENGTHS = [400, 200, 120, 60, 40]
+const FRAGMENT_SEPARATORS = /\[\s*\.\.\.\s*\]|\[\s*…\s*\]|\.\.\.|…|\s\/\s/
+
+function normalizeText(text: string): string {
+  return text
+    .replace(/[''‚‹›]/g, "'")
+    .replace(/[""„«»"]/g, '')
+    .replace(/[–—‑−]/g, '-')
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase()
+}
+
+/** Citation entière d'abord, puis ses morceaux si le LLM l'a recollée avec « [...] » — du plus
+ * probable au plus permissif, comme côté serveur. */
+function citationFragments(citation: string): string[] {
+  const whole = normalizeText(citation)
+  const fragments = whole.length >= MIN_MATCH_CHARS ? [whole] : []
+  for (const part of citation.split(FRAGMENT_SEPARATORS)) {
+    const piece = normalizeText(part)
+    if (piece.length >= MIN_MATCH_CHARS && piece !== whole) fragments.push(piece)
+  }
+  return fragments
+}
+
+/** Position ET longueur réellement appariée, en essayant des préfixes de plus en plus courts —
+ * une citation trop longue ou reformulée en fin de phrase reste repérable par son début. */
+function findInText(haystack: string, needle: string): [start: number, length: number] | null {
+  if (needle.length >= MIN_MATCH_CHARS) {
+    const pos = haystack.indexOf(needle)
+    if (pos >= 0) return [pos, needle.length]
+  }
+  for (const length of MATCH_PREFIX_LENGTHS) {
+    if (length >= needle.length || length < MIN_MATCH_CHARS) continue
+    const pos = haystack.indexOf(needle.slice(0, length))
+    if (pos >= 0) return [pos, length]
+  }
+  return null
+}
+
+/** Cherche la citation dans le document Word déjà rendu et la surligne via l'API CSS Custom
+ * Highlight — sans toucher au DOM produit par docx-preview (tableaux, styles, numérotation),
+ * contrairement à un `Range.surroundContents()` qui échouerait sur une sélection à cheval sur
+ * plusieurs éléments. Retourne `true` si un passage a été trouvé et surligné. */
+function highlightInDocx(container: HTMLElement, citation: string): boolean {
+  CSS.highlights.delete(DOCX_HIGHLIGHT_NAME)
+  if (!('highlights' in CSS)) return false // navigateur trop ancien : le document reste consultable, sans surlignage
+
+  const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT)
+  const nodes: Text[] = []
+  const spans: [start: number, end: number][] = [] // bornes dans le texte normalisé concaténé
+  let normalized = ''
+  let node: Node | null
+  while ((node = walker.nextNode())) {
+    const piece = normalizeText(node.textContent ?? '')
+    if (!piece) continue
+    // Un espace entre nœuds : deux « runs » Word consécutifs ("Hôtel" + " Couvé") n'ont souvent
+    // aucun séparateur propre dans le DOM, la citation normalisée non plus.
+    if (normalized) normalized += ' '
+    spans.push([normalized.length, normalized.length + piece.length])
+    nodes.push(node as Text)
+    normalized += piece
+  }
+
+  let match: [number, number] | null = null
+  for (const fragment of citationFragments(citation)) {
+    match = findInText(normalized, fragment)
+    if (match) break
+  }
+  if (!match) return false
+  const [matchStart, matchLength] = match
+
+  // Retrouve, pour une position dans le texte normalisé concaténé, le nœud et le décalage dans
+  // SON texte d'origine — approximatif (la normalisation ne fait jamais grandir le texte), mais
+  // décaler légèrement une borne de surlignage au sein d'un même nœud est sans effet visible.
+  const locate = (pos: number): { node: Text; offset: number } | null => {
+    for (let i = 0; i < spans.length; i++) {
+      const [s, e] = spans[i]
+      if (pos >= s && pos <= e) {
+        const length = nodes[i].length
+        const offset = e > s ? Math.round(((pos - s) / (e - s)) * length) : 0
+        return { node: nodes[i], offset: Math.min(offset, length) }
+      }
+    }
+    return null
+  }
+
+  const startLoc = locate(matchStart)
+  const endLoc = locate(matchStart + matchLength - 1)
+  if (!startLoc || !endLoc) return false
+
+  const range = new Range()
+  range.setStart(startLoc.node, startLoc.offset)
+  range.setEnd(endLoc.node, Math.min(endLoc.offset + 1, endLoc.node.length))
+  CSS.highlights.set(DOCX_HIGHLIGHT_NAME, new Highlight(range))
+  startLoc.node.parentElement?.scrollIntoView({ block: 'center' })
+  return true
+}
+
+/** Preuve visuelle d'une valeur extraite : la page du PDF ou du document Word, passage surligné.
  *
  * Volet ancré à droite du tableau des champs, et non fenêtre modale : le principe
  * directeur du projet est « aucune valeur inventée, citation obligatoire », donc la
  * preuve est un élément permanent de l'écran. L'expert enchaîne une cinquantaine de
  * vérifications — chacune ne doit coûter qu'un clic, sans ouverture ni fermeture.
  *
- * Rendu vectoriel côté client (PDF.js), pas une image plate rendue par le serveur : le zoom
- * agrandit réellement la page (au lieu de simplement redemander une image plus dense à taille
- * d'affichage inchangée), et l'expert peut feuilleter tout le document, pas seulement la page
- * citée — utile quand la citation n'a pas pu être localisée automatiquement. Seule la
- * LOCALISATION du passage (coordonnées du surlignage) reste calculée côté serveur : c'est le
- * seul endroit qui sait faire correspondre une citation reformulée par le LLM au texte réel du
- * PDF (§`backend/app/extraction/citation_preview.py`). */
+ * Rendu vectoriel côté client (PDF.js / docx-preview), pas une image plate rendue par le
+ * serveur : le zoom agrandit réellement la page, et l'expert peut feuilleter tout le document,
+ * pas seulement le passage cité — utile quand la citation n'a pas pu être localisée
+ * automatiquement. Seule la LOCALISATION précise dans un PDF (coordonnées du surlignage) reste
+ * calculée côté serveur, qui seul sait faire correspondre une citation reformulée par le LLM au
+ * texte réel du PDF (§`backend/app/extraction/citation_preview.py`) ; pour un .docx, docx-preview
+ * ne fournissant aucune coordonnée, la recherche se fait entièrement côté client sur le texte
+ * déjà rendu (§`highlightInDocx` ci-dessus).
+ *
+ * Chaque bibliothèque de rendu (pdf.js ~700 Ko, docx-preview ~100 Ko) est chargée en paresseux
+ * via `import()` dynamique — un import statique aurait fait peser LES DEUX sur chaque citation
+ * ouverte, y compris pour visualiser un simple PDF. */
 export function CitationPreview({ dossierId, source, libelle, value, citation }: Props) {
   const [location, setLocation] = useState<CitationLocation | null>(null)
   const [locateError, setLocateError] = useState<string | null>(null)
@@ -91,12 +200,19 @@ export function CitationPreview({ dossierId, source, libelle, value, citation }:
   const [renderError, setRenderError] = useState<string | null>(null)
   const [boxes, setBoxes] = useState<Box[]>([])
   const [pageCss, setPageCss] = useState<{ width: number; height: number } | null>(null)
-  // null = pas encore calculé : le premier rendu de page ajuste le zoom pour que la page
-  // tienne dans la largeur du volet, comme le ferait n'importe quel visualisateur PDF.
+  // null = pas encore calculé : le premier rendu de page PDF ajuste le zoom pour qu'elle tienne
+  // dans la largeur du volet, comme le ferait n'importe quel visualisateur PDF. Un .docx, lui,
+  // part directement à 100 % (§effet ci-dessous) : une page Word rendue par docx-preview est déjà
+  // dimensionnée pour l'écran, contrairement à une page PDF dont le format physique varie.
   const [zoom, setZoom] = useState<number | null>(null)
+
+  const [docxReady, setDocxReady] = useState(false)
+  const [docxError, setDocxError] = useState<string | null>(null)
+  const [docxHighlighted, setDocxHighlighted] = useState(true) // true tant qu'on ne sait pas encore que ça a échoué
 
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
+  const docxContainerRef = useRef<HTMLDivElement>(null)
   const renderTaskRef = useRef<RenderTask | null>(null)
 
   // --- Localisation de la citation (page + coordonnées du surlignage, côté serveur) ------------
@@ -116,60 +232,95 @@ export function CitationPreview({ dossierId, source, libelle, value, citation }:
     }
   }, [dossierId, source.document_id, citation])
 
-  // Un document réellement consultable dans les deux cas où le fichier EST un PDF, que le passage
-  // ait été localisé précisément ou seulement approché : mieux vaut laisser l'expert feuilleter le
-  // vrai document que de le renvoyer vers rien.
-  const consultable = location !== null && location.reason !== 'not_a_pdf'
-
-  // Extension du fichier plutôt que `consultable` (dérivé de `location`) pour décider s'il faut
-  // charger le PDF : `location` repasse par `null` à CHAQUE nouvelle citation (le temps de sa
-  // propre requête), donc `consultable` clignote faux→vrai même quand on reste sur le même
-  // document. L'utiliser en dépendance d'effet détruisait et rechargeait le PDF à chaque clic sur
-  // un nouveau champ — parfois en plein milieu d'un rendu en cours, d'où un crash pdf.js
-  // (`getPage` appelé sur un document déjà détruit). Le nom de fichier, lui, est stable.
+  // Extension du fichier plutôt que `location.reason` pour décider quoi rendre : `location`
+  // repasse par `null` à CHAQUE nouvelle citation (le temps de sa propre requête), donc un état
+  // dérivé de `location` clignoterait faux→vrai même en restant sur le même document — utilisé en
+  // dépendance d'effet, ça détruisait et rechargeait le PDF à chaque clic sur un nouveau champ,
+  // parfois en plein rendu (crash pdf.js). Le nom de fichier, lui, est stable.
   const isPdf = source.filename.toLowerCase().endsWith('.pdf')
+  const isDocx = source.filename.toLowerCase().endsWith('.docx')
+  // Le backend ne distingue que « PDF » / « pas PDF » (`reason: not_a_pdf` pour tout le reste,
+  // .docx compris) : pour un .docx, ce champ ne dit donc rien d'utile, et un document EST
+  // consultable dès que sa localisation a répondu, quel que soit ce qu'elle contient.
+  const consultable = location !== null && (isPdf || isDocx || location.reason !== 'not_a_pdf')
 
-  // --- Chargement du document (une fois par document, réutilisé d'une citation à l'autre sur le
-  //     même fichier — cliquer deux champs sourcés par le même CCTP ne doit pas le retélécharger) --
+  // --- Chargement du PDF (une fois par document, réutilisé d'une citation à l'autre sur le même
+  //     fichier — cliquer deux champs sourcés par le même CCTP ne doit pas le retélécharger) -----
   useEffect(() => {
     if (!isPdf) return
     let cancelled = false
     setDocError(null)
-    const task = pdfjsLib.getDocument({ url: documentFileUrl(dossierId, source.document_id), withCredentials: true })
-    task.promise
-      .then((doc) => {
-        if (cancelled) {
-          doc.destroy()
-          return
-        }
-        setPdfDoc(doc)
-      })
-      .catch(() => {
+    // La destruction se fait exclusivement via la TÂCHE de chargement (`task.destroy()`), jamais
+    // via le document résolu : `PDFDocumentProxy` n'expose plus `.destroy()` depuis pdf.js v6. La
+    // tâche, elle, reste valide et destructible même après résolution.
+    let task: PDFDocumentLoadingTaskLike | null = null
+    ;(async () => {
+      const pdfjsLib = await import('pdfjs-dist')
+      if (cancelled) return
+      pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl
+      task = pdfjsLib.getDocument({ url: documentFileUrl(dossierId, source.document_id), withCredentials: true })
+      try {
+        const doc = await task.promise
+        if (!cancelled) setPdfDoc(doc)
+      } catch {
         if (!cancelled) setDocError('Le document n’a pas pu être chargé.')
-      })
+      }
+    })()
     return () => {
       cancelled = true
-      task.destroy()
+      task?.destroy()
     }
   }, [isPdf, dossierId, source.document_id])
 
+  // --- Chargement + rendu du .docx (une fois par document, même logique que le PDF ci-dessus) ---
   useEffect(() => {
+    if (!isDocx) return
+    let cancelled = false
+    setDocxError(null)
+    setDocxReady(false)
+    ;(async () => {
+      const [{ renderAsync }, res] = await Promise.all([
+        import('docx-preview'),
+        fetch(documentFileUrl(dossierId, source.document_id)),
+      ])
+      if (cancelled) return
+      if (!res.ok) throw new Error('fetch')
+      const blob = await res.blob()
+      if (cancelled) return
+      const container = docxContainerRef.current
+      if (!container) return
+      container.innerHTML = ''
+      await renderAsync(blob, container, container, { inWrapper: true, ignoreLastRenderedPageBreak: true })
+      if (cancelled) return
+      setDocxReady(true)
+    })().catch(() => {
+      if (!cancelled) setDocxError('Le document n’a pas pu être chargé.')
+    })
     return () => {
-      pdfDoc?.destroy()
+      cancelled = true
     }
-  }, [pdfDoc])
+  }, [isDocx, dossierId, source.document_id])
+
+  // Cherche et surligne la citation dans le .docx déjà rendu — séparé du rendu ci-dessus : changer
+  // de champ sur le MÊME document ne doit pas redemander/re-parser tout le fichier.
+  useEffect(() => {
+    if (!docxReady) return
+    const container = docxContainerRef.current
+    if (!container) return
+    setDocxHighlighted(highlightInDocx(container, citation))
+  }, [docxReady, citation])
 
   // Repart sur la page citée (et un zoom recalculé) à chaque nouveau document ou nouvelle
   // localisation — sans ça, feuilleter la page 12 d'un CCTP puis cliquer une autre donnée du même
   // document laisserait l'expert sur la page 12 au lieu de la nouvelle preuve.
   useEffect(() => {
     setPageNum(location?.found && location.page !== null ? location.page + 1 : 1)
-    setZoom(null)
-  }, [location, source.document_id])
+    setZoom(isDocx ? 1 : null)
+  }, [location, source.document_id, isDocx])
 
-  // Premier affichage de cette page (zoom encore inconnu) : ajuste l'échelle pour qu'elle tienne
-  // dans la largeur du volet, comme le ferait n'importe quel visualisateur PDF plutôt que de
-  // choisir un pourcentage arbitraire. Séparée du rendu proprement dit (ci-dessous) : les deux
+  // Premier affichage de cette page PDF (zoom encore inconnu) : ajuste l'échelle pour qu'elle
+  // tienne dans la largeur du volet, comme le ferait n'importe quel visualisateur PDF plutôt que
+  // de choisir un pourcentage arbitraire. Séparée du rendu proprement dit (ci-dessous) : les deux
   // ne doivent PAS tourner dans le même passage, sinon le second démarre un `render()` sur le
   // canevas pendant que le premier (au zoom pas encore ajusté) est toujours en vol.
   useEffect(() => {
@@ -187,7 +338,7 @@ export function CitationPreview({ dossierId, source, libelle, value, citation }:
     }
   }, [pdfDoc, pageNum, zoom])
 
-  // --- Rendu de la page courante sur le canevas + calcul du surlignage ---------------------------
+  // --- Rendu de la page PDF courante sur le canevas + calcul du surlignage -----------------------
   useEffect(() => {
     if (!pdfDoc || zoom === null) return
     let cancelled = false
@@ -311,9 +462,10 @@ export function CitationPreview({ dossierId, source, libelle, value, citation }:
           <p className="py-8 text-center text-sm text-encre-3">Recherche du passage…</p>
         )}
         {location && !consultable && (
-          <p className="py-8 text-center text-sm text-encre-2">{REASONS[location.reason ?? ''] ?? REASONS.not_found}</p>
+          <p className="py-8 text-center text-sm text-encre-2">{REASONS[location.reason ?? ''] ?? REASONS.unsupported}</p>
         )}
-        {consultable && (
+
+        {consultable && isPdf && (
           <>
             {reason && <p className="mb-2 text-xs text-encre-3">{REASONS[reason] ?? ''}</p>}
             {docError && <p className="py-8 text-center text-sm text-encre-2">{docError}</p>}
@@ -340,6 +492,24 @@ export function CitationPreview({ dossierId, source, libelle, value, citation }:
             )}
           </>
         )}
+
+        {consultable && isDocx && (
+          <>
+            {!docxReady && !docxError && (
+              <p className="py-8 text-center text-sm text-encre-3">Chargement du document…</p>
+            )}
+            {docxError && <p className="py-8 text-center text-sm text-encre-2">{docxError}</p>}
+            {docxReady && !docxHighlighted && <p className="mb-2 text-xs text-encre-3">{REASONS.not_found}</p>}
+            {/* `zoom` (non standard mais géré par Chromium/Edge, la cible de cet outil) redimensionne
+                réellement la mise en page — contrairement à `transform: scale`, qui aurait laissé un
+                vide ou tronqué le contenu puisqu'il ne fait pas suivre les dimensions du conteneur. */}
+            <div
+              ref={docxContainerRef}
+              className="docx-apercu mx-auto"
+              style={{ zoom: zoom ?? 1, visibility: docxReady ? 'visible' : 'hidden' }}
+            />
+          </>
+        )}
       </div>
 
       <div className="flex items-center gap-2 border-t border-bord bg-surface px-4 py-2.5">
@@ -349,7 +519,7 @@ export function CitationPreview({ dossierId, source, libelle, value, citation }:
           rel="noreferrer"
           className={`flex-1 ${BTN_PETIT}`}
         >
-          Ouvrir le PDF
+          Ouvrir le fichier
         </a>
 
         {/* Groupé et avec le niveau affiché : le zoom doit se voir au premier coup d'œil. À la
@@ -382,4 +552,12 @@ export function CitationPreview({ dossierId, source, libelle, value, citation }:
       </div>
     </>
   )
+}
+
+/** Sous-ensemble de `PDFDocumentLoadingTask` réellement utilisé ici — évite d'importer le type
+ * complet depuis `pdfjs-dist` juste pour une variable locale typée dans un effet où le module
+ * lui-même n'est importé que dynamiquement. */
+interface PDFDocumentLoadingTaskLike {
+  promise: Promise<PDFDocumentProxy>
+  destroy(): Promise<void>
 }
