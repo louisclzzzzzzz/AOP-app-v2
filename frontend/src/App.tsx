@@ -155,12 +155,14 @@ export default function App() {
   }
 
   return (
-    <div className="grid min-h-screen grid-cols-[3.5rem_1fr] bg-surface">
+    <div className="grid min-h-screen grid-cols-[14rem_1fr] bg-surface">
       {/* Rail d'outils : l'ossature graphite qui tient l'écran. Il reste identique
           d'un écran à l'autre — c'est le seul repère fixe quand l'expert navigue
-          entre la liste et les 5 onglets d'un dossier. */}
-      <nav className="flex flex-col items-center gap-1 bg-graphite py-3" aria-label="Navigation principale">
-        <span className="pt-1.5 pb-3 text-[13px] font-bold tracking-wide text-white">AOP</span>
+          entre la liste et les 5 onglets d'un dossier. Assez large pour nommer
+          chaque entrée en toutes lettres : une icône seule ne distingue pas
+          « Dossiers » de « Veille » à qui n'a pas mémorisé les deux pictogrammes. */}
+      <nav className="flex flex-col gap-1 bg-graphite px-3 py-4" aria-label="Navigation principale">
+        <span className="px-2.5 pb-4 text-[15px] font-bold tracking-wide text-white">AOP</span>
         <RailBouton
           label="Dossiers"
           actif={selectedId === null && view === 'dossiers'}
@@ -234,16 +236,15 @@ function RailBouton({
     <button
       type="button"
       onClick={onClick}
-      title={label}
-      aria-label={label}
       aria-current={actif ? 'page' : undefined}
-      className={`grid h-9.5 w-9.5 place-items-center rounded-md transition-colors ${
+      className={`flex items-center gap-2.5 rounded-md px-2.5 py-2 text-left text-[13px] font-semibold transition-colors ${
         actif ? 'bg-ardoise text-white' : 'text-encre-3 hover:bg-graphite-2 hover:text-surface-3'
       } ${className}`}
     >
-      <svg className="h-[18px] w-[18px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.6}>
+      <svg className="h-[18px] w-[18px] shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.6}>
         <path d={d} strokeLinecap="round" strokeLinejoin="round" />
       </svg>
+      <span className="truncate">{label}</span>
     </button>
   )
 }
