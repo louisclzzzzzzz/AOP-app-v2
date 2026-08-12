@@ -7,13 +7,14 @@ import {
   runExtractionAnalysis,
   validateExtraction,
 } from '../api'
-import type { Dossier, DocumentItem, DossierStatus, ExtractionEntry } from '../types'
+import type { Dossier, DocumentItem, DossierStatus, ExtractionEntry, ExtractionSource } from '../types'
 import { isAtOrAfter } from '../statusFlow'
 import { telechargerRapportDocx } from '../rapport'
 import {
   BTN,
   BTN_PRIMAIRE,
   CADRE,
+  CLE,
   ERREUR,
   JETON_ALERTE,
   JETON_ERREUR,
@@ -57,6 +58,12 @@ function matchFiltre(entry: ExtractionEntry, filtre: Filtre): boolean {
   return true
 }
 
+/** Source retenue par défaut à l'ouverture d'un champ : la plus confiante — c'est elle que le
+ * moteur a choisie comme valeur finale (§app/extraction/engine.py `_reconcile_cross_check`). */
+function bestSource(sources: ExtractionSource[]): ExtractionSource {
+  return sources.reduce((best, s) => ((s.confidence ?? 0) > (best.confidence ?? 0) ? s : best))
+}
+
 export function ExtractionSheet({ dossierId, dossier, documents, onApplied }: Props) {
   const status = dossier.status
   const [entries, setEntries] = useState<ExtractionEntry[] | null>(null)
@@ -64,10 +71,18 @@ export function ExtractionSheet({ dossierId, dossier, documents, onApplied }: Pr
   const [downloadingReport, setDownloadingReport] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  // Champ dont on affiche la preuve visuelle (page du PDF, passage surligné) dans
-  // le volet de droite. Un seul à la fois : le volet est ancré, pas empilable.
+  // Champ dont on affiche la preuve visuelle (page du PDF, passage surligné) dans le volet de
+  // droite, et LAQUELLE de ses sources y est affichée — distinctes : un champ incohérent a
+  // plusieurs sources en désaccord, et l'expert doit pouvoir basculer de l'une à l'autre sans
+  // changer de champ (§comparateur dans le volet, ci-dessous).
   const [proofOf, setProofOf] = useState<ExtractionEntry | null>(null)
+  const [proofSource, setProofSource] = useState<ExtractionSource | null>(null)
   const [filtre, setFiltre] = useState<Filtre>('tous')
+
+  const handleSelectProof = useCallback((entry: ExtractionEntry, source: ExtractionSource) => {
+    setProofOf(entry)
+    setProofSource(source)
+  }, [])
 
   // --- Sélection manuelle de documents avant lancement (arborescence de l'étape 1) -----------
   const [showManualPicker, setShowManualPicker] = useState(false)
@@ -355,12 +370,26 @@ export function ExtractionSheet({ dossierId, dossier, documents, onApplied }: Pr
                 {lignes.map((entry) => {
                   const actif = proofOf?.field_id === entry.field_id
                   const consultable = Boolean(entry.citation && entry.sources.length > 0)
+                  const incoherent = entry.cross_check_status === 'incoherent'
+                  // Une incohérence n'a de sens qu'à comparer ses sources l'une à l'autre : les
+                  // citer TOUTES sur la ligne (au lieu de la seule retenue) donne à voir le
+                  // désaccord sans même ouvrir le volet de preuve, et chacune est cliquable
+                  // séparément pour y basculer directement (§comparateur dans le volet).
+                  const rowSources = incoherent ? entry.sources : entry.sources.slice(0, 1)
                   return (
-                    <button
+                    // `div role="button"` et non `<button>` : une ligne incohérente imbrique un
+                    // bouton par source (ci-dessous), or un <button> ne peut pas en contenir.
+                    <div
                       key={entry.field_id}
-                      type="button"
-                      disabled={!consultable}
-                      onClick={() => setProofOf(entry)}
+                      role="button"
+                      tabIndex={consultable ? 0 : -1}
+                      aria-disabled={!consultable}
+                      onClick={() => consultable && handleSelectProof(entry, bestSource(entry.sources))}
+                      onKeyDown={(e) => {
+                        if (!consultable || (e.key !== 'Enter' && e.key !== ' ')) return
+                        e.preventDefault()
+                        handleSelectProof(entry, bestSource(entry.sources))
+                      }}
                       title={consultable ? 'Afficher le passage surligné dans le document d’origine' : undefined}
                       className={`col-span-3 grid grid-cols-subgrid items-baseline gap-3.5 border-b border-bord border-l-[3px] px-3.5 py-2 text-left ${
                         actif
@@ -385,7 +414,7 @@ export function ExtractionSheet({ dossierId, dossier, documents, onApplied }: Pr
 
                       {/* Les jetons se rangent contre le bord droit : ils forment ainsi une
                           colonne franche, au lieu de flotter au gré de la longueur du nom. */}
-                      <span className="flex min-w-0 items-center justify-end gap-1.5">
+                      <span className="flex min-w-0 flex-wrap items-center justify-end gap-1.5">
                         {entry.sources.some((s) => s.selection === 'semantic') && (
                           <span
                             className={JETON_ALERTE}
@@ -394,30 +423,45 @@ export function ExtractionSheet({ dossierId, dossier, documents, onApplied }: Pr
                             sémantique
                           </span>
                         )}
-                        {entry.cross_check_status === 'incoherent' ? (
-                          <span
-                            className={JETON_ERREUR}
-                            title={entry.sources.map((s) => `${s.value} (${s.filename})`).join(' vs ')}
-                          >
-                            incohérence
-                          </span>
+                        {incoherent ? (
+                          <span className={JETON_ERREUR}>incohérence</span>
                         ) : entry.cross_check_status === 'coherent' ? (
                           <span className={JETON_RECOUPE} title="Valeur confirmée par plusieurs documents concordants">
                             recoupé ×{entry.sources.length}
                           </span>
                         ) : null}
-                        {entry.sources.length > 0 ? (
-                          <span
-                            className={`min-w-0 ${actif ? JETON_SOURCE_ACTIF : JETON_SOURCE}`}
-                            title={entry.sources.map((s) => documentPathById.get(s.document_id) ?? s.filename).join(', ')}
-                          >
-                            {sourceCourte(documentPathById.get(entry.sources[0].document_id) ?? entry.sources[0].filename)}
-                          </span>
+                        {rowSources.length > 0 ? (
+                          rowSources.map((source) => {
+                            const sourceActif = actif && proofSource?.document_id === source.document_id
+                            const nom = sourceCourte(documentPathById.get(source.document_id) ?? source.filename)
+                            return incoherent ? (
+                              <button
+                                key={source.document_id}
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation()
+                                  handleSelectProof(entry, source)
+                                }}
+                                title={`${source.value} — ${documentPathById.get(source.document_id) ?? source.filename}`}
+                                className={`min-w-0 ${sourceActif ? JETON_SOURCE_ACTIF : JETON_SOURCE}`}
+                              >
+                                {nom}
+                              </button>
+                            ) : (
+                              <span
+                                key={source.document_id}
+                                className={`min-w-0 ${sourceActif ? JETON_SOURCE_ACTIF : JETON_SOURCE}`}
+                                title={entry.sources.map((s) => documentPathById.get(s.document_id) ?? s.filename).join(', ')}
+                              >
+                                {nom}
+                              </span>
+                            )
+                          })
                         ) : (
                           <span className={JETON_ALERTE}>à demander</span>
                         )}
                       </span>
-                    </button>
+                    </div>
                   )
                 })}
               </div>
@@ -431,21 +475,43 @@ export function ExtractionSheet({ dossierId, dossier, documents, onApplied }: Pr
           50 champs défile, la preuve reste en face — sans quoi le volet disparaîtrait
           dès le troisième champ et ne vaudrait pas mieux qu'une fenêtre modale. */}
       <aside className="flex min-h-0 flex-col border-t border-bord bg-surface-2 xl:sticky xl:top-0 xl:h-screen xl:border-l xl:border-t-0">
-        {proofOf && proofOf.citation && proofOf.sources.length > 0 ? (
-          <Suspense
-            fallback={<p className="flex-1 p-8 text-center text-sm text-encre-3">Chargement du visualisateur…</p>}
-          >
-            <CitationPreview
-              dossierId={dossierId}
-              // La citation vient de la décision retenue, donc du document le plus confiant en cas de
-              // recoupement multi-sources (§`_reconcile_cross_check`) : la chercher dans un autre
-              // document du lot ne donnerait rien.
-              source={proofOf.sources.reduce((best, s) => ((s.confidence ?? 0) > (best.confidence ?? 0) ? s : best))}
-              libelle={proofOf.libelle}
-              value={proofOf.final_value}
-              citation={proofOf.citation}
-            />
-          </Suspense>
+        {proofOf && proofSource && proofOf.citation && proofOf.sources.length > 0 ? (
+          <>
+            {/* Comparateur : seulement sur une incohérence à ≥2 sources — sinon il n'y a rien à
+                comparer. Bascule la preuve affichée SANS changer de champ ni fermer le volet. */}
+            {proofOf.cross_check_status === 'incoherent' && proofOf.sources.length > 1 && (
+              <div className="flex flex-wrap items-center gap-1.5 border-b border-bord bg-surface px-4 py-2">
+                <span className={CLE}>Comparer</span>
+                {proofOf.sources.map((source) => (
+                  <button
+                    key={source.document_id}
+                    type="button"
+                    onClick={() => setProofSource(source)}
+                    title={`${source.value} — ${documentPathById.get(source.document_id) ?? source.filename}`}
+                    className={`min-w-0 ${
+                      proofSource.document_id === source.document_id ? JETON_SOURCE_ACTIF : JETON_SOURCE
+                    }`}
+                  >
+                    {sourceCourte(documentPathById.get(source.document_id) ?? source.filename)}
+                  </button>
+                ))}
+              </div>
+            )}
+            <Suspense
+              fallback={<p className="flex-1 p-8 text-center text-sm text-encre-3">Chargement du visualisateur…</p>}
+            >
+              <CitationPreview
+                dossierId={dossierId}
+                source={proofSource}
+                libelle={proofOf.libelle}
+                value={proofOf.final_value}
+                // Chaque source garde SA PROPRE citation depuis le recoupement (§app/extraction/
+                // engine.py `_reconcile_cross_check`) — on ne retombe sur celle du champ que pour
+                // une extraction faite avant l'ajout de ce champ (citation de source absente).
+                citation={proofSource.citation ?? proofOf.citation}
+              />
+            </Suspense>
+          </>
         ) : (
           <div className="flex flex-1 items-center justify-center p-8 text-center">
             <p className="text-sm text-encre-3">

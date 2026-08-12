@@ -257,7 +257,9 @@ def test_resolve_field_sequential_first_confirming_candidate_wins():
 
     assert outcome is not None
     assert outcome.value == "42"
-    assert outcome.sources == [{"document_id": "d2", "filename": "b.pdf", "value": "42", "confidence": 0.8}]
+    assert outcome.sources == [
+        {"document_id": "d2", "filename": "b.pdf", "value": "42", "confidence": 0.8, "citation": "c"}
+    ]
     assert outcome.cross_check_status == "not_applicable"
 
 
@@ -311,8 +313,14 @@ def test_resolve_field_cross_check_incoherent_when_reference_documents_disagree(
     doc_rc = _doc(document_id="rc-1", filename="RC.pdf")
     doc_ccap = _doc(document_id="ccap-1", filename="CCAP.pdf")
     results = {
-        "rc-1": DocumentExtractionResult(document_id="rc-1", decisions={"montants_totaux_ht": _FakeDecision(found=True, value="1 000 000 EUR", confidence=0.9)}),
-        "ccap-1": DocumentExtractionResult(document_id="ccap-1", decisions={"montants_totaux_ht": _FakeDecision(found=True, value="950 000 EUR", confidence=0.85)}),
+        "rc-1": DocumentExtractionResult(
+            document_id="rc-1",
+            decisions={"montants_totaux_ht": _FakeDecision(found=True, value="1 000 000 EUR", confidence=0.9, citation="Montant : 1 000 000 EUR HT")},
+        ),
+        "ccap-1": DocumentExtractionResult(
+            document_id="ccap-1",
+            decisions={"montants_totaux_ht": _FakeDecision(found=True, value="950 000 EUR", confidence=0.85, citation="Montant total : 950 000 EUR HT")},
+        ),
     }
 
     outcome = resolve_field(
@@ -324,6 +332,13 @@ def test_resolve_field_cross_check_incoherent_when_reference_documents_disagree(
     assert outcome.value == "1 000 000 EUR"  # confiance la plus élevée
     assert {s["value"] for s in outcome.sources} == {"1 000 000 EUR", "950 000 EUR"}
     assert "divergentes" in outcome.justification
+    # Chaque source garde SA PROPRE citation : sans ça, comparer les deux revues consisterait à
+    # chercher la citation du RC dans le texte du CCAP (§app/api/schemas.py ExtractionSourceOut).
+    by_value = {s["value"]: s["citation"] for s in outcome.sources}
+    assert by_value == {
+        "1 000 000 EUR": "Montant : 1 000 000 EUR HT",
+        "950 000 EUR": "Montant total : 950 000 EUR HT",
+    }
 
 
 def test_resolve_field_cross_check_single_source_when_only_one_reference_document():

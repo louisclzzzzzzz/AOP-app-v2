@@ -283,6 +283,10 @@ export interface ExtractionSource {
   /** 'semantic' : document proposé par la seule recherche sémantique de la couche 2 — il ne
    *  contient aucun mot-clé du champ, la valeur mérite donc une relecture de la citation. */
   selection?: 'semantic' | null
+  /** Citation PROPRE à ce document — absente (null) sur les extractions faites avant l'ajout de
+   *  ce champ. Distincte de `ExtractionEntry.citation` (celle du document retenu) : c'est elle
+   *  qui permet de surligner CHAQUE source d'une incohérence dans SON propre PDF. */
+  citation?: string | null
 }
 
 export interface ExtractionEntry {

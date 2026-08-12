@@ -387,7 +387,13 @@ def _sequential_resolved_outcome(
         justification=decision.justification,
         citation=decision.citation,
         sources=[
-            {"document_id": doc.document_id, "filename": doc.filename, "value": decision.value, "confidence": decision.confidence}
+            {
+                "document_id": doc.document_id,
+                "filename": doc.filename,
+                "value": decision.value,
+                "confidence": decision.confidence,
+                "citation": decision.citation,
+            }
         ],
         cross_check_status=CrossCheckStatus.NOT_APPLICABLE.value,
         model_name=model_name,
@@ -399,8 +405,18 @@ def _sequential_resolved_outcome(
 def _reconcile_cross_check(found: list[tuple[DocumentSignal, Any, str | None]]) -> ExtractionOutcome:
     """Comparaison programmatique des valeurs obtenues indépendamment sur chaque document de
     référence (§6.3 : "croiser RC + CCAP + CCTP et signaler les incohérences")."""
+    # `citation` par source (pas seulement sur la meilleure) : c'est ce qui permet à l'écran de
+    # validation de surligner chaque document en désaccord, pas seulement celui retenu — sans
+    # quoi comparer deux sources reviendrait à chercher la citation DE L'UNE dans le texte DE
+    # L'AUTRE, qui échouerait presque toujours (§frontend ExtractionSheet.tsx, CitationPreview).
     sources = [
-        {"document_id": doc.document_id, "filename": doc.filename, "value": d.value, "confidence": d.confidence}
+        {
+            "document_id": doc.document_id,
+            "filename": doc.filename,
+            "value": d.value,
+            "confidence": d.confidence,
+            "citation": d.citation,
+        }
         for doc, d, _ in found
     ]
     normalized_values = {d.value.strip().casefold() for _, d, _ in found}

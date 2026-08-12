@@ -239,6 +239,11 @@ class ExtractionSourceOut(BaseModel):
     # badge à l'écran de validation : c'est là que se concentre le risque d'une valeur plausible
     # mais tirée d'un document qui ne répond pas vraiment à la question posée.
     selection: str | None = None
+    # Citation PROPRE à ce document (§app/extraction/engine.py `_reconcile_cross_check`) — absente
+    # sur les résultats extraits avant l'ajout de ce champ (None). Permet à l'écran de validation
+    # de surligner chaque source d'une incohérence dans SON propre document, pas seulement celle
+    # retenue (`ExtractionEntryOut.citation`).
+    citation: str | None = None
 
 
 class ExtractionEntryOut(BaseModel):
