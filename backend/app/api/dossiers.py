@@ -216,6 +216,31 @@ async def upload_dossier(file: UploadFile, background_tasks: BackgroundTasks, re
     return result
 
 
+@router.post("/{dossier_id}/lancer", response_model=DossierOut)
+async def start_dossier_pipeline(dossier_id: str, background_tasks: BackgroundTasks) -> DossierOut:
+    """Démarre l'ingestion d'un dossier déposé mais non encore traité.
+
+    Existe pour les dossiers créés par la veille automatique (§app/veille/pipeline.py) : leur
+    zip est rapatrié sans qu'aucun traitement ne démarre, précisément pour qu'un balayage
+    nocturne n'engage jamais de dépense d'API sans arbitrage humain. C'est cet appel qui
+    déclenche l'analyse, une fois l'avis jugé digne d'intérêt."""
+    settings = get_settings()
+    with session_scope() as s:
+        dossier = get_dossier(s, dossier_id)
+        if dossier is None:
+            raise HTTPException(404, "Dossier introuvable")
+        if dossier.status != DossierStatus.UPLOADED.value:
+            raise HTTPException(409, f"Le traitement de ce dossier a déjà démarré (statut : {dossier.status}).")
+        result = dossier_to_out(dossier)
+
+    zip_path = settings.workspace_dir / dossier_id / "upload.zip"
+    if not zip_path.exists():
+        raise HTTPException(409, "L'archive de ce dossier est introuvable sur le disque.")
+
+    background_tasks.add_task(_run_pipeline_safely, dossier_id, zip_path)
+    return result
+
+
 @router.delete("/{dossier_id}", status_code=204)
 async def delete_dossier_endpoint(dossier_id: str) -> Response:
     with session_scope() as s:

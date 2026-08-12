@@ -11,6 +11,7 @@ import { DossierProgress } from './components/DossierProgress'
 import { LoginForm } from './components/LoginForm'
 import { ApiKeyGuide } from './components/ApiKeyGuide'
 import { WelcomeTour } from './components/WelcomeTour'
+import { VeillePanel } from './components/VeillePanel'
 
 export default function App() {
   // undefined = vérification en cours ; false = accès ouvert (AOP_REQUIRE_AUTH off — usage
@@ -31,6 +32,10 @@ export default function App() {
   const [showTour, setShowTour] = useState(false)
   const [dossiers, setDossiers] = useState<Dossier[]>([])
   const [selectedId, setSelectedId] = useState<string | null>(null)
+  // Deuxième entrée du rail, à côté de « Dossiers » — indépendante de `selectedId` : ouvrir un
+  // dossier depuis la veille (§handleVeilleDossierStarted) doit retomber sur la vue Dossiers
+  // une fois qu'on revient en arrière, pas rester bloqué sur la veille.
+  const [view, setView] = useState<'dossiers' | 'veille'>('dossiers')
   const [isUploading, setIsUploading] = useState(false)
   const [uploadError, setUploadError] = useState<string | null>(null)
 
@@ -90,8 +95,25 @@ export default function App() {
 
   const handleBack = useCallback(() => {
     setSelectedId(null)
+    setView('dossiers')
     refresh()
   }, [refresh])
+
+  const handleShowVeille = useCallback(() => {
+    setSelectedId(null)
+    setView('veille')
+  }, [])
+
+  // Un dossier issu de la veille existe déjà côté serveur (son DCE a été rapatrié) mais son
+  // traitement vient seulement d'être lancé : on bascule dessus et on rafraîchit la liste, qui
+  // ne le contenait pas encore.
+  const handleVeilleDossierStarted = useCallback(
+    (dossierId: string) => {
+      refresh()
+      setSelectedId(dossierId)
+    },
+    [refresh],
+  )
 
   const handleDelete = useCallback(async (id: string) => {
     await deleteDossier(id)
@@ -141,9 +163,15 @@ export default function App() {
         <span className="pt-1.5 pb-3 text-[13px] font-bold tracking-wide text-white">AOP</span>
         <RailBouton
           label="Dossiers"
-          actif={selectedId === null}
+          actif={selectedId === null && view === 'dossiers'}
           onClick={handleBack}
           d="M3 7h6l2 2h10v10H3z"
+        />
+        <RailBouton
+          label="Veille BOAMP / JOUE"
+          actif={selectedId === null && view === 'veille'}
+          onClick={handleShowVeille}
+          d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7zM12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6z"
         />
         {hasSession && (
           <>
@@ -162,6 +190,8 @@ export default function App() {
       <main className="min-w-0">
         {selectedId ? (
           <DossierProgress dossierId={selectedId} onBack={handleBack} onSelectDossier={setSelectedId} />
+        ) : view === 'veille' ? (
+          <VeillePanel onDossierStarted={handleVeilleDossierStarted} />
         ) : (
           <div className="mx-auto flex max-w-6xl flex-col gap-6 px-6 py-6">
             <section>

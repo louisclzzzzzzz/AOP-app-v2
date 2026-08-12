@@ -22,6 +22,10 @@ dependencies = [
     "python-dotenv>=1.0.1",
     "itsdangerous>=2.2.0",
     "cryptography>=49.0.0",
+    # Appels aux API publiques externes (Géorisques/BAN, BOAMP, JOUE-TED, retrait de DCE).
+    # Était jusqu'ici tiré transitivement par le SDK Mistral et déclaré en dépendance de test
+    # seulement, alors que le code de production s'en sert : dépendance directe désormais.
+    "httpx>=0.27.2",
 ]
 
 [dependency-groups]

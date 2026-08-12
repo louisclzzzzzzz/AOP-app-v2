@@ -19,6 +19,9 @@ import type {
   ReorgApplyResult,
   ReorgReport,
   TaxonomyCategory,
+  VeilleNotice,
+  VeilleScan,
+  VeilleState,
 } from './types'
 
 async function handle<T>(res: Response): Promise<T> {
@@ -259,4 +262,40 @@ export async function generateAuditRisques(dossierId: string): Promise<Dossier> 
 export function dossierWebSocketUrl(id: string): string {
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
   return `${protocol}//${window.location.host}/ws/dossiers/${id}`
+}
+
+// --- Veille BOAMP / JOUE -----------------------------------------------------------------
+
+export async function getVeilleState(): Promise<VeilleState> {
+  const res = await fetch('/api/veille/etat')
+  return handle<VeilleState>(res)
+}
+
+export async function listVeilleNotices(): Promise<VeilleNotice[]> {
+  const res = await fetch('/api/veille/avis')
+  return handle<VeilleNotice[]>(res)
+}
+
+/** Balayage à la demande. Volontairement sans timeout côté client : interroger les deux
+ * sources et enchaîner les retraits prend couramment plusieurs dizaines de secondes. */
+export async function runVeilleScan(): Promise<VeilleScan> {
+  const res = await fetch('/api/veille/scan', { method: 'POST' })
+  return handle<VeilleScan>(res)
+}
+
+export async function retrieveVeilleDce(noticeId: string): Promise<VeilleNotice> {
+  const res = await fetch(`/api/veille/avis/${noticeId}/retrait`, { method: 'POST' })
+  return handle<VeilleNotice>(res)
+}
+
+export async function dismissVeilleNotice(noticeId: string): Promise<VeilleNotice> {
+  const res = await fetch(`/api/veille/avis/${noticeId}/ecarter`, { method: 'POST' })
+  return handle<VeilleNotice>(res)
+}
+
+/** Démarre l'analyse d'un dossier déposé mais non traité — c'est le cas des dossiers créés
+ * par la veille, dont le DCE est rapatrié sans qu'aucun appel LLM ne soit engagé. */
+export async function startDossierPipeline(dossierId: string): Promise<Dossier> {
+  const res = await fetch(`/api/dossiers/${dossierId}/lancer`, { method: 'POST' })
+  return handle<Dossier>(res)
 }

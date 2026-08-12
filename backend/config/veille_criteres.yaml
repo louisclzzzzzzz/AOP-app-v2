@@ -1,0 +1,84 @@
+# Critères de ciblage de la veille automatique (BOAMP + JOUE/TED).
+#
+# Cible : les marchés publics de SERVICES D'ASSURANCE CONSTRUCTION (dommages-ouvrage,
+# tous risques chantier, CCRD/RCMO) — c'est-à-dire les consultations auxquelles SMABTP
+# répond, et dont le DCE contient le projet de construction à analyser. Ce n'est PAS le
+# marché de travaux lui-même (CPV 45*), dont la taxonomie du pipeline ne relève pas.
+#
+# Le filtrage se fait en deux temps, volontairement :
+#   1. côté serveur (API), pour ne pas rapatrier des milliers d'avis — CPV pour TED,
+#      recherche plein texte sur l'objet pour le BOAMP qui n'expose pas de CPV exploitable ;
+#   2. côté client (`app/veille/criteria.py`), sur l'objet + la description consolidés, car
+#      les deux sources ne filtrent pas de la même façon et un avis « assurances de la
+#      collectivité » multi-lots ne se laisse pas trier par la seule requête serveur.
+
+# Profondeur de recherche à chaque passage. 30 jours couvre largement le rythme quotidien du
+# planificateur ; la marge absorbe une machine éteinte plusieurs jours sans trou dans la veille.
+lookback_days: 30
+
+# Un avis n'est retenu que s'il contient AU MOINS UNE de ces expressions (insensible à la
+# casse et aux accents, voir `criteria.normalize`). C'est le filtre décisif : les CPV
+# d'assurance à eux seuls ramènent aussi les flottes automobiles, la RC générale, le cyber…
+require_any:
+  - "dommages ouvrage"
+  - "dommages a l'ouvrage"
+  - "dommage ouvrage"
+  - "tous risques chantier"
+  - "trc"
+  - "assurance construction"
+  - "responsabilite decennale"
+  - "ccrd"
+  - "constructeur non realisateur"
+  - "cnr"
+  - "police unique de chantier"
+  - "puc"
+
+# Écarte un avis même s'il a matché ci-dessus. Sert surtout aux avis de RÉSULTAT (le marché
+# est attribué : plus rien à chiffrer) et aux consultations d'assistance à maîtrise d'ouvrage,
+# qui parlent d'assurance construction sans être le marché d'assurance.
+exclude_any:
+  - "avis d'attribution"
+  - "resultat de marche"
+  - "assistance a maitrise d'ouvrage"
+  - "mission amo"
+  - "courtier"
+
+sources:
+  boamp:
+    enabled: true
+    # Recherche plein texte sur l'objet de l'avis (OR entre les termes). Volontairement plus
+    # large que `require_any` : c'est un pré-filtre serveur, l'affinage se fait ensuite côté
+    # client sur l'objet complet.
+    search_terms:
+      - "assurance dommages ouvrage"
+      - "assurance dommage ouvrage"
+      - "tous risques chantier"
+      - "assurance construction"
+    # Familles d'avis écartées à la source : DECISION/ATTRIBUTION = marché déjà attribué.
+    exclude_natures:
+      - "ATTRIBUTION"
+      - "RESULTAT"
+
+  ted:
+    enabled: true
+    # CPV « services d'assurance ». Large à dessein — les acheteurs codent mal l'assurance
+    # construction (66513200 « tous risques chantier » n'est utilisé que sur ~10% des avis
+    # pertinents) — c'est `require_any` qui fait le tri ensuite.
+    cpv:
+      - "66510000"  # Services d'assurance (générique, le plus utilisé)
+      - "66513000"  # Assurance juridique et tous risques
+      - "66513200"  # Services d'assurance tous risques chantier
+      - "66515000"  # Assurance dommages ou pertes
+      - "66515200"  # Assurance de biens
+      - "66516000"  # Assurance responsabilité civile
+    countries:
+      - "FRA"
+    # Recherche plein texte TED (BT libre) appliquée en plus des CPV, côté serveur.
+    full_text:
+      - "dommages-ouvrage"
+      - "dommages ouvrage"
+      - "tous risques chantier"
+    # Seuls les avis de MARCHÉ (appel à la concurrence) nous intéressent : `cn-*` et `pin-*`.
+    # Les `can-*` (contract award notice) sont des attributions.
+    exclude_notice_type_prefixes:
+      - "can"
