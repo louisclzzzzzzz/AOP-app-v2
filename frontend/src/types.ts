@@ -350,3 +350,64 @@ export interface ProgressEvent {
   message: string | null
   timestamp: string
 }
+
+// --- Veille BOAMP / JOUE ---------------------------------------------------
+
+export type VeilleNoticeStatus =
+  | 'new'
+  | 'manual_required'
+  | 'retrieving'
+  | 'retrieved'
+  | 'retrieval_failed'
+  | 'dismissed'
+
+export interface VeillePublication {
+  source: string
+  source_id: string
+  notice_url: string | null
+}
+
+export interface VeilleNotice {
+  id: string
+  source: string
+  source_id: string
+  objet: string
+  buyer_name: string | null
+  description: string | null
+  published_at: string | null
+  deadline_at: string | null
+  notice_url: string | null
+  dce_url: string | null
+  cpv_codes: string[]
+  departments: string[]
+  procedure: string | null
+  notice_type: string | null
+  also_published: VeillePublication[]
+  matched_terms: string[]
+  status: VeilleNoticeStatus
+  retrieval_platform: string | null
+  retrieval_message: string | null
+  retrieval_attempted_at: string | null
+  dossier_id: string | null
+  first_seen_at: string
+}
+
+export interface VeilleScan {
+  scan_id: string | null
+  started_at: string | null
+  finished_at: string | null
+  triggered_by: string | null
+  notices_seen: number
+  notices_retained: number
+  notices_new: number
+  dce_retrieved: number
+  errors: string[]
+}
+
+export interface VeilleState {
+  daily_scan_enabled: boolean
+  scan_hour: number
+  auto_retrieval_enabled: boolean
+  retrieval_identity_configured: boolean
+  last_scan: VeilleScan | null
+}
