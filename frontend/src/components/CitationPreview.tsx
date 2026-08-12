@@ -250,6 +250,12 @@ export function CitationPreview({ dossierId, source, libelle, value, citation }:
     if (!isPdf) return
     let cancelled = false
     setDocError(null)
+    // Repasse par `null` IMMÉDIATEMENT (pas seulement à la résolution du nouveau chargement) :
+    // sinon les effets de mise à l'échelle/rendu ci-dessous — qui dépendent aussi de `pdfDoc` et
+    // peuvent se redéclencher dans la même passe (ex. reset du zoom sur nouvelle citation) —
+    // continuent de voir l'ANCIEN document alors que sa tâche vient d'être détruite, et appellent
+    // `getPage()` sur un transport déjà mort (crash : « Cannot read properties of null »).
+    setPdfDoc(null)
     // La destruction se fait exclusivement via la TÂCHE de chargement (`task.destroy()`), jamais
     // via le document résolu : `PDFDocumentProxy` n'expose plus `.destroy()` depuis pdf.js v6. La
     // tâche, elle, reste valide et destructible même après résolution.
