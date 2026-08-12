@@ -13,6 +13,18 @@ import { ApiKeyGuide } from './components/ApiKeyGuide'
 import { WelcomeTour } from './components/WelcomeTour'
 import { VeillePanel } from './components/VeillePanel'
 
+const RAIL_COLLAPSED_KEY = 'aop_rail_collapsed'
+
+/** Mémorisé par navigateur (même compromis que `tour.ts`) : au pire, un nouvel appareil
+ * réaffiche le rail déplié, jamais bloquant. */
+function loadRailCollapsed(): boolean {
+  try {
+    return localStorage.getItem(RAIL_COLLAPSED_KEY) === '1'
+  } catch {
+    return false
+  }
+}
+
 export default function App() {
   // undefined = vérification en cours ; false = accès ouvert (AOP_REQUIRE_AUTH off — usage
   // local / exécutable Windows — ou déjà authentifié) ; true = connexion nécessaire.
@@ -36,6 +48,21 @@ export default function App() {
   // dossier depuis la veille (§handleVeilleDossierStarted) doit retomber sur la vue Dossiers
   // une fois qu'on revient en arrière, pas rester bloqué sur la veille.
   const [view, setView] = useState<'dossiers' | 'veille'>('dossiers')
+  // Replié : icônes seules (largeur d'origine, 3,5rem) — utile sur un écran modeste ou pour
+  // rendre au tableau d'extraction toute la largeur qu'il peut occuper.
+  const [railCollapsed, setRailCollapsed] = useState(loadRailCollapsed)
+
+  const handleToggleRail = useCallback(() => {
+    setRailCollapsed((prev) => {
+      const next = !prev
+      try {
+        localStorage.setItem(RAIL_COLLAPSED_KEY, next ? '1' : '0')
+      } catch {
+        // ignore (navigation privée…)
+      }
+      return next
+    })
+  }, [])
   const [isUploading, setIsUploading] = useState(false)
   const [uploadError, setUploadError] = useState<string | null>(null)
 
@@ -155,38 +182,85 @@ export default function App() {
   }
 
   return (
-    <div className="grid min-h-screen grid-cols-[14rem_1fr] bg-surface">
+    <div
+      className={`grid min-h-screen bg-surface transition-[grid-template-columns] duration-150 ${
+        railCollapsed ? 'grid-cols-[3.5rem_1fr]' : 'grid-cols-[14rem_1fr]'
+      }`}
+    >
       {/* Rail d'outils : l'ossature graphite qui tient l'écran. Il reste identique
           d'un écran à l'autre — c'est le seul repère fixe quand l'expert navigue
-          entre la liste et les 5 onglets d'un dossier. Assez large pour nommer
-          chaque entrée en toutes lettres : une icône seule ne distingue pas
-          « Dossiers » de « Veille » à qui n'a pas mémorisé les deux pictogrammes. */}
-      <nav className="flex flex-col gap-1 bg-graphite px-3 py-4" aria-label="Navigation principale">
-        <span className="px-2.5 pb-4 text-[15px] font-bold tracking-wide text-white">AOP</span>
+          entre la liste et les 5 onglets d'un dossier. Replié à la demande (icônes
+          seules) : nommer chaque entrée en toutes lettres aide à s'orienter, mais ne
+          doit pas s'imposer sur un écran modeste ou quand la place manque. */}
+      <nav
+        // `sticky` + hauteur d'écran (même idiome que le volet de preuve, §ExtractionSheet.tsx
+        // `aside`) : sans ça, le rail grandit avec le contenu de la page (`min-h-screen` ne fixe
+        // qu'un MINIMUM) et le bouton de réduction, ancré en bas via `mt-auto`, finit hors écran
+        // dès que la liste des dossiers dépasse une hauteur d'écran.
+        className={`sticky top-0 flex h-screen flex-col gap-1 bg-graphite py-4 ${
+          railCollapsed ? 'items-center px-2' : 'px-3'
+        }`}
+        aria-label="Navigation principale"
+      >
+        <span className={`pb-4 text-[15px] font-bold tracking-wide text-white ${railCollapsed ? '' : 'px-2.5'}`}>
+          {railCollapsed ? 'A' : 'AOP'}
+        </span>
         <RailBouton
           label="Dossiers"
           actif={selectedId === null && view === 'dossiers'}
           onClick={handleBack}
+          collapsed={railCollapsed}
           d="M3 7h6l2 2h10v10H3z"
         />
         <RailBouton
           label="Veille BOAMP / JOUE"
           actif={selectedId === null && view === 'veille'}
           onClick={handleShowVeille}
+          collapsed={railCollapsed}
           d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7zM12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6z"
         />
         {hasSession && (
           <>
-            <RailBouton label="Visite guidée" onClick={() => setShowTour(true)} d="M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18M9.5 9.5a2.5 2.5 0 1 1 3.2 2.4c-.5.2-.7.6-.7 1.1v.5M12 16.5v.5" />
+            <RailBouton
+              label="Visite guidée"
+              onClick={() => setShowTour(true)}
+              collapsed={railCollapsed}
+              d="M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18M9.5 9.5a2.5 2.5 0 1 1 3.2 2.4c-.5.2-.7.6-.7 1.1v.5M12 16.5v.5"
+            />
             <RailBouton
               label="Clé API"
               onClick={() => setShowApiKeyPanel(true)}
+              collapsed={railCollapsed}
               d="M8 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8M12 12h9M18 12v4"
               className="mt-auto"
             />
-            <RailBouton label="Déconnexion" onClick={handleLogout} d="M14 4h5v16h-5M11 16l-4-4 4-4M7 12h9" />
+            <RailBouton
+              label="Déconnexion"
+              onClick={handleLogout}
+              collapsed={railCollapsed}
+              d="M14 4h5v16h-5M11 16l-4-4 4-4M7 12h9"
+            />
           </>
         )}
+
+        <button
+          type="button"
+          onClick={handleToggleRail}
+          title={railCollapsed ? 'Développer le menu' : 'Réduire le menu'}
+          aria-label={railCollapsed ? 'Développer le menu' : 'Réduire le menu'}
+          className={`flex h-9.5 shrink-0 items-center gap-2.5 rounded-md text-encre-3 transition-colors hover:bg-graphite-2 hover:text-surface-3 ${
+            railCollapsed ? 'w-9.5 justify-center px-0' : 'px-2.5'
+          } ${hasSession ? 'mt-1.5' : 'mt-auto'}`}
+        >
+          <svg className="h-[18px] w-[18px] shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.6}>
+            <path
+              d={railCollapsed ? 'M9 6l6 6-6 6' : 'M15 6l-6 6 6 6'}
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+          </svg>
+          {!railCollapsed && <span className="truncate text-[13px] font-semibold">Réduire le menu</span>}
+        </button>
       </nav>
 
       <main className="min-w-0">
@@ -224,27 +298,31 @@ function RailBouton({
   d,
   onClick,
   actif = false,
+  collapsed = false,
   className = '',
 }: {
   label: string
   d: string
   onClick: () => void
   actif?: boolean
+  collapsed?: boolean
   className?: string
 }) {
   return (
     <button
       type="button"
       onClick={onClick}
+      title={label}
+      aria-label={label}
       aria-current={actif ? 'page' : undefined}
-      className={`flex items-center gap-2.5 rounded-md px-2.5 py-2 text-left text-[13px] font-semibold transition-colors ${
-        actif ? 'bg-ardoise text-white' : 'text-encre-3 hover:bg-graphite-2 hover:text-surface-3'
-      } ${className}`}
+      className={`flex h-9.5 shrink-0 items-center gap-2.5 rounded-md text-[13px] font-semibold transition-colors ${
+        collapsed ? 'w-9.5 justify-center px-0' : 'px-2.5 text-left'
+      } ${actif ? 'bg-ardoise text-white' : 'text-encre-3 hover:bg-graphite-2 hover:text-surface-3'} ${className}`}
     >
       <svg className="h-[18px] w-[18px] shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.6}>
         <path d={d} strokeLinecap="round" strokeLinejoin="round" />
       </svg>
-      <span className="truncate">{label}</span>
+      {!collapsed && <span className="truncate">{label}</span>}
     </button>
   )
 }
