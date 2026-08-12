@@ -58,7 +58,7 @@ from app.synthesis.schema import SynthesisTopic, load_synthesis_schema
 logger = logging.getLogger(__name__)
 
 # Concurrence bornée sur les appels LLM (§P0 de l'analyse timing) : les relevés de documents sont
-# indépendants entre eux, les 12 thèmes aussi, donc rien n'impose de les exécuter en séquence.
+# indépendants entre eux, les thèmes aussi, donc rien n'impose de les exécuter en séquence.
 # Mesuré empiriquement sur le vrai compte Mistral avant d'être relevé à 8 (comme
 # `_EXTRACTION_LLM_CONCURRENCY`, app/extraction/pipeline.py — mêmes chiffres de base : 0 échec
 # jusqu'à 16 appels simultanés sur mistral-large-2512) : contrairement à l'extraction, un appel
@@ -67,7 +67,14 @@ logger = logging.getLogger(__name__)
 # test ~26k caractères + max_tokens=16000, 0 échec à concurrence=8). `_retry`
 # (app/mistral/client.py) absorbe déjà un 429 isolé avec backoff exponentiel si la concurrence
 # s'avère malgré tout trop agressive sur un dossier aux documents pivots particulièrement longs.
-_SYNTHESIS_LLM_CONCURRENCY = 8
+#
+# Relevé de 8 à 16 le 2026-08-12, sur mesure du VRAI pipeline (pas un gabarit synthétique) sur
+# `dce_chu_rouen.zip` (84 fichiers, 51 appels map) : 0 échec/429 à AUCUN palier testé, y compris à
+# 40 (quasi non-borné pour ce dossier) — 16 est le point le plus rapide mesuré (317,8s contre
+# 410,1s à 8, la phase map à elle seule passant de 367,2s à 232,7s), sans gain fiable au-delà
+# (bruit de mesure, pas de dégradation). Détail complet, tableaux et logs bruts :
+# `test-runs/campagnes/2026-08-12_phase1-2-concurrence-limites/RAPPORT_CONCURRENCE.md`.
+_SYNTHESIS_LLM_CONCURRENCY = 16
 
 
 def _document_signals(dossier_id: str) -> list[DocumentSignal]:
