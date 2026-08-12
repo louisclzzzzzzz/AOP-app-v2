@@ -33,7 +33,6 @@ _API_URL = "https://api.ted.europa.eu/v3/notices/search"
 _TIMEOUT_SECONDS = 25.0
 _PAGE_SIZE = 100  # l'API plafonne à 250
 _MAX_PAGES = 5
-_NOTICE_URL_TEMPLATE = "https://ted.europa.eu/fr/notice/{publication_number}"
 
 _FIELDS = [
     "publication-number",
@@ -46,6 +45,7 @@ _FIELDS = [
     "classification-cpv",
     "notice-type",
     "procedure-type",
+    "links",
 ]
 
 
@@ -148,6 +148,24 @@ def _parse_ted_deadline(raw: Any) -> dt.datetime | None:
     return dt.datetime.combine(min(dates), dt.time.min, tzinfo=dt.timezone.utc)
 
 
+def _notice_html_url(raw: dict[str, Any]) -> str | None:
+    """URL de la page web de l'avis, prise TELLE QUELLE dans `links` — jamais reconstruite.
+
+    `publication-number` seul ne suffit pas à deviner l'URL : le site TED sert la page humaine
+    sous `/notice/-/detail/{numéro}` (un routage SPA côté Angular, différent du chemin
+    `/notice/{numéro}/xml|pdf` utilisé pour les autres formats) — un gabarit construit à la
+    main s'est avéré 404 en pratique. `links` est toujours présent dans la réponse, qu'il soit
+    demandé ou non ; on le demande explicitement pour que ça reste vrai si l'API change."""
+    links = raw.get("links")
+    if not isinstance(links, dict):
+        return None
+    for key in ("html", "htmlDirect", "pdf"):
+        variants = links.get(key)
+        if isinstance(variants, dict) and variants:
+            return variants.get("FRA") or next(iter(variants.values()), None)
+    return None
+
+
 def _to_notice(raw: dict[str, Any]) -> Notice | None:
     publication_number = _text(raw.get("publication-number"))
     objet = _text(raw.get("notice-title"))
@@ -161,7 +179,7 @@ def _to_notice(raw: dict[str, Any]) -> Notice | None:
         description=(_text(raw.get("description-lot")) or "")[:8000] or None,
         published_at=_parse_ted_date(raw.get("publication-date")),
         deadline_at=_parse_ted_deadline(raw.get("deadline-receipt-tender-date-lot")),
-        notice_url=_NOTICE_URL_TEMPLATE.format(publication_number=publication_number),
+        notice_url=_notice_html_url(raw),
         dce_url=_first_url(raw.get("document-url-lot")),
         cpv_codes=_codes(raw.get("classification-cpv")),
         procedure=_text(raw.get("procedure-type")),

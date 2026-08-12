@@ -12,7 +12,7 @@ from app.veille.criteria import VeilleCriteria
 from app.veille.dedup import merge_notices
 from app.veille.notice import Notice
 from app.veille.sources.boamp import _build_where, _to_notice as boamp_to_notice
-from app.veille.sources.ted import _build_query, _to_notice as ted_to_notice
+from app.veille.sources.ted import _build_query, _notice_html_url, _to_notice as ted_to_notice
 
 _BOAMP_RECORD = {
     "idweb": "26-79114",
@@ -56,6 +56,16 @@ _TED_NOTICE = {
     "classification-cpv": ["66510000", "66510000", "66516000"],
     "notice-type": "cn-standard",
     "procedure-type": "open",
+    # Toujours présent dans une réponse réelle, qu'on le demande ou non — `html` (page humaine,
+    # routage SPA `/notice/-/detail/{num}`) est distinct de `pdf`/`htmlDirect` (`/notice/{num}/…`).
+    "links": {
+        "html": {
+            "FRA": "https://ted.europa.eu/fr/notice/-/detail/443934-2026",
+            "ENG": "https://ted.europa.eu/en/notice/-/detail/443934-2026",
+        },
+        "htmlDirect": {"FRA": "https://ted.europa.eu/fr/notice/443934-2026/html"},
+        "pdf": {"FRA": "https://ted.europa.eu/fr/notice/443934-2026/pdf"},
+    },
 }
 
 
@@ -106,6 +116,29 @@ def test_ted_aplati_le_multilingue_et_deduplique_les_valeurs_par_lot():
     # Une seule URL, désechappée, malgré la répétition sur chaque lot.
     assert notice.dce_url == "https://www.marches-publics.info/index.cfm?fuseaction=dematEnt.login&type=DCE&IDM=1"
     assert notice.cpv_codes == ["66510000", "66516000"]
+    # La page de l'avis vient de `links.html.FRA`, jamais reconstruite depuis le numéro de
+    # publication : un gabarit `/notice/{num}` deviné à la main s'est avéré 404 en pratique
+    # (le vrai routage est `/notice/-/detail/{num}`) — signalé par l'utilisateur en testant
+    # le bouton « Voir l'avis » sur un avis JOUE.
+    assert notice.notice_url == "https://ted.europa.eu/fr/notice/-/detail/443934-2026"
+
+
+def test_notice_html_url_retombe_sur_htmldirect_puis_pdf_puis_aucune_url():
+    assert _notice_html_url({"links": {"htmlDirect": {"FRA": "https://ted.europa.eu/fr/notice/443934-2026/html"}}}) == (
+        "https://ted.europa.eu/fr/notice/443934-2026/html"
+    )
+    assert _notice_html_url({"links": {"pdf": {"FRA": "https://ted.europa.eu/fr/notice/443934-2026/pdf"}}}) == (
+        "https://ted.europa.eu/fr/notice/443934-2026/pdf"
+    )
+    # Absence totale de lien exploitable : None, jamais un gabarit reconstitué à la main.
+    assert _notice_html_url({}) is None
+    assert _notice_html_url({"links": {}}) is None
+
+
+def test_notice_html_url_retombe_sur_une_autre_langue_si_le_francais_manque():
+    assert _notice_html_url({"links": {"html": {"ENG": "https://ted.europa.eu/en/notice/-/detail/1-2026"}}}) == (
+        "https://ted.europa.eu/en/notice/-/detail/1-2026"
+    )
 
 
 def test_ted_retient_la_date_limite_la_plus_proche():
