@@ -453,7 +453,7 @@ flowchart TD
     TRIGGER["Déclenchement à la demande<br/>POST .../synthese-projet/generate"] --> OCRPHASE["OCR à la demande<br/>union dédupliquée des documents pivots<br/>de TOUS les 13 thèmes (1 seule fois/document)"]
     OCRPHASE --> SPLIT{{"Mode du thème"}}
     SPLIT -->|"extraction_fields (1 thème)"| FMT["Reformatage déterministe<br/>valeurs déjà validées étape 3 — SANS LLM"]
-    SPLIT -->|"documents (12 thèmes)"| SEM["asyncio.Semaphore(8)<br/>concurrence bornée"]
+    SPLIT -->|"documents (12 thèmes)"| SEM["asyncio.Semaphore(16)<br/>concurrence bornée"]
     SEM --> CTX["Contexte : documents pivots ordonnés<br/>60k car/doc · 300k car total"]
     CTX --> GROUND["+ grounding : valeurs étape 3<br/>('base à ne pas contredire sans le signaler')"]
     GROUND --> LLMCALL["1 appel LLM par thème<br/>mistral-large-2512, Structured Output"]
@@ -479,9 +479,9 @@ absent du prompt).
 
 OCR fait une seule fois en amont sur l'union dédupliquée des documents candidats de tous les
 thèmes (un document partagé comme le RICT n'est pas ré-OCRisé par thème). Les 13 thèmes sont
-générés en **concurrence bornée** (`asyncio.Semaphore(8)`) plutôt qu'en séquence stricte (ancien
+générés en **concurrence bornée** (`asyncio.Semaphore(16)`) plutôt qu'en séquence stricte (ancien
 temps : 190-400s/dossier, somme de 12 appels indépendants) — voir §11.5 pour la mesure empirique
-qui a fait passer ce chiffre de 4 à 8.
+qui a fait passer ce chiffre de 4 à 8 puis à 16.
 
 *Détail complet (prompts, grille de sélection documentaire, exemples de bugs corrigés) :
 [PHASES_ANALYSE.md §2](PHASES_ANALYSE.md#2-phase-1--synthèse-narrative-du-projet).*
@@ -499,7 +499,7 @@ flowchart TD
     FALLBACK --> BAN
     BAN --> GAPI["6 endpoints Géorisques (best-effort)<br/>séisme · RGA · radon · inondation · cavités · mvt"]
 
-    GAPI --> SEM["asyncio.Semaphore(8)<br/>6 sections A→G"]
+    GAPI --> SEM["asyncio.Semaphore(16)<br/>6 sections A→G"]
     SEM --> FILTER["Filtre cctp_keywords par lot<br/>(TECH/CCTP TRAVAUX, TECH/DPGF)"]
     FILTER --> GROUND2["+ grounding Géorisques<br/>(georisques_aspects déclarés par la section)"]
     GROUND2 --> LLMCALL2["1 appel LLM par section<br/>mistral-large-2512 → liste de RiskItem<br/>(statut rouge/orange/jaune/vert, DTU/Eurocodes)"]
@@ -627,6 +627,25 @@ ce soit** (script de test autonome, hors du code applicatif, utilisant directeme
   vrai `429` une fois, absorbé automatiquement par le retry/quarantaine de `app/mistral/client.py`
   (§11.2) sans aucune perte de donnée — la marge prise (8 plutôt que 16) est directement ce qui
   rend cet incident absorbable sans casser le pipeline.
+
+**2026-08-12, Phase 1 et Phase 2 relevées de 8 à 16** — le gabarit synthétique ci-dessus reste
+prudent par construction : il ne dit rien de la charge d'un **vrai** run map-reduce sur un **vrai**
+dossier volumineux. Testé directement (`run_project_synthesis_pipeline`/`run_audit_pipeline`
+appelés en surchargeant le module au runtime, sans script hors-projet) sur `dce_chu_rouen.zip`
+(84 fichiers) à 8/16/20/24/40 :
+- **Phase 1** (51 appels map + thèmes) : 0 échec/429 à **tous** les paliers, y compris 40 (quasi
+  non-borné pour ce dossier). Temps non monotone au-delà de 16, mais 16 reste le point le plus
+  rapide mesuré (317,8s contre 410,1s à 8).
+- **Phase 2** (24 appels map + 6 sections) : 0 `429` à tous les paliers, mais de vrais échecs
+  ponctuels (timeout de **lecture**, `llm.timeout_seconds=300`, sur des CCTP techniques
+  volumineux) — 1/24 à concurrence 8, 0/24 à 16, 2/24 à 24. Absorbés sans casser le rapport (repli
+  sur extrait brut tronqué). Échantillon trop petit pour établir un lien de cause à effet clair
+  avec le palier de concurrence, mais 16 reste le meilleur point mesuré sur les trois.
+
+`_SYNTHESIS_LLM_CONCURRENCY` et `_AUDIT_LLM_CONCURRENCY` relevées à 16 sur cette base (pas
+`_EXTRACTION_LLM_CONCURRENCY`, non retestée sur un dossier de cette taille — restée à 8). Détail
+complet, tableaux et logs bruts :
+`test-runs/campagnes/2026-08-12_phase1-2-concurrence-limites/RAPPORT_CONCURRENCE.md`.
 
 **OCR** (`ocr.max_concurrency`) laissé à sa valeur prudente existante (3) : un test dédié n'a pas
 donné de signal exploitable (le fichier de test choisi automatiquement s'est avéré être un scan

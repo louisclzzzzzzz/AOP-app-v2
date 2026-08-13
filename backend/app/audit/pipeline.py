@@ -46,13 +46,21 @@ logger = logging.getLogger(__name__)
 
 # Concurrence bornée sur les appels LLM des sections (6 sections indépendantes) et des relevés
 # « map » par document pivot (texte intégral, comme la Phase 1) — même valeur que
-# `_SYNTHESIS_LLM_CONCURRENCY` et `_EXTRACTION_LLM_CONCURRENCY` (app/extraction/pipeline.py, §voir
-# ce commentaire pour la mesure empirique à l'appui sur des appels courts : 0 échec jusqu'à 16
-# appels simultanés sur mistral-large-2512 ; §app/synthesis/pipeline.py pour la mesure équivalente
-# sur des appels « texte intégral » comme ceux du map ci-dessous : 0 échec à concurrence=8 avec un
-# gabarit ~26k caractères + max_tokens=16000). 8 retenu avec marge sous le plus haut palier testé
-# sans erreur. `_retry` (app/mistral/client.py) absorbe un 429 isolé avec backoff exponentiel.
-_AUDIT_LLM_CONCURRENCY = 8
+# `_SYNTHESIS_LLM_CONCURRENCY` et `_EXTRACTION_LLM_CONCURRENCY` (app/extraction/pipeline.py).
+#
+# Relevé de 8 à 16 le 2026-08-12, sur mesure du VRAI pipeline (pas un gabarit synthétique) sur
+# `dce_chu_rouen.zip` (84 fichiers, 24 appels map) : à 16, 415,4s et 0 échec — nettement mieux que
+# 8 (595,2s ET 1/24 appels map en échec) et que 24 (488,7s ET 2/24 en échec). Ces échecs ne sont
+# JAMAIS un 429/rate limit (aucun observé à aucun palier, y compris au-delà de 16 côté Phase 1,
+# §app/synthesis/pipeline.py) mais un timeout de LECTURE côté client (`llm.timeout_seconds=300`)
+# sur des CCTP techniques volumineux (un document différent à chaque fois) — absorbé sans casser
+# le pipeline (repli automatique sur extrait brut tronqué pour la section concernée,
+# app/audit/engine.py). Échantillon trop petit (3 runs) pour confirmer que la concurrence CAUSE
+# ces timeouts plutôt que du bruit — mais 16 reste le meilleur point mesuré sur les trois. Détail
+# complet, tableaux et logs bruts :
+# `test-runs/campagnes/2026-08-12_phase1-2-concurrence-limites/RAPPORT_CONCURRENCE.md`.
+# `_retry` (app/mistral/client.py) absorbe un 429 isolé avec backoff exponentiel.
+_AUDIT_LLM_CONCURRENCY = 16
 
 # Champ d'extraction (étape 3) utilisé pour géocoder le chantier auprès de Géorisques.
 _ADRESSE_CHANTIER_FIELD_ID = "adresse_chantier"

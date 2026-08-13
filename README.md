@@ -36,6 +36,13 @@ Pipeline complet livré, du dépôt du ZIP au rapport d'audit final :
 
 Détail complet du fonctionnement des Phases 1 et 2 : `docs/PHASES_ANALYSE.md`.
 
+**En amont du pipeline — veille BOAMP / JOUE** (`app/veille/`, facultative, désactivée par
+défaut) : recherche des avis de marchés publics d'**assurance construction** (dommages-ouvrage,
+tous risques chantier) sur le BOAMP et le JOUE/TED — deux API publiques et gratuites, sans clé
+— puis retrait du DCE sur le profil d'acheteur quand la plateforme le permet. Le dossier créé
+reste **en attente** : la veille ne déclenche jamais d'appel LLM, l'analyse ne démarre que sur
+décision humaine. Voir `docs/VEILLE.md`.
+
 Auth optionnelle par code d'accès à 4 chiffres (pas de compte email/mot de passe), désactivée
 par défaut pour un usage local ; export des rapports en Word/Excel ; journalisation complète et
 optionnelle de chaque appel API Mistral pour reconstituer le coût réel d'un run
@@ -136,6 +143,8 @@ et leurs rapports sont documentés dans `test-runs/README.md` — dossier **loca
   référence, mots-clés de repérage.
 - **`synthese_projet_schema.yaml`** — les 13 thèmes de la Phase 1 (synthèse projet).
 - **`audit_risques_schema.yaml`** — les 6 sections d'ouvrage de la Phase 2 (audit des risques).
+- **`veille_criteres.yaml`** — critères de ciblage de la veille BOAMP/JOUE (mots-clés retenus
+  et exclus, codes CPV, profondeur de recherche).
 
 Toute évolution de version de modèle ou de seuil se fait dans ces fichiers, jamais en dur
 dans le code.
@@ -154,6 +163,7 @@ backend/
 │   ├── extraction/                # étape 3 : moteur d'extraction + retrieval sémantique (couche 2)
 │   ├── synthesis/                  # Phase 1 : synthèse projet (map-reduce)
 │   ├── audit/                       # Phase 2 : audit des risques DO/TRC (map-reduce) + Géorisques
+│   ├── veille/                       # amont : recherche d'avis BOAMP/JOUE + retrait du DCE
 │   ├── auth/                         # code d'accès, session cookie, anti-brute-force
 │   ├── mistral/                       # wrapper SDK bas niveau (retry, upload, OCR, chat structuré, logs)
 │   ├── reports/                        # export Word des rapports Phase 1/2
