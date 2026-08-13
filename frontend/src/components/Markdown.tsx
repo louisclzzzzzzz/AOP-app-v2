@@ -14,7 +14,7 @@ interface Props {
  * afficherait les `#`/`##` littéralement au lieu de les styler. */
 export function Markdown({ text }: Props) {
   return (
-    <div className="flex flex-col gap-2 text-sm leading-relaxed text-slate-700">
+    <div className="flex flex-col gap-2 text-sm leading-relaxed text-encre">
       {renderLines(text.replace(/\r\n/g, '\n').split('\n'))}
     </div>
   )
@@ -27,18 +27,18 @@ const OL_RE = /^\d+\.\s+(.*)$/
 const INDENTED_RE = /^\s+\S/
 
 const HEADING_CLASSES: Record<number, string> = {
-  1: 'text-base font-semibold text-slate-800',
-  2: 'text-base font-semibold text-slate-800',
-  3: 'text-sm font-semibold text-slate-800',
-  4: 'text-sm font-semibold text-slate-700',
-  5: 'text-sm font-medium text-slate-700',
-  6: 'text-sm font-medium text-slate-600',
+  1: 'text-base font-semibold text-encre',
+  2: 'text-base font-semibold text-encre',
+  3: 'text-sm font-semibold text-encre',
+  4: 'text-sm font-semibold text-encre',
+  5: 'text-sm font-medium text-encre',
+  6: 'text-sm font-medium text-encre-2',
 }
 
 function parseInline(text: string): ReactNode[] {
   return text.split(/(\*\*[^*]+\*\*)/g).map((part, i) =>
     part.startsWith('**') && part.endsWith('**') ? (
-      <strong key={i} className="font-semibold text-slate-800">
+      <strong key={i} className="font-semibold text-encre">
         {part.slice(2, -2)}
       </strong>
     ) : (
@@ -91,9 +91,9 @@ function renderLines(rawLines: string[]): ReactNode[] {
       out.push(
         <table key={key++} className="w-full border-collapse text-left text-xs">
           <thead>
-            <tr className="border-b border-slate-300 bg-slate-50">
+            <tr className="border-b border-bord-fort bg-surface-2">
               {header.map((cell, ci) => (
-                <th key={ci} className="px-2 py-1 font-medium text-slate-600">
+                <th key={ci} className="px-2 py-1 font-medium text-encre-2">
                   {parseInline(cell)}
                 </th>
               ))}
@@ -101,7 +101,7 @@ function renderLines(rawLines: string[]): ReactNode[] {
           </thead>
           <tbody>
             {rows.map((row, ri) => (
-              <tr key={ri} className="border-b border-slate-100">
+              <tr key={ri} className="border-b border-surface-3">
                 {row.map((cell, ci) => (
                   <td key={ci} className="px-2 py-1.5 align-top">
                     {parseInline(cell)}

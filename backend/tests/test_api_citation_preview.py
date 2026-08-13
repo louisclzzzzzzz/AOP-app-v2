@@ -1,11 +1,9 @@
-"""Endpoints de prévisualisation d'une citation (preuve visuelle de l'étape 3).
+"""Endpoint de localisation d'une citation (preuve visuelle de l'étape 3).
 
-Le document est posé directement sur disque et en base : ces endpoints n'ont rien à voir avec le
-pipeline d'analyse, les faire passer par un run complet ne testerait que du décor.
+Le document est posé directement sur disque et en base : cet endpoint n'a rien à voir avec le
+pipeline d'analyse, le faire passer par un run complet ne testerait que du décor.
 """
 from __future__ import annotations
-
-import io
 
 import pytest
 from fastapi.testclient import TestClient
@@ -70,6 +68,12 @@ def test_locate_returns_the_page_holding_the_citation(client, dossier_with_pdf):
     assert body["page"] == 1
     assert body["highlighted"] is True
     assert body["filename"] == "CCTP.pdf"
+    # Le frontend redessine le surlignage lui-même (PDF.js) : il a besoin des coordonnées, pas
+    # d'une image déjà surlignée.
+    assert len(body["rects"]) == 1
+    rect = body["rects"][0]
+    assert rect["x1"] > rect["x0"]
+    assert rect["bottom"] > rect["top"]
 
 
 def test_locate_reports_a_citation_absent_from_the_document(client, dossier_with_pdf):
@@ -84,33 +88,7 @@ def test_locate_reports_a_citation_absent_from_the_document(client, dossier_with
     assert body["reason"] == "not_found"
 
 
-def test_render_returns_a_png_of_the_page(client, dossier_with_pdf):
-    from PIL import Image
-
-    dossier_id, document_id = dossier_with_pdf
-
-    response = client.get(
-        f"/api/dossiers/{dossier_id}/documents/{document_id}/citation.png",
-        params={"citation": _CITATION, "page": 1, "scale": 1.0},
-    )
-
-    assert response.status_code == 200, response.text
-    assert response.headers["content-type"] == "image/png"
-    assert Image.open(io.BytesIO(response.content)).format == "PNG"
-
-
-def test_render_rejects_a_page_outside_the_document(client, dossier_with_pdf):
-    dossier_id, document_id = dossier_with_pdf
-
-    response = client.get(
-        f"/api/dossiers/{dossier_id}/documents/{document_id}/citation.png",
-        params={"citation": _CITATION, "page": 99},
-    )
-
-    assert response.status_code == 404
-
-
-def test_endpoints_refuse_a_document_of_another_dossier(client, dossier_with_pdf):
+def test_endpoint_refuses_a_document_of_another_dossier(client, dossier_with_pdf):
     """Même garde que le téléchargement du fichier original : un id de document ne doit pas
     donner accès au dossier d'un autre utilisateur."""
     _dossier_id, document_id = dossier_with_pdf

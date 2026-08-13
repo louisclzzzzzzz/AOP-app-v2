@@ -1,0 +1,976 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>AOP — Maquette · Direction A « Cartouche »</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@75..125,400..800&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Serif:ital,wght@0,400;0,600;1,400&display=swap" rel="stylesheet" />
+<style>
+/* ═══════════════════════════════════════════════════════════════════
+   DIRECTION A — « CARTOUCHE »
+   L'application se lit comme une pièce écrite du DCE : cartouche de
+   plan, cotations, trames réglées, codes techniques en chasse fixe.
+   ═══════════════════════════════════════════════════════════════════ */
+
+:root {
+  /* Encre — bleu de Prusse, la couleur du trait sur un plan */
+  --encre:      #14263D;
+  --encre-2:    #40536B;
+  --encre-3:    #7C8B9C;
+  /* Papier calque — neutre froid, surtout pas un crème */
+  --papier:     #F1F2EE;
+  --papier-2:   #E6E8E2;
+  --blanc:      #FCFCFB;
+  --trait:      #C9CCC4;
+  --trait-fort: #A3A89D;
+  /* Accent pétrole — distinct du triptyque sémantique */
+  --petrole:    #17414F;
+  --petrole-cl: #DCE7E9;
+  /* Sémantique de l'audit : 🔴 🟠 🟢 en registre institutionnel */
+  --rouge:      #A03328;
+  --rouge-cl:   #F5E4E1;
+  --ambre:      #9C6412;
+  --ambre-cl:   #F6EBD8;
+  --vert:       #45643B;
+  --vert-cl:    #E3EADD;
+
+  --display: 'Archivo', 'Helvetica Neue', Arial, sans-serif;
+  --mono: 'IBM Plex Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+  --serif: 'IBM Plex Serif', Georgia, serif;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--papier);
+  color: var(--encre);
+  font-family: var(--display);
+  font-size: 15px;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ── Annotation de maquette (hors application) ───────────────────── */
+.annot {
+  max-width: 1240px;
+  margin: 56px auto 14px;
+  padding: 0 28px;
+  display: flex;
+  align-items: baseline;
+  gap: 14px;
+}
+.annot__num {
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: .1em;
+  color: var(--blanc);
+  background: var(--encre);
+  padding: 3px 8px;
+}
+.annot__txt {
+  font-size: 12px;
+  letter-spacing: .16em;
+  text-transform: uppercase;
+  color: var(--encre-3);
+  font-weight: 600;
+}
+.annot__rule { flex: 1; height: 1px; background: var(--trait); }
+
+/* ── Cadre applicatif ─────────────────────────────────────────────── */
+.app {
+  max-width: 1240px;
+  margin: 0 auto 72px;
+  background: var(--blanc);
+  border: 1px solid var(--trait-fort);
+  box-shadow: 0 1px 0 rgba(20,38,61,.04), 0 18px 40px -28px rgba(20,38,61,.35);
+}
+
+/* ── Bandeau de tête ──────────────────────────────────────────────── */
+.bandeau {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 22px;
+  height: 52px;
+  background: var(--encre);
+  color: var(--blanc);
+}
+.marque {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+}
+.marque__sigle {
+  font-family: var(--display);
+  font-weight: 800;
+  font-stretch: 125%;
+  font-size: 19px;
+  letter-spacing: .06em;
+}
+.marque__rule { width: 1px; height: 17px; background: rgba(252,252,251,.32); align-self: center; }
+.marque__sous {
+  font-size: 11px;
+  letter-spacing: .19em;
+  text-transform: uppercase;
+  color: rgba(252,252,251,.62);
+  font-weight: 500;
+}
+.bandeau__nav { display: flex; align-items: center; gap: 26px; }
+.bandeau__lien {
+  font-size: 12px;
+  letter-spacing: .11em;
+  text-transform: uppercase;
+  color: rgba(252,252,251,.68);
+  text-decoration: none;
+  font-weight: 500;
+  padding-bottom: 2px;
+  border-bottom: 1px solid transparent;
+}
+.bandeau__lien:hover { color: var(--blanc); border-bottom-color: rgba(252,252,251,.5); }
+
+/* ── SIGNATURE 1 : le cartouche ───────────────────────────────────── */
+/* Reprend le cartouche d'un plan d'architecte : grille réglée de
+   cellules, intitulé en capitales fines au-dessus de la valeur.      */
+.cartouche { border-bottom: 1px solid var(--trait-fort); }
+.cartouche__haut {
+  display: grid;
+  grid-template-columns: 2.4fr 1.3fr 1fr .9fr;
+}
+.cartouche__bas {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  border-top: 1px solid var(--trait);
+  background: var(--papier);
+}
+.cell {
+  padding: 13px 18px;
+  border-right: 1px solid var(--trait);
+  min-width: 0;
+}
+.cell:last-child { border-right: 0; }
+.cell__cle {
+  font-size: 9.5px;
+  letter-spacing: .17em;
+  text-transform: uppercase;
+  color: var(--encre-3);
+  font-weight: 600;
+  margin-bottom: 5px;
+}
+.cell__val {
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -.005em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cell__val--grand {
+  font-size: 22px;
+  font-stretch: 112%;
+  font-weight: 700;
+  letter-spacing: -.02em;
+}
+.cell__val--chiffre {
+  font-family: var(--mono);
+  font-size: 17px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+.cell__note { font-size: 11.5px; color: var(--encre-3); font-weight: 500; }
+.cell--indice { background: var(--petrole-cl); }
+
+/* ── SIGNATURE 2 : la cotation ────────────────────────────────────── */
+/* Les 3 étapes du pipeline dessinées comme une cote de plan : ligne
+   d'attache, extrémités en tiret, repères verticaux aux limites.     */
+.cotation {
+  padding: 30px 26px 24px;
+  border-bottom: 1px solid var(--trait);
+  background: var(--blanc);
+}
+.cotation__ligne {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  position: relative;
+  height: 15px;
+  margin-bottom: 3px;
+}
+.cotation__ligne::before {
+  content: "";
+  position: absolute;
+  left: 0; right: 0; top: 7px;
+  height: 1px;
+  background: var(--trait-fort);
+}
+.cotation__seg {
+  position: relative;
+}
+/* repère vertical à chaque limite d'étape */
+.cotation__seg::before {
+  content: "";
+  position: absolute;
+  left: 0; top: 0;
+  width: 1px; height: 15px;
+  background: var(--encre);
+}
+.cotation__seg:last-child::after {
+  content: "";
+  position: absolute;
+  right: 0; top: 0;
+  width: 1px; height: 15px;
+  background: var(--encre);
+}
+/* pastille d'état posée sur la ligne de cote */
+.cotation__etat {
+  position: absolute;
+  top: 1px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 13px; height: 13px;
+  border-radius: 50%;
+  background: var(--blanc);
+  border: 1px solid var(--trait-fort);
+}
+.cotation__etat--fait { background: var(--petrole); border-color: var(--petrole); }
+.cotation__etat--fait::after {
+  content: "";
+  position: absolute;
+  left: 3px; top: 4.5px;
+  width: 5px; height: 2.5px;
+  border-left: 1.5px solid var(--blanc);
+  border-bottom: 1.5px solid var(--blanc);
+  transform: rotate(-45deg);
+}
+.cotation__etat--encours { border-color: var(--ambre); border-width: 3px; }
+
+.cotation__pieds { display: grid; grid-template-columns: repeat(3, 1fr); }
+.cotation__pied { padding-left: 14px; border-left: 1px solid transparent; }
+.cotation__rang {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  letter-spacing: .1em;
+  color: var(--encre-3);
+  font-weight: 500;
+}
+.cotation__nom {
+  font-size: 14.5px;
+  font-weight: 700;
+  letter-spacing: -.01em;
+  margin: 1px 0 2px;
+}
+.cotation__mesure {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--encre-2);
+  font-variant-numeric: tabular-nums;
+}
+.cotation__pied--attente .cotation__nom { color: var(--encre-3); }
+
+/* ── Onglets ──────────────────────────────────────────────────────── */
+.onglets {
+  display: flex;
+  gap: 0;
+  padding: 0 26px;
+  border-bottom: 1px solid var(--trait-fort);
+  background: var(--papier);
+}
+.onglet {
+  appearance: none;
+  background: transparent;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  font-family: var(--display);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  color: var(--encre-3);
+  padding: 13px 20px;
+  margin-bottom: -1px;
+  cursor: pointer;
+}
+.onglet:hover { color: var(--encre); }
+.onglet[aria-selected="true"] {
+  color: var(--encre);
+  border-bottom-color: var(--petrole);
+  background: var(--blanc);
+}
+.onglet:focus-visible { outline: 2px solid var(--petrole); outline-offset: -2px; }
+
+/* ── Corps ────────────────────────────────────────────────────────── */
+.corps { padding: 26px; }
+
+.titre-bloc {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 18px;
+  margin-bottom: 14px;
+}
+.titre-bloc__h {
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: .13em;
+  text-transform: uppercase;
+  margin: 0;
+}
+.titre-bloc__compte {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--encre-3);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── Table de données (extraction) ────────────────────────────────── */
+.tbl {
+  width: 100%;
+  border-collapse: collapse;
+  border: 1px solid var(--trait);
+}
+.tbl caption { text-align: left; }
+.tbl th {
+  text-align: left;
+  font-size: 9.5px;
+  letter-spacing: .16em;
+  text-transform: uppercase;
+  color: var(--encre-3);
+  font-weight: 600;
+  padding: 8px 14px;
+  background: var(--papier);
+  border-bottom: 1px solid var(--trait-fort);
+}
+.tbl td {
+  padding: 9px 14px;
+  border-bottom: 1px solid var(--trait);
+  vertical-align: top;
+  font-size: 13.5px;
+}
+.tbl tr:last-child td { border-bottom: 0; }
+/* Bande de section : repère fort mais non tonitruant — un filet d'encre
+   à gauche plutôt qu'un pavé plein qui zébrerait les 11 sections. */
+.tbl__bande td {
+  background: var(--papier-2);
+  color: var(--encre);
+  font-size: 10px;
+  letter-spacing: .18em;
+  text-transform: uppercase;
+  font-weight: 700;
+  padding: 7px 14px;
+  border-top: 1px solid var(--trait-fort);
+  box-shadow: inset 3px 0 0 var(--encre);
+}
+.tbl__libelle { color: var(--encre-2); width: 30%; }
+.tbl__valeur { font-weight: 600; width: 40%; }
+.tbl__valeur--num { font-family: var(--mono); font-variant-numeric: tabular-nums; font-weight: 500; }
+.tbl__valeur--vide { color: var(--encre-3); font-weight: 400; font-style: italic; }
+.tbl tbody tr:hover td { background: var(--petrole-cl); }
+.tbl tbody tr.tbl__bande:hover td { background: var(--encre); }
+
+/* Puce de provenance : le cœur du produit, chaque valeur est sourcée */
+.source {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--petrole);
+  background: var(--petrole-cl);
+  border: 1px solid #BFD3D6;
+  padding: 2px 7px;
+  text-decoration: none;
+  white-space: nowrap;
+}
+.source:hover { background: #CDDEE1; }
+.source__page { color: var(--encre-2); }
+.source--absente {
+  color: var(--encre-3);
+  background: var(--papier-2);
+  border-color: var(--trait);
+}
+.source--recoupee { border-color: var(--vert); color: var(--vert); background: var(--vert-cl); }
+
+/* ── Statuts d'audit ──────────────────────────────────────────────── */
+.statut {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: .11em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.statut__carre { width: 10px; height: 10px; flex: none; }
+.statut--critique { color: var(--rouge); }
+.statut--critique .statut__carre { background: var(--rouge); }
+.statut--vigilance { color: var(--ambre); }
+.statut--vigilance .statut__carre { background: var(--ambre); }
+.statut--maitrise { color: var(--vert); }
+.statut--maitrise .statut__carre { background: var(--vert); }
+
+/* ── Fiche de risque ──────────────────────────────────────────────── */
+.risque {
+  border: 1px solid var(--trait);
+  border-left: 3px solid var(--rouge);
+  background: var(--blanc);
+  margin-bottom: 14px;
+}
+.risque--vigilance { border-left-color: var(--ambre); }
+.risque__tete {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 13px 18px;
+  border-bottom: 1px solid var(--trait);
+  background: var(--papier);
+}
+.risque__ouvrage {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  letter-spacing: .13em;
+  color: var(--encre-3);
+  font-weight: 500;
+  margin-bottom: 3px;
+}
+.risque__nom { font-size: 15.5px; font-weight: 700; letter-spacing: -.012em; line-height: 1.3; }
+.risque__corps { padding: 15px 18px 16px; }
+.risque__champ + .risque__champ { margin-top: 13px; }
+.risque__cle {
+  font-size: 9.5px;
+  letter-spacing: .16em;
+  text-transform: uppercase;
+  color: var(--encre-3);
+  font-weight: 600;
+  margin-bottom: 3px;
+}
+.risque__txt {
+  font-family: var(--serif);
+  font-size: 14.5px;
+  line-height: 1.62;
+  color: var(--encre);
+  margin: 0;
+  /* La prose d'expert se lit en colonne, pas sur toute la largeur d'écran */
+  max-width: 76ch;
+}
+.risque__refs { margin-top: 13px; display: flex; flex-wrap: wrap; gap: 6px; }
+.ref {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  letter-spacing: .04em;
+  color: var(--encre-2);
+  border: 1px solid var(--trait-fort);
+  padding: 2px 7px;
+  background: var(--papier);
+}
+
+/* ── Encart Géorisques ────────────────────────────────────────────── */
+.georisques {
+  border: 1px solid var(--trait-fort);
+  background: var(--papier);
+  margin-bottom: 22px;
+}
+.georisques__tete {
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--trait);
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+}
+.georisques__h {
+  font-size: 10.5px;
+  letter-spacing: .16em;
+  text-transform: uppercase;
+  font-weight: 700;
+  margin: 0;
+}
+.georisques__coord { font-family: var(--mono); font-size: 11px; color: var(--encre-3); }
+.georisques__grille { display: grid; grid-template-columns: repeat(3, 1fr); }
+.alea {
+  padding: 11px 16px;
+  border-right: 1px solid var(--trait);
+  border-bottom: 1px solid var(--trait);
+}
+.alea:nth-child(3n) { border-right: 0; }
+.alea:nth-last-child(-n+3) { border-bottom: 0; }
+.alea__cle {
+  font-size: 9.5px;
+  letter-spacing: .14em;
+  text-transform: uppercase;
+  color: var(--encre-3);
+  font-weight: 600;
+  margin-bottom: 3px;
+}
+.alea__val { font-size: 13.5px; font-weight: 600; }
+
+/* ── Liste des dossiers ───────────────────────────────────────────── */
+.depot {
+  border: 1px dashed var(--trait-fort);
+  background: var(--papier);
+  padding: 30px 26px;
+  text-align: center;
+  margin-bottom: 26px;
+}
+.depot__titre { font-size: 16px; font-weight: 700; letter-spacing: -.01em; }
+.depot__sous { font-size: 13px; color: var(--encre-2); margin-top: 3px; }
+.depot__btn {
+  display: inline-block;
+  margin-top: 14px;
+  font-family: var(--display);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: .11em;
+  text-transform: uppercase;
+  color: var(--blanc);
+  background: var(--encre);
+  border: 0;
+  padding: 10px 22px;
+  cursor: pointer;
+}
+.depot__btn:hover { background: var(--petrole); }
+.depot__btn:focus-visible { outline: 2px solid var(--petrole); outline-offset: 3px; }
+
+.dossier {
+  display: grid;
+  grid-template-columns: 3fr 1.4fr 1.1fr 1.5fr;
+  align-items: center;
+  gap: 18px;
+  padding: 14px 18px;
+  border: 1px solid var(--trait);
+  border-bottom: 0;
+  background: var(--blanc);
+  text-decoration: none;
+  color: inherit;
+}
+.dossier:last-of-type { border-bottom: 1px solid var(--trait); }
+.dossier:hover { background: var(--petrole-cl); }
+.dossier__nom { font-size: 15px; font-weight: 700; letter-spacing: -.012em; }
+.dossier__fichier { font-family: var(--mono); font-size: 11.5px; color: var(--encre-3); margin-top: 2px; }
+.dossier__meta { font-family: var(--mono); font-size: 12px; color: var(--encre-2); font-variant-numeric: tabular-nums; }
+.dossier__etat {
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  color: var(--petrole);
+}
+.dossier__etat--attente { color: var(--ambre); }
+.dossier__etat--cours { color: var(--encre-3); }
+
+/* Jauge d'avancement discrète, en pied de ligne */
+.jauge { height: 3px; background: var(--papier-2); position: relative; }
+.jauge__part { position: absolute; inset: 0 auto 0 0; background: var(--petrole); }
+.jauge__part--attente { background: var(--ambre); }
+
+@media (prefers-reduced-motion: reduce) {
+  * { animation: none !important; transition: none !important; }
+}
+@media (max-width: 900px) {
+  .cartouche__haut, .cartouche__bas, .georisques__grille,
+  .cotation__ligne, .cotation__pieds { grid-template-columns: 1fr 1fr; }
+  .dossier { grid-template-columns: 1fr 1fr; }
+}
+</style>
+</head>
+<body>
+
+<!-- ══ ÉCRAN 1 ═══════════════════════════════════════════════════════ -->
+<div class="annot">
+  <span class="annot__num">A.1</span>
+  <span class="annot__txt">Accueil — dépôt et suivi des dossiers</span>
+  <span class="annot__rule"></span>
+</div>
+
+<div class="app">
+  <div class="bandeau">
+    <div class="marque">
+      <span class="marque__sigle">AOP</span>
+      <span class="marque__rule"></span>
+      <span class="marque__sous">Analyse de DCE</span>
+    </div>
+    <nav class="bandeau__nav">
+      <a class="bandeau__lien" href="#">Visite guidée</a>
+      <a class="bandeau__lien" href="#">Clé API</a>
+      <a class="bandeau__lien" href="#">Déconnexion</a>
+    </nav>
+  </div>
+
+  <div class="corps">
+    <div class="depot">
+      <div class="depot__titre">Déposer un DCE</div>
+      <div class="depot__sous">Glissez l'archive .zip de la consultation, ou parcourez vos fichiers.</div>
+      <button class="depot__btn" type="button">Parcourir</button>
+    </div>
+
+    <div class="titre-bloc">
+      <h2 class="titre-bloc__h">Dossiers</h2>
+      <span class="titre-bloc__compte">4 dossiers · 178 fichiers analysés</span>
+    </div>
+
+    <a class="dossier" href="#">
+      <div>
+        <div class="dossier__nom">Le Grand Pic — Oz-en-Oisans (38)</div>
+        <div class="dossier__fichier">dce_grand_pic2.zip</div>
+      </div>
+      <div class="dossier__meta">36 fichiers</div>
+      <div class="dossier__meta">50/50 champs</div>
+      <div>
+        <div class="dossier__etat">Audit disponible</div>
+        <div class="jauge"><div class="jauge__part" style="width:100%"></div></div>
+      </div>
+    </a>
+
+    <a class="dossier" href="#">
+      <div>
+        <div class="dossier__nom">CHU de Rouen — extension Charles-Nicolle</div>
+        <div class="dossier__fichier">dce_chu_rouen.zip</div>
+      </div>
+      <div class="dossier__meta">84 fichiers</div>
+      <div class="dossier__meta">50/50 champs</div>
+      <div>
+        <div class="dossier__etat dossier__etat--cours">Audit en cours · ~6 min</div>
+        <div class="jauge"><div class="jauge__part" style="width:72%"></div></div>
+      </div>
+    </a>
+
+    <a class="dossier" href="#">
+      <div>
+        <div class="dossier__nom">Groupe scolaire — Taverny (95)</div>
+        <div class="dossier__fichier">2025_BASIC_BD_GAGNE.zip</div>
+      </div>
+      <div class="dossier__meta">22 fichiers</div>
+      <div class="dossier__meta">14/16 pièces</div>
+      <div>
+        <div class="dossier__etat dossier__etat--attente">Complétude à valider</div>
+        <div class="jauge"><div class="jauge__part jauge__part--attente" style="width:48%"></div></div>
+      </div>
+    </a>
+
+    <a class="dossier" href="#">
+      <div>
+        <div class="dossier__nom">Accord-cadre — travaux d'entretien</div>
+        <div class="dossier__fichier">2026_BASIC_ACCORD_CADRE.zip</div>
+      </div>
+      <div class="dossier__meta">36 fichiers</div>
+      <div class="dossier__meta">— </div>
+      <div>
+        <div class="dossier__etat dossier__etat--cours">Classification · 24/36</div>
+        <div class="jauge"><div class="jauge__part" style="width:22%"></div></div>
+      </div>
+    </a>
+  </div>
+</div>
+
+<!-- ══ ÉCRAN 2 ═══════════════════════════════════════════════════════ -->
+<div class="annot">
+  <span class="annot__num">A.2</span>
+  <span class="annot__txt">Dossier — cartouche, cotation d'avancement, table d'extraction</span>
+  <span class="annot__rule"></span>
+</div>
+
+<div class="app">
+  <div class="bandeau">
+    <div class="marque">
+      <span class="marque__sigle">AOP</span>
+      <span class="marque__rule"></span>
+      <span class="marque__sous">Analyse de DCE</span>
+    </div>
+    <nav class="bandeau__nav">
+      <a class="bandeau__lien" href="#">← Dossiers</a>
+      <a class="bandeau__lien" href="#">Exporter</a>
+    </nav>
+  </div>
+
+  <!-- SIGNATURE : le cartouche du dossier -->
+  <div class="cartouche">
+    <div class="cartouche__haut">
+      <div class="cell">
+        <div class="cell__cle">Opération</div>
+        <div class="cell__val cell__val--grand">Le Grand Pic</div>
+        <div class="cell__note">Résidence de tourisme &amp; centre aqualudique</div>
+      </div>
+      <div class="cell">
+        <div class="cell__cle">Maître d'ouvrage</div>
+        <div class="cell__val">Commune d'Oz-en-Oisans</div>
+        <div class="cell__note">Marché public — DO / TRC</div>
+      </div>
+      <div class="cell">
+        <div class="cell__cle">Chantier</div>
+        <div class="cell__val">Oz (38114)</div>
+        <div class="cell__note">Route de l'Alpette · alt. 1 390 m</div>
+      </div>
+      <div class="cell cell--indice">
+        <div class="cell__cle">Indice</div>
+        <div class="cell__val">Ind. B</div>
+        <div class="cell__note">11.08.2026 · 14 h 32</div>
+      </div>
+    </div>
+    <div class="cartouche__bas">
+      <div class="cell">
+        <div class="cell__cle">Fichiers</div>
+        <div class="cell__val cell__val--chiffre">36</div>
+      </div>
+      <div class="cell">
+        <div class="cell__cle">Pièces attendues</div>
+        <div class="cell__val cell__val--chiffre">16 / 16</div>
+      </div>
+      <div class="cell">
+        <div class="cell__cle">Champs extraits</div>
+        <div class="cell__val cell__val--chiffre">47 / 50</div>
+      </div>
+      <div class="cell">
+        <div class="cell__cle">Risques identifiés</div>
+        <div class="cell__val cell__val--chiffre">30</div>
+      </div>
+      <div class="cell">
+        <div class="cell__cle">Zonage sismique</div>
+        <div class="cell__val">3 — modérée</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- SIGNATURE : la cotation -->
+  <div class="cotation">
+    <div class="cotation__ligne">
+      <div class="cotation__seg"><span class="cotation__etat cotation__etat--fait"></span></div>
+      <div class="cotation__seg"><span class="cotation__etat cotation__etat--fait"></span></div>
+      <div class="cotation__seg"><span class="cotation__etat cotation__etat--encours"></span></div>
+    </div>
+    <div class="cotation__pieds">
+      <div class="cotation__pied">
+        <div class="cotation__rang">ÉTAPE 1</div>
+        <div class="cotation__nom">Classification &amp; réorganisation</div>
+        <div class="cotation__mesure">36 fichiers triés · validée</div>
+      </div>
+      <div class="cotation__pied">
+        <div class="cotation__rang">ÉTAPE 2</div>
+        <div class="cotation__nom">Complétude</div>
+        <div class="cotation__mesure">16/16 pièces · validée</div>
+      </div>
+      <div class="cotation__pied cotation__pied--attente">
+        <div class="cotation__rang">ÉTAPE 3</div>
+        <div class="cotation__nom">Extraction des données</div>
+        <div class="cotation__mesure">47/50 champs · à valider</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="onglets" role="tablist">
+    <button class="onglet" role="tab" aria-selected="false">Étape 1 · Classification</button>
+    <button class="onglet" role="tab" aria-selected="false">Étape 2 · Complétude</button>
+    <button class="onglet" role="tab" aria-selected="true">Étape 3 · Extraction</button>
+    <button class="onglet" role="tab" aria-selected="false">Synthèse projet</button>
+    <button class="onglet" role="tab" aria-selected="false">Audit des risques</button>
+  </div>
+
+  <div class="corps">
+    <div class="titre-bloc">
+      <h2 class="titre-bloc__h">Données extraites</h2>
+      <span class="titre-bloc__compte">47 renseignés · 3 non trouvés · 11 sections</span>
+    </div>
+
+    <table class="tbl">
+      <thead>
+        <tr>
+          <th scope="col">Champ</th>
+          <th scope="col">Valeur</th>
+          <th scope="col">Source</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr class="tbl__bande"><td colspan="3">1 — Identification de l'opération</td></tr>
+        <tr>
+          <td class="tbl__libelle">Nom du chantier</td>
+          <td class="tbl__valeur">Le Grand Pic</td>
+          <td><a class="source" href="#">RC <span class="source__page">p. 3</span></a></td>
+        </tr>
+        <tr>
+          <td class="tbl__libelle">Adresse du chantier</td>
+          <td class="tbl__valeur">Route de l'Alpette, 38114 Oz</td>
+          <td><a class="source source--recoupee" href="#">Arrêté PC <span class="source__page">p. 1</span> · recoupé ×2</a></td>
+        </tr>
+        <tr>
+          <td class="tbl__libelle">Nom du MOA</td>
+          <td class="tbl__valeur">Commune d'Oz-en-Oisans</td>
+          <td><a class="source" href="#">AE <span class="source__page">p. 1</span></a></td>
+        </tr>
+
+        <tr class="tbl__bande"><td colspan="3">2 — Garanties demandées</td></tr>
+        <tr>
+          <td class="tbl__libelle">Garanties demandées</td>
+          <td class="tbl__valeur">Dommages-ouvrage + TRC</td>
+          <td><a class="source" href="#">CCTP ASS <span class="source__page">p. 4</span></a></td>
+        </tr>
+        <tr>
+          <td class="tbl__libelle">Montants des garanties demandés</td>
+          <td class="tbl__valeur tbl__valeur--num">12 480 000 € HT</td>
+          <td><a class="source source--recoupee" href="#">DPGF <span class="source__page">p. 1</span> · recoupé ×3</a></td>
+        </tr>
+
+        <tr class="tbl__bande"><td colspan="3">3 — Ouvrage, destination et volumétrie</td></tr>
+        <tr>
+          <td class="tbl__libelle">Destination du bâtiment</td>
+          <td class="tbl__valeur">ERP 3ᵉ famille B — hébergement touristique</td>
+          <td><a class="source" href="#">Notice archi <span class="source__page">p. 7</span></a></td>
+        </tr>
+        <tr>
+          <td class="tbl__libelle">Hauteur totale du bâtiment</td>
+          <td class="tbl__valeur tbl__valeur--num">18,40 m</td>
+          <td><a class="source" href="#">Plan coupe AA <span class="source__page">p. 2</span></a></td>
+        </tr>
+        <tr>
+          <td class="tbl__libelle">Niveaux des plus hautes eaux</td>
+          <td class="tbl__valeur tbl__valeur--vide">Non trouvé dans le dossier</td>
+          <td><span class="source source--absente">à demander au MOA</span></td>
+        </tr>
+
+        <tr class="tbl__bande"><td colspan="3">9 — Constructif et procédés particuliers</td></tr>
+        <tr>
+          <td class="tbl__libelle">Structure / charpente — type d'ossature</td>
+          <td class="tbl__valeur">Voiles BA + charpente bois lamellé Douglas</td>
+          <td><a class="source" href="#">CCTP lot 02 <span class="source__page">p. 14</span></a></td>
+        </tr>
+        <tr>
+          <td class="tbl__libelle">Portée maximale entre 2 appuis</td>
+          <td class="tbl__valeur tbl__valeur--num">14,20 m</td>
+          <td><a class="source" href="#">Note calcul BOIS <span class="source__page">p. 9</span></a></td>
+        </tr>
+        <tr>
+          <td class="tbl__libelle">Existence RICT</td>
+          <td class="tbl__valeur">Oui — SOCOTEC, 12.01.2026</td>
+          <td><a class="source" href="#">RICT <span class="source__page">p. 1</span></a></td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- ══ ÉCRAN 3 ═══════════════════════════════════════════════════════ -->
+<div class="annot">
+  <span class="annot__num">A.3</span>
+  <span class="annot__txt">Audit des risques — contexte Géorisques et fiches A→G</span>
+  <span class="annot__rule"></span>
+</div>
+
+<div class="app">
+  <div class="bandeau">
+    <div class="marque">
+      <span class="marque__sigle">AOP</span>
+      <span class="marque__rule"></span>
+      <span class="marque__sous">Analyse de DCE</span>
+    </div>
+    <nav class="bandeau__nav">
+      <a class="bandeau__lien" href="#">← Dossiers</a>
+      <a class="bandeau__lien" href="#">Exporter en Word</a>
+    </nav>
+  </div>
+
+  <div class="onglets" role="tablist">
+    <button class="onglet" role="tab" aria-selected="false">Étape 1 · Classification</button>
+    <button class="onglet" role="tab" aria-selected="false">Étape 2 · Complétude</button>
+    <button class="onglet" role="tab" aria-selected="false">Étape 3 · Extraction</button>
+    <button class="onglet" role="tab" aria-selected="false">Synthèse projet</button>
+    <button class="onglet" role="tab" aria-selected="true">Audit des risques</button>
+  </div>
+
+  <div class="corps">
+    <div class="georisques">
+      <div class="georisques__tete">
+        <h3 class="georisques__h">Contexte réglementaire — Géorisques</h3>
+        <span class="georisques__coord">lon 6.07354 · lat 45.13110 · INSEE 38289</span>
+      </div>
+      <div class="georisques__grille">
+        <div class="alea">
+          <div class="alea__cle">Zonage sismique</div>
+          <div class="alea__val">3 — modérée</div>
+        </div>
+        <div class="alea">
+          <div class="alea__cle">Retrait-gonflement argiles</div>
+          <div class="alea__val">Exposition faible</div>
+        </div>
+        <div class="alea">
+          <div class="alea__cle">Potentiel radon</div>
+          <div class="alea__val">Catégorie 3 — significatif</div>
+        </div>
+        <div class="alea">
+          <div class="alea__cle">Inondation / PPRN</div>
+          <div class="alea__val">Recensé sur la commune</div>
+        </div>
+        <div class="alea">
+          <div class="alea__cle">Cavités souterraines</div>
+          <div class="alea__val">0 dans un rayon d'1 km</div>
+        </div>
+        <div class="alea">
+          <div class="alea__cle">Mouvements de terrain</div>
+          <div class="alea__val">0 dans un rayon d'1 km</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="titre-bloc">
+      <h2 class="titre-bloc__h">Sections A &amp; B — Fondations, parties enterrées et dallage</h2>
+      <span class="titre-bloc__compte">5 risques · 2 critiques · 2 vigilance · 1 maîtrisé</span>
+    </div>
+
+    <article class="risque">
+      <div class="risque__tete">
+        <div>
+          <div class="risque__ouvrage">FONDATIONS</div>
+          <div class="risque__nom">Tassement différentiel et rupture de fondations profondes</div>
+        </div>
+        <span class="statut statut--critique"><span class="statut__carre"></span>Critique</span>
+      </div>
+      <div class="risque__corps">
+        <div class="risque__champ">
+          <div class="risque__cle">Exposé de la situation</div>
+          <p class="risque__txt">L'étude géotechnique G2 PRO révèle une géologie complexe : moraines de compacité variable et lentilles de matériaux décomprimés entre 4 et 7 m de profondeur (sondage SP4). Les pieux sont dimensionnés pour s'ancrer dans les moraines compactes, mais l'hétérogénéité du sol et la présence de blocs peuvent entraîner des variations de portance.</p>
+        </div>
+        <div class="risque__champ">
+          <div class="risque__cle">Impact assurabilité</div>
+          <p class="risque__txt">Désordre décennal majeur. Les tassements différentiels peuvent provoquer des fissurations structurelles, des déformations de planchers et des dommages aux étanchéités. Le risque est critique pour la souscription : il remet en cause la pérennité des fondations et la stabilité globale des bâtiments.</p>
+        </div>
+        <div class="risque__champ">
+          <div class="risque__cle">Recommandation de levée de doute</div>
+          <p class="risque__txt">Réaliser 9 essais de convenance pour valider le frottement latéral, mettre en place un suivi géotechnique en phase G4 (inclinomètres, cibles topographiques), et confirmer par le BET structure que les tassements différentiels respectent le seuil de 1/500ᵉ de la portée.</p>
+        </div>
+        <div class="risque__refs">
+          <span class="ref">Eurocode 7 · NF EN 1997-1</span>
+          <span class="ref">NF P 94-270</span>
+          <span class="ref">DTU 13.1</span>
+          <a class="source" href="#">Étude de sol SAGE <span class="source__page">p. 42</span></a>
+        </div>
+      </div>
+    </article>
+
+    <article class="risque risque--vigilance">
+      <div class="risque__tete">
+        <div>
+          <div class="risque__ouvrage">INFRASTRUCTURE</div>
+          <div class="risque__nom">Poussée hydrostatique et sous-pression sur les ouvrages enterrés</div>
+        </div>
+        <span class="statut statut--vigilance"><span class="statut__carre"></span>Vigilance</span>
+      </div>
+      <div class="risque__corps">
+        <div class="risque__champ">
+          <div class="risque__cle">Exposé de la situation</div>
+          <p class="risque__txt">Les ouvrages enterrés (sous-sols, piscine) sont exposés à des sous-pressions et infiltrations : présence d'eau souterraine à proximité et drainage potentiellement insuffisant au regard des volumes concernés.</p>
+        </div>
+        <div class="risque__champ">
+          <div class="risque__cle">Recommandation de levée de doute</div>
+          <p class="risque__txt">Vérifier l'efficacité du drainage périphérique (drain Ø 200 mm + géocomposite) et prévoir un cuvelage étanche pour les locaux sensibles — piscine et chaufferie.</p>
+        </div>
+        <div class="risque__refs">
+          <span class="ref">DTU 14.1</span>
+          <span class="ref">NF EN 1997-1</span>
+          <a class="source" href="#">CCTP lot 01 <span class="source__page">p. 23</span></a>
+        </div>
+      </div>
+    </article>
+  </div>
+</div>
+
+</body>
+</html>

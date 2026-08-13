@@ -11,11 +11,11 @@ export function DossierSummary({ synthese }: Props) {
   if (!synthese) return null
 
   return (
-    <div className="rounded-lg border border-slate-200 bg-slate-50 p-4">
-      <h3 className="mb-3 text-xs font-medium uppercase tracking-wide text-slate-400">
+    <div className="rounded-lg border border-bord bg-surface-2 p-4">
+      <h3 className="mb-3 text-xs font-medium uppercase tracking-wide text-encre-3">
         Résumé du dossier
       </h3>
-      <p className="text-sm leading-relaxed text-slate-700">{synthese}</p>
+      <p className="text-sm leading-relaxed text-encre">{synthese}</p>
     </div>
   )
 }

@@ -199,21 +199,34 @@ class ExtractionFieldOut(BaseModel):
     reference_categories: list[str]
 
 
+class CitationRectOut(BaseModel):
+    """Rectangle en points PDF, origine en haut à gauche — un par ligne du passage surligné.
+    Le frontend les redessine par-dessus la page qu'il rend lui-même (PDF.js)."""
+
+    x0: float
+    top: float
+    x1: float
+    bottom: float
+
+
 class CitationLocationOut(BaseModel):
     """Où se trouve, dans le document, le passage cité à l'appui d'une valeur extraite.
 
-    Interrogé AVANT d'afficher une image de page : l'écran de validation ne promet une preuve
-    visuelle que s'il en existe une, plutôt que d'ouvrir une visionneuse pour rien."""
+    Interrogé AVANT d'afficher le visualisateur : l'écran de validation ne promet une preuve
+    visuelle que s'il en existe une, plutôt que d'ouvrir un PDF pour rien. Le rendu de la page
+    est fait côté client (PDF.js) ; seule cette localisation reste côté serveur, car elle seule
+    sait faire correspondre la citation (reformulée par le LLM) au texte réel du PDF."""
 
     found: bool
     page: int | None = None  # index 0
     page_count: int | None = None
     # False quand la page a bien été trouvée mais sans coordonnées (PDF scanné, sans couche de
-    # texte) : l'image est rendue, le passage n'est pas encadré.
+    # texte) : la page est affichée, le passage n'est pas encadré.
     highlighted: bool = False
     # "not_a_pdf" | "not_found" | "scanned_page_only"
     reason: str | None = None
     filename: str | None = None
+    rects: list[CitationRectOut] = []
 
 
 class ExtractionSourceOut(BaseModel):
@@ -226,6 +239,11 @@ class ExtractionSourceOut(BaseModel):
     # badge à l'écran de validation : c'est là que se concentre le risque d'une valeur plausible
     # mais tirée d'un document qui ne répond pas vraiment à la question posée.
     selection: str | None = None
+    # Citation PROPRE à ce document (§app/extraction/engine.py `_reconcile_cross_check`) — absente
+    # sur les résultats extraits avant l'ajout de ce champ (None). Permet à l'écran de validation
+    # de surligner chaque source d'une incohérence dans SON propre document, pas seulement celle
+    # retenue (`ExtractionEntryOut.citation`).
+    citation: str | None = None
 
 
 class ExtractionEntryOut(BaseModel):

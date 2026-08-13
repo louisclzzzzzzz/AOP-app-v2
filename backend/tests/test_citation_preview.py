@@ -1,4 +1,4 @@
-"""Localisation et surlignage d'une citation dans le PDF d'origine.
+"""Localisation d'une citation dans le PDF d'origine (page + coordonnées du passage).
 
 Les PDF de test sont fabriqués avec reportlab (déjà une dépendance du projet, utilisée par
 l'export), ce qui donne des documents à vraie couche de texte — donc des coordonnées réelles à
@@ -6,18 +6,10 @@ vérifier, pas des données simulées.
 """
 from __future__ import annotations
 
-import io
-
-import pytest
 from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
 
-from app.extraction.citation_preview import (
-    locate_in_ocr_pages,
-    locate_in_pdf,
-    normalize,
-    render_page,
-)
+from app.extraction.citation_preview import locate_in_ocr_pages, locate_in_pdf, normalize
 
 
 def _pdf(tmp_path, pages: list[list[str]], name: str = "doc.pdf"):
@@ -146,50 +138,6 @@ def test_locate_in_ocr_pages_returns_the_page_without_rectangles():
 
 def test_locate_in_ocr_pages_returns_none_when_absent():
     assert locate_in_ocr_pages(["Rien de tel ici."], "Une citation absente du document scanne.") is None
-
-
-# --- Rendu --------------------------------------------------------------------------------------
-
-def test_render_page_produces_a_png_of_the_requested_page(tmp_path):
-    from PIL import Image
-
-    path = _pdf(tmp_path, [["Page une."], ["Page deux."]])
-    location = locate_in_pdf(path, "Page deux, contenu de la seconde page du document.")
-
-    png = render_page(path, 1, [], scale=1.0)
-
-    image = Image.open(io.BytesIO(png))
-    assert image.format == "PNG"
-    assert image.width > 100 and image.height > image.width  # A4 portrait
-    assert location is None  # citation absente : le rendu reste possible sans surlignage
-
-
-def test_render_page_highlight_changes_the_pixels_it_covers(tmp_path):
-    """Vérifie que le surlignage est réellement peint — et qu'il reste TRANSLUCIDE : sous la
-    couleur, le texte doit rester lisible, sinon la preuve devient invérifiable."""
-    from PIL import Image
-
-    path = _pdf(tmp_path, [["La stratigraphie du sous-sol est decrite ici en detail."]])
-    location = locate_in_pdf(path, "La stratigraphie du sous-sol est decrite ici en detail.")
-    assert location is not None
-
-    sans = Image.open(io.BytesIO(render_page(path, 0, [], scale=1.0))).convert("RGB")
-    avec = Image.open(io.BytesIO(render_page(path, 0, location.rects, scale=1.0))).convert("RGB")
-
-    rect = location.rects[0]
-    point = (int((rect.x0 + rect.x1) / 2), int((rect.top + rect.bottom) / 2))
-    assert sans.getpixel(point) != avec.getpixel(point)
-    # Hors du rectangle, rien ne doit changer.
-    assert sans.getpixel((5, 5)) == avec.getpixel((5, 5))
-    # Des pixels sombres subsistent dans la zone : le texte n'a pas été recouvert.
-    zone = avec.crop((int(rect.x0), int(rect.top), int(rect.x1), int(rect.bottom)))
-    assert min(band_min for band_min, _band_max in zone.getextrema()) < 100
-
-
-def test_render_page_rejects_a_page_outside_the_document(tmp_path):
-    path = _pdf(tmp_path, [["Page unique."]])
-    with pytest.raises(IndexError):
-        render_page(path, 7, [], scale=1.0)
 
 
 # --- Citations recollées par le LLM -------------------------------------------------------------

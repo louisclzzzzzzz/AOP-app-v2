@@ -4,6 +4,7 @@ import { checkSession, getApiKeyStatus, logout } from './auth'
 import type { ApiKeyStatus } from './auth'
 import type { Dossier } from './types'
 import { hasSeenTour } from './tour'
+import { ERREUR } from './ui'
 import { UploadDropzone } from './components/UploadDropzone'
 import { DossierList } from './components/DossierList'
 import { DossierProgress } from './components/DossierProgress'
@@ -11,6 +12,18 @@ import { LoginForm } from './components/LoginForm'
 import { ApiKeyGuide } from './components/ApiKeyGuide'
 import { WelcomeTour } from './components/WelcomeTour'
 import { VeillePanel } from './components/VeillePanel'
+
+const RAIL_COLLAPSED_KEY = 'aop_rail_collapsed'
+
+/** Mémorisé par navigateur (même compromis que `tour.ts`) : au pire, un nouvel appareil
+ * réaffiche le rail déplié, jamais bloquant. */
+function loadRailCollapsed(): boolean {
+  try {
+    return localStorage.getItem(RAIL_COLLAPSED_KEY) === '1'
+  } catch {
+    return false
+  }
+}
 
 export default function App() {
   // undefined = vérification en cours ; false = accès ouvert (AOP_REQUIRE_AUTH off — usage
@@ -31,6 +44,25 @@ export default function App() {
   const [showTour, setShowTour] = useState(false)
   const [dossiers, setDossiers] = useState<Dossier[]>([])
   const [selectedId, setSelectedId] = useState<string | null>(null)
+  // Deuxième entrée du rail, à côté de « Dossiers » — indépendante de `selectedId` : ouvrir un
+  // dossier depuis la veille (§handleVeilleDossierStarted) doit retomber sur la vue Dossiers
+  // une fois qu'on revient en arrière, pas rester bloqué sur la veille.
+  const [view, setView] = useState<'dossiers' | 'veille'>('dossiers')
+  // Replié : icônes seules (largeur d'origine, 3,5rem) — utile sur un écran modeste ou pour
+  // rendre au tableau d'extraction toute la largeur qu'il peut occuper.
+  const [railCollapsed, setRailCollapsed] = useState(loadRailCollapsed)
+
+  const handleToggleRail = useCallback(() => {
+    setRailCollapsed((prev) => {
+      const next = !prev
+      try {
+        localStorage.setItem(RAIL_COLLAPSED_KEY, next ? '1' : '0')
+      } catch {
+        // ignore (navigation privée…)
+      }
+      return next
+    })
+  }, [])
   const [isUploading, setIsUploading] = useState(false)
   const [uploadError, setUploadError] = useState<string | null>(null)
 
@@ -90,16 +122,25 @@ export default function App() {
 
   const handleBack = useCallback(() => {
     setSelectedId(null)
+    setView('dossiers')
     refresh()
   }, [refresh])
+
+  const handleShowVeille = useCallback(() => {
+    setSelectedId(null)
+    setView('veille')
+  }, [])
 
   // Un dossier issu de la veille existe déjà côté serveur (son DCE a été rapatrié) mais son
   // traitement vient seulement d'être lancé : on bascule dessus et on rafraîchit la liste, qui
   // ne le contenait pas encore.
-  const handleVeilleDossierStarted = useCallback((dossierId: string) => {
-    refresh()
-    setSelectedId(dossierId)
-  }, [refresh])
+  const handleVeilleDossierStarted = useCallback(
+    (dossierId: string) => {
+      refresh()
+      setSelectedId(dossierId)
+    },
+    [refresh],
+  )
 
   const handleDelete = useCallback(async (id: string) => {
     await deleteDossier(id)
@@ -141,60 +182,147 @@ export default function App() {
   }
 
   return (
-    <div className="min-h-screen bg-slate-50">
-      <header className="border-b border-slate-200 bg-white">
-        <div className="mx-auto flex max-w-4xl items-center justify-between px-6 py-4">
-          <div>
-            <h1 className="text-xl font-semibold text-slate-800">AOP</h1>
-            <p className="text-sm text-slate-400">Analyse de DCE</p>
-          </div>
-          {hasSession && (
-            <div className="flex items-center gap-4">
-              <button onClick={() => setShowTour(true)} className="text-sm text-slate-500 hover:text-slate-800">
-                Visite guidée
-              </button>
-              <button
-                onClick={() => setShowApiKeyPanel(true)}
-                className="text-sm text-slate-500 hover:text-slate-800"
-              >
-                Clé API
-              </button>
-              <button onClick={handleLogout} className="text-sm text-blue-600 hover:underline">
-                Déconnexion
-              </button>
-            </div>
-          )}
-        </div>
-      </header>
+    <div
+      className={`grid min-h-screen bg-surface transition-[grid-template-columns] duration-150 ${
+        railCollapsed ? 'grid-cols-[3.5rem_1fr]' : 'grid-cols-[14rem_1fr]'
+      }`}
+    >
+      {/* Rail d'outils : l'ossature graphite qui tient l'écran. Il reste identique
+          d'un écran à l'autre — c'est le seul repère fixe quand l'expert navigue
+          entre la liste et les 5 onglets d'un dossier. Replié à la demande (icônes
+          seules) : nommer chaque entrée en toutes lettres aide à s'orienter, mais ne
+          doit pas s'imposer sur un écran modeste ou quand la place manque. */}
+      <nav
+        // `sticky` + hauteur d'écran (même idiome que le volet de preuve, §ExtractionSheet.tsx
+        // `aside`) : sans ça, le rail grandit avec le contenu de la page (`min-h-screen` ne fixe
+        // qu'un MINIMUM) et le bouton de réduction, ancré en bas via `mt-auto`, finit hors écran
+        // dès que la liste des dossiers dépasse une hauteur d'écran.
+        className={`sticky top-0 flex h-screen flex-col gap-1 bg-graphite py-4 ${
+          railCollapsed ? 'items-center px-2' : 'px-3'
+        }`}
+        aria-label="Navigation principale"
+      >
+        <span className={`pb-4 text-[15px] font-bold tracking-wide text-white ${railCollapsed ? '' : 'px-2.5'}`}>
+          {railCollapsed ? 'A' : 'AOP'}
+        </span>
+        <RailBouton
+          label="Dossiers"
+          actif={selectedId === null && view === 'dossiers'}
+          onClick={handleBack}
+          collapsed={railCollapsed}
+          d="M3 7h6l2 2h10v10H3z"
+        />
+        <RailBouton
+          label="Veille BOAMP / JOUE"
+          actif={selectedId === null && view === 'veille'}
+          onClick={handleShowVeille}
+          collapsed={railCollapsed}
+          d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7zM12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6z"
+        />
+        {hasSession && (
+          <>
+            <RailBouton
+              label="Visite guidée"
+              onClick={() => setShowTour(true)}
+              collapsed={railCollapsed}
+              d="M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18M9.5 9.5a2.5 2.5 0 1 1 3.2 2.4c-.5.2-.7.6-.7 1.1v.5M12 16.5v.5"
+            />
+            <RailBouton
+              label="Clé API"
+              onClick={() => setShowApiKeyPanel(true)}
+              collapsed={railCollapsed}
+              d="M8 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8M12 12h9M18 12v4"
+              className="mt-auto"
+            />
+            <RailBouton
+              label="Déconnexion"
+              onClick={handleLogout}
+              collapsed={railCollapsed}
+              d="M14 4h5v16h-5M11 16l-4-4 4-4M7 12h9"
+            />
+          </>
+        )}
 
-      <main className="mx-auto max-w-4xl px-6 py-8">
+        <button
+          type="button"
+          onClick={handleToggleRail}
+          title={railCollapsed ? 'Développer le menu' : 'Réduire le menu'}
+          aria-label={railCollapsed ? 'Développer le menu' : 'Réduire le menu'}
+          className={`flex h-9.5 shrink-0 items-center gap-2.5 rounded-md text-encre-3 transition-colors hover:bg-graphite-2 hover:text-surface-3 ${
+            railCollapsed ? 'w-9.5 justify-center px-0' : 'px-2.5'
+          } ${hasSession ? 'mt-1.5' : 'mt-auto'}`}
+        >
+          <svg className="h-[18px] w-[18px] shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.6}>
+            <path
+              d={railCollapsed ? 'M9 6l6 6-6 6' : 'M15 6l-6 6 6 6'}
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+          </svg>
+          {!railCollapsed && <span className="truncate text-[13px] font-semibold">Réduire le menu</span>}
+        </button>
+      </nav>
+
+      <main className="min-w-0">
         {selectedId ? (
           <DossierProgress dossierId={selectedId} onBack={handleBack} onSelectDossier={setSelectedId} />
+        ) : view === 'veille' ? (
+          <VeillePanel onDossierStarted={handleVeilleDossierStarted} />
         ) : (
-          <div className="flex flex-col gap-8">
+          <div className="mx-auto flex max-w-6xl flex-col gap-6 px-6 py-6">
             <section>
               <UploadDropzone
                 onFileSelected={handleFileSelected}
                 onInvalidFile={handleInvalidFile}
                 disabled={isUploading}
               />
-              {isUploading && <p className="mt-2 text-sm text-slate-400">Envoi en cours…</p>}
-              {uploadError && (
-                <p className="mt-2 rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">
-                  {uploadError}
-                </p>
-              )}
+              {isUploading && <p className="mt-2 text-sm text-encre-3">Envoi en cours…</p>}
+              {uploadError && <p className={`mt-2 ${ERREUR}`}>{uploadError}</p>}
             </section>
 
-            <VeillePanel onDossierStarted={handleVeilleDossierStarted} />
-
             <section>
-              <h2 className="mb-3 text-sm font-medium text-slate-600">Dossiers</h2>
               <DossierList dossiers={dossiers} onSelect={setSelectedId} onDelete={handleDelete} />
             </section>
           </div>
         )}
       </main>
     </div>
+  )
+}
+
+/** Bouton du rail : icône seule, intitulé porté par `title`/`aria-label` — la
+ * largeur du rail est trop étroite pour un libellé lisible, et les 4 entrées
+ * sont assez stables pour être mémorisées. */
+function RailBouton({
+  label,
+  d,
+  onClick,
+  actif = false,
+  collapsed = false,
+  className = '',
+}: {
+  label: string
+  d: string
+  onClick: () => void
+  actif?: boolean
+  collapsed?: boolean
+  className?: string
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title={label}
+      aria-label={label}
+      aria-current={actif ? 'page' : undefined}
+      className={`flex h-9.5 shrink-0 items-center gap-2.5 rounded-md text-[13px] font-semibold transition-colors ${
+        collapsed ? 'w-9.5 justify-center px-0' : 'px-2.5 text-left'
+      } ${actif ? 'bg-ardoise text-white' : 'text-encre-3 hover:bg-graphite-2 hover:text-surface-3'} ${className}`}
+    >
+      <svg className="h-[18px] w-[18px] shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.6}>
+        <path d={d} strokeLinecap="round" strokeLinejoin="round" />
+      </svg>
+      {!collapsed && <span className="truncate">{label}</span>}
+    </button>
   )
 }

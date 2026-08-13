@@ -1,0 +1,1016 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>AOP — Maquette · Direction B « Poste de souscription »</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet" />
+<style>
+/* ═══════════════════════════════════════════════════════════════════
+   DIRECTION B — « POSTE DE SOUSCRIPTION »
+   L'application n'est pas un document mais un instrument de travail :
+   trois volets, la preuve toujours à l'écran à côté de la valeur.
+   ═══════════════════════════════════════════════════════════════════ */
+
+:root {
+  /* Chrome graphite — l'ossature de l'outil */
+  --graphite:   #1A1E24;
+  --graphite-2: #262C34;
+  --graphite-3: #3A424D;
+  /* Plan de travail */
+  --surface:    #FFFFFF;
+  --surface-2:  #F5F6F8;
+  --surface-3:  #EBEDF1;
+  --bord:       #DCDFE5;
+  --bord-fort:  #C2C7D0;
+  /* Encres */
+  --texte:      #1D2229;
+  --texte-2:    #5A626D;
+  --texte-3:    #8E96A2;
+  --sur-sombre: #E8EAEE;
+  /* Accent ardoise — le fil de la traçabilité */
+  --ardoise:    #333E70;
+  --ardoise-cl: #E5E8F2;
+  --ardoise-md: #7C87B8;
+  /* Sémantique */
+  --rouge:      #9E2B21;
+  --rouge-cl:   #FAE7E4;
+  --ambre:      #91600F;
+  --ambre-cl:   #FBF0DC;
+  --vert:       #3E6136;
+  --vert-cl:    #E5EEE1;
+  --surligne:   #FFE9A8;
+
+  --sans: 'Instrument Sans', -apple-system, 'Segoe UI', Roboto, sans-serif;
+  --mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: #DFE2E7;
+  color: var(--texte);
+  font-family: var(--sans);
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ── Annotation de maquette (hors application) ───────────────────── */
+.annot {
+  max-width: 1320px;
+  margin: 52px auto 12px;
+  padding: 0 24px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.annot__num {
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 700;
+  color: #fff;
+  background: var(--graphite);
+  padding: 3px 8px;
+  border-radius: 3px;
+}
+.annot__txt {
+  font-size: 12px;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  color: var(--texte-2);
+  font-weight: 600;
+}
+.annot__rule { flex: 1; height: 1px; background: var(--bord-fort); }
+
+/* ── Fenêtre applicative ──────────────────────────────────────────── */
+.poste {
+  max-width: 1320px;
+  margin: 0 auto 68px;
+  display: grid;
+  grid-template-columns: 58px 1fr;
+  min-height: 620px;
+  background: var(--surface);
+  border-radius: 8px;
+  overflow: hidden;
+  box-shadow: 0 1px 2px rgba(26,30,36,.1), 0 24px 48px -30px rgba(26,30,36,.5);
+}
+.poste--large { grid-template-columns: 58px 1fr; }
+
+/* ── Rail d'outils ────────────────────────────────────────────────── */
+.rail {
+  background: var(--graphite);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 12px 0;
+  gap: 4px;
+}
+.rail__sigle {
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: .04em;
+  color: #fff;
+  padding: 6px 0 14px;
+}
+.rail__btn {
+  width: 38px; height: 38px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  background: transparent;
+  border-radius: 6px;
+  color: var(--texte-3);
+  cursor: pointer;
+}
+.rail__btn:hover { background: var(--graphite-2); color: var(--sur-sombre); }
+.rail__btn[aria-current="page"] { background: var(--ardoise); color: #fff; }
+.rail__btn:focus-visible { outline: 2px solid var(--ardoise-md); outline-offset: 2px; }
+.rail__pousse { margin-top: auto; }
+.ico { width: 18px; height: 18px; stroke: currentColor; fill: none; stroke-width: 1.6; }
+
+/* ── Zone de travail ──────────────────────────────────────────────── */
+.zone { display: flex; flex-direction: column; min-width: 0; }
+
+.entete {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 16px 22px 0;
+}
+.entete__fil {
+  font-size: 12px;
+  color: var(--texte-3);
+  font-weight: 500;
+  margin-bottom: 3px;
+}
+.entete__fil a { color: var(--texte-2); text-decoration: none; }
+.entete__fil a:hover { text-decoration: underline; }
+.entete__titre {
+  font-size: 22px;
+  font-weight: 700;
+  letter-spacing: -.022em;
+  margin: 0;
+  line-height: 1.2;
+}
+.entete__sous { font-size: 13px; color: var(--texte-2); margin-top: 3px; }
+.entete__actions { display: flex; gap: 8px; flex: none; }
+
+.btn {
+  font-family: var(--sans);
+  font-size: 13px;
+  font-weight: 600;
+  padding: 7px 14px;
+  border-radius: 6px;
+  border: 1px solid var(--bord-fort);
+  background: var(--surface);
+  color: var(--texte);
+  cursor: pointer;
+}
+.btn:hover { background: var(--surface-2); }
+.btn--primaire {
+  background: var(--ardoise);
+  border-color: var(--ardoise);
+  color: #fff;
+}
+.btn--primaire:hover { background: #2A3360; }
+.btn:focus-visible { outline: 2px solid var(--ardoise); outline-offset: 2px; }
+
+/* ── SIGNATURE : la barre d'étapes segmentée ──────────────────────── */
+/* Une seule barre continue, découpée en 3 tronçons : on lit d'un coup
+   où on en est ET ce qui reste, sans quitter la ligne des yeux.      */
+.etapes {
+  display: flex;
+  gap: 3px;
+  padding: 14px 22px 0;
+}
+.etape {
+  flex: 1;
+  background: transparent;
+  border: 0;
+  padding: 0;
+  text-align: left;
+  cursor: pointer;
+  font-family: var(--sans);
+}
+.etape__barre {
+  display: block;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--surface-3);
+  margin-bottom: 7px;
+  overflow: hidden;
+}
+.etape__remplie { display: block; height: 100%; background: var(--ardoise); border-radius: 2px; }
+.etape--attente .etape__remplie { background: var(--ambre); }
+.etape__nom { display: block; font-size: 12.5px; font-weight: 600; color: var(--texte); }
+.etape__etat { display: block; font-size: 11.5px; color: var(--texte-3); font-family: var(--mono); }
+.etape--attente .etape__etat { color: var(--ambre); font-weight: 500; }
+.etape--futur .etape__nom { color: var(--texte-3); }
+.etape:focus-visible { outline: 2px solid var(--ardoise); outline-offset: 3px; border-radius: 4px; }
+
+/* ── Onglets ──────────────────────────────────────────────────────── */
+.onglets {
+  display: flex;
+  gap: 2px;
+  padding: 16px 22px 0;
+  border-bottom: 1px solid var(--bord);
+}
+.onglet {
+  font-family: var(--sans);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--texte-2);
+  background: transparent;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  padding: 8px 13px;
+  margin-bottom: -1px;
+  cursor: pointer;
+  border-radius: 5px 5px 0 0;
+}
+.onglet:hover { background: var(--surface-2); color: var(--texte); }
+.onglet[aria-selected="true"] { color: var(--ardoise); border-bottom-color: var(--ardoise); }
+.onglet:focus-visible { outline: 2px solid var(--ardoise); outline-offset: -2px; }
+
+/* ── Volets : travail | preuve ────────────────────────────────────── */
+.volets {
+  display: grid;
+  grid-template-columns: 1fr 372px;
+  flex: 1;
+  min-height: 0;
+}
+.travail { padding: 16px 22px 22px; min-width: 0; }
+.preuve {
+  border-left: 1px solid var(--bord);
+  background: var(--surface-2);
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+/* ── Table des champs ─────────────────────────────────────────────── */
+.filtre {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.puce {
+  font-size: 12px;
+  font-weight: 600;
+  padding: 4px 10px;
+  border-radius: 20px;
+  border: 1px solid var(--bord-fort);
+  background: var(--surface);
+  color: var(--texte-2);
+  cursor: pointer;
+}
+.puce[aria-pressed="true"] { background: var(--graphite); border-color: var(--graphite); color: #fff; }
+.puce__n { font-family: var(--mono); font-size: 11px; opacity: .7; }
+.filtre__reste { margin-left: auto; font-size: 12px; color: var(--texte-3); font-family: var(--mono); }
+
+.champs { border: 1px solid var(--bord); border-radius: 7px; overflow: hidden; }
+.section-titre {
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  color: var(--texte-2);
+  background: var(--surface-2);
+  padding: 7px 14px;
+  border-bottom: 1px solid var(--bord);
+}
+.champ {
+  display: grid;
+  grid-template-columns: 1fr 1.25fr auto;
+  gap: 14px;
+  align-items: baseline;
+  padding: 9px 14px;
+  border-bottom: 1px solid var(--bord);
+  cursor: pointer;
+  border-left: 3px solid transparent;
+}
+.champ:last-child { border-bottom: 0; }
+.champ:hover { background: var(--surface-2); }
+/* Ligne sélectionnée = celle dont la preuve est affichée à droite */
+.champ--actif {
+  background: var(--ardoise-cl);
+  border-left-color: var(--ardoise);
+}
+.champ--actif:hover { background: var(--ardoise-cl); }
+.champ__cle { font-size: 13px; color: var(--texte-2); }
+.champ__val { font-size: 13.5px; font-weight: 600; }
+.champ__val--num { font-family: var(--mono); font-weight: 500; font-variant-numeric: tabular-nums; }
+.champ__val--vide { color: var(--texte-3); font-weight: 400; font-style: italic; }
+
+.jeton {
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 500;
+  padding: 2px 7px;
+  border-radius: 4px;
+  background: var(--surface-3);
+  color: var(--texte-2);
+  white-space: nowrap;
+}
+.jeton--actif { background: var(--ardoise); color: #fff; }
+.jeton--recoupe { background: var(--vert-cl); color: var(--vert); }
+.jeton--absent { background: var(--ambre-cl); color: var(--ambre); }
+
+/* ── SIGNATURE : le volet de preuve ───────────────────────────────── */
+/* « Aucune valeur inventée » : la page source, surlignée, ne quitte
+   jamais l'écran. La preuve est un élément permanent, pas une modale. */
+.preuve__tete {
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--bord);
+  background: var(--surface);
+}
+.preuve__cle {
+  font-size: 10px;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+  color: var(--texte-3);
+  font-weight: 700;
+}
+.preuve__champ { font-size: 14px; font-weight: 700; margin-top: 3px; letter-spacing: -.01em; }
+.preuve__val {
+  font-size: 13px;
+  color: var(--ardoise);
+  font-weight: 600;
+  margin-top: 1px;
+}
+.preuve__doc {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 9px 16px;
+  border-bottom: 1px solid var(--bord);
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--texte-2);
+}
+.preuve__page { color: var(--texte-3); white-space: nowrap; }
+.preuve__corps { padding: 16px; overflow: hidden; flex: 1; }
+
+/* Fac-similé de la page PDF */
+.feuille {
+  background: #fff;
+  border: 1px solid var(--bord-fort);
+  border-radius: 3px;
+  padding: 18px 16px;
+  font-size: 8.5px;
+  line-height: 1.75;
+  color: #4A5058;
+  box-shadow: 0 2px 8px -4px rgba(26,30,36,.3);
+  height: 100%;
+  overflow: hidden;
+}
+.feuille__h {
+  font-size: 9.5px;
+  font-weight: 700;
+  color: var(--texte);
+  text-transform: uppercase;
+  letter-spacing: .06em;
+  margin-bottom: 8px;
+}
+.feuille p { margin: 0 0 7px; }
+.feuille mark {
+  background: var(--surligne);
+  color: var(--texte);
+  font-weight: 600;
+  box-shadow: 0 0 0 2px var(--surligne);
+  border-radius: 1px;
+}
+.feuille__ancre {
+  display: block;
+  border-left: 2px solid var(--ardoise);
+  padding-left: 8px;
+  margin: 0 0 7px -10px;
+}
+
+.preuve__pied {
+  padding: 10px 16px;
+  border-top: 1px solid var(--bord);
+  display: flex;
+  gap: 8px;
+  background: var(--surface);
+}
+.preuve__pied .btn { flex: 1; text-align: center; font-size: 12px; padding: 6px 10px; }
+
+/* ── Accueil : liste des dossiers ─────────────────────────────────── */
+.accueil { padding: 20px 22px 24px; }
+.depot {
+  border: 1.5px dashed var(--bord-fort);
+  border-radius: 8px;
+  background: var(--surface-2);
+  padding: 26px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  margin-bottom: 22px;
+}
+.depot__t { font-size: 15px; font-weight: 700; letter-spacing: -.012em; }
+.depot__s { font-size: 13px; color: var(--texte-2); margin-top: 2px; }
+
+.cartes { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; }
+.carte {
+  border: 1px solid var(--bord);
+  border-radius: 8px;
+  padding: 14px 16px;
+  background: var(--surface);
+  text-decoration: none;
+  color: inherit;
+  display: block;
+}
+.carte:hover { border-color: var(--ardoise-md); box-shadow: 0 3px 10px -6px rgba(51,62,112,.5); }
+.carte__tete {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 3px;
+}
+.carte__nom { font-size: 15px; font-weight: 700; letter-spacing: -.015em; line-height: 1.25; }
+.carte__zip { font-family: var(--mono); font-size: 11px; color: var(--texte-3); }
+.carte__pied {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-top: 11px;
+  padding-top: 10px;
+  border-top: 1px solid var(--bord);
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--texte-2);
+}
+.carte__risques { margin-left: auto; display: flex; gap: 6px; }
+
+.etat {
+  font-size: 11px;
+  font-weight: 700;
+  padding: 3px 8px;
+  border-radius: 4px;
+  white-space: nowrap;
+  flex: none;
+}
+.etat--pret { background: var(--vert-cl); color: var(--vert); }
+.etat--attente { background: var(--ambre-cl); color: var(--ambre); }
+.etat--cours { background: var(--ardoise-cl); color: var(--ardoise); }
+
+/* ── Statuts de risque ────────────────────────────────────────────── */
+.statut {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  font-weight: 700;
+  font-family: var(--mono);
+}
+.statut__pt { width: 8px; height: 8px; border-radius: 2px; flex: none; }
+.statut--c { color: var(--rouge); } .statut--c .statut__pt { background: var(--rouge); }
+.statut--v { color: var(--ambre); } .statut--v .statut__pt { background: var(--ambre); }
+.statut--m { color: var(--vert); }  .statut--m .statut__pt { background: var(--vert); }
+
+/* ── Tableau synoptique des risques ───────────────────────────────── */
+.synoptique { width: 100%; border-collapse: collapse; }
+.synoptique th {
+  text-align: left;
+  font-size: 10px;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  color: var(--texte-3);
+  font-weight: 700;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--bord-fort);
+  position: sticky;
+  top: 0;
+  background: var(--surface);
+}
+.synoptique td {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--bord);
+  vertical-align: top;
+  font-size: 13px;
+}
+.synoptique tr:hover td { background: var(--surface-2); cursor: pointer; }
+.synoptique__ouvrage {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  font-weight: 700;
+  color: var(--texte-2);
+  white-space: nowrap;
+}
+.synoptique__risque { font-weight: 600; letter-spacing: -.01em; }
+.synoptique__aleas { font-size: 12px; color: var(--texte-2); margin-top: 2px; }
+.synoptique__action { font-size: 12.5px; color: var(--texte-2); }
+
+/* Barre de répartition des risques */
+.repartition { display: flex; height: 6px; border-radius: 3px; overflow: hidden; margin: 2px 0 14px; }
+.repartition span { display: block; }
+.repartition__c { background: var(--rouge); }
+.repartition__v { background: var(--ambre); }
+.repartition__m { background: var(--vert); }
+.legende { display: flex; gap: 16px; font-size: 12px; color: var(--texte-2); margin-bottom: 14px; }
+
+/* ── Encart Géorisques ────────────────────────────────────────────── */
+.geo {
+  border: 1px solid var(--bord);
+  border-radius: 7px;
+  overflow: hidden;
+  margin-bottom: 18px;
+}
+.geo__tete {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 9px 14px;
+  background: var(--graphite);
+  color: #fff;
+}
+.geo__h { font-size: 11.5px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; margin: 0; }
+.geo__src { font-family: var(--mono); font-size: 10.5px; color: var(--texte-3); }
+.geo__grille { display: grid; grid-template-columns: repeat(6, 1fr); }
+.geo__c { padding: 9px 12px; border-right: 1px solid var(--bord); }
+.geo__c:last-child { border-right: 0; }
+.geo__k { font-size: 9.5px; letter-spacing: .08em; text-transform: uppercase; color: var(--texte-3); font-weight: 700; }
+.geo__v { font-size: 13px; font-weight: 600; margin-top: 2px; }
+.geo__v--alerte { color: var(--ambre); }
+
+@media (prefers-reduced-motion: reduce) {
+  * { animation: none !important; transition: none !important; }
+}
+@media (max-width: 1100px) {
+  .volets { grid-template-columns: 1fr; }
+  .preuve { border-left: 0; border-top: 1px solid var(--bord); }
+  .cartes, .geo__grille { grid-template-columns: 1fr 1fr; }
+}
+</style>
+</head>
+<body>
+
+<!-- ══ ÉCRAN 1 ═══════════════════════════════════════════════════════ -->
+<div class="annot">
+  <span class="annot__num">B.1</span>
+  <span class="annot__txt">Accueil — dépôt et suivi des dossiers</span>
+  <span class="annot__rule"></span>
+</div>
+
+<div class="poste" style="min-height:auto">
+  <nav class="rail">
+    <span class="rail__sigle">AOP</span>
+    <button class="rail__btn" aria-current="page" title="Dossiers">
+      <svg class="ico" viewBox="0 0 24 24"><path d="M3 7h6l2 2h10v10H3z"/></svg>
+    </button>
+    <button class="rail__btn" title="Veille BOAMP / TED">
+      <svg class="ico" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/></svg>
+    </button>
+    <button class="rail__btn" title="Historique">
+      <svg class="ico" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
+    </button>
+    <button class="rail__btn rail__pousse" title="Clé API">
+      <svg class="ico" viewBox="0 0 24 24"><circle cx="8" cy="12" r="4"/><path d="M12 12h9M18 12v4"/></svg>
+    </button>
+    <button class="rail__btn" title="Déconnexion">
+      <svg class="ico" viewBox="0 0 24 24"><path d="M14 4h5v16h-5M11 16l-4-4 4-4M7 12h9"/></svg>
+    </button>
+  </nav>
+
+  <div class="zone">
+    <div class="accueil">
+      <div class="depot">
+        <div>
+          <div class="depot__t">Déposer un DCE</div>
+          <div class="depot__s">Glissez l'archive .zip de la consultation, ou parcourez vos fichiers.</div>
+        </div>
+        <button class="btn btn--primaire" type="button">Parcourir</button>
+      </div>
+
+      <div class="cartes">
+        <a class="carte" href="#">
+          <div class="carte__tete">
+            <div>
+              <div class="carte__nom">Le Grand Pic — Oz-en-Oisans (38)</div>
+              <div class="carte__zip">dce_grand_pic2.zip</div>
+            </div>
+            <span class="etat etat--pret">Audit disponible</span>
+          </div>
+          <div class="carte__pied">
+            <span>36 fichiers</span>
+            <span>50/50 champs</span>
+            <span class="carte__risques">
+              <span class="statut statut--c"><span class="statut__pt"></span>9</span>
+              <span class="statut statut--v"><span class="statut__pt"></span>15</span>
+              <span class="statut statut--m"><span class="statut__pt"></span>6</span>
+            </span>
+          </div>
+        </a>
+
+        <a class="carte" href="#">
+          <div class="carte__tete">
+            <div>
+              <div class="carte__nom">CHU de Rouen — extension Charles-Nicolle</div>
+              <div class="carte__zip">dce_chu_rouen.zip</div>
+            </div>
+            <span class="etat etat--cours">Audit · ~6 min</span>
+          </div>
+          <div class="carte__pied">
+            <span>84 fichiers</span>
+            <span>50/50 champs</span>
+            <span class="carte__risques"><span class="statut statut--m"><span class="statut__pt"></span>en cours</span></span>
+          </div>
+        </a>
+
+        <a class="carte" href="#">
+          <div class="carte__tete">
+            <div>
+              <div class="carte__nom">Groupe scolaire — Taverny (95)</div>
+              <div class="carte__zip">2025_BASIC_BD_GAGNE.zip</div>
+            </div>
+            <span class="etat etat--attente">À valider</span>
+          </div>
+          <div class="carte__pied">
+            <span>22 fichiers</span>
+            <span>14/16 pièces</span>
+            <span class="carte__risques"><span class="statut statut--v"><span class="statut__pt"></span>2 pièces manquantes</span></span>
+          </div>
+        </a>
+
+        <a class="carte" href="#">
+          <div class="carte__tete">
+            <div>
+              <div class="carte__nom">Accord-cadre — travaux d'entretien</div>
+              <div class="carte__zip">2026_BASIC_ACCORD_CADRE.zip</div>
+            </div>
+            <span class="etat etat--cours">Classification</span>
+          </div>
+          <div class="carte__pied">
+            <span>36 fichiers</span>
+            <span>24/36 classés</span>
+          </div>
+        </a>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ══ ÉCRAN 2 ═══════════════════════════════════════════════════════ -->
+<div class="annot">
+  <span class="annot__num">B.2</span>
+  <span class="annot__txt">Dossier — extraction et volet de preuve permanent</span>
+  <span class="annot__rule"></span>
+</div>
+
+<div class="poste">
+  <nav class="rail">
+    <span class="rail__sigle">AOP</span>
+    <button class="rail__btn" aria-current="page" title="Dossiers">
+      <svg class="ico" viewBox="0 0 24 24"><path d="M3 7h6l2 2h10v10H3z"/></svg>
+    </button>
+    <button class="rail__btn" title="Veille BOAMP / TED">
+      <svg class="ico" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/></svg>
+    </button>
+    <button class="rail__btn" title="Historique">
+      <svg class="ico" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
+    </button>
+    <button class="rail__btn rail__pousse" title="Clé API">
+      <svg class="ico" viewBox="0 0 24 24"><circle cx="8" cy="12" r="4"/><path d="M12 12h9M18 12v4"/></svg>
+    </button>
+  </nav>
+
+  <div class="zone">
+    <div class="entete">
+      <div>
+        <div class="entete__fil"><a href="#">Dossiers</a> › dce_grand_pic2.zip</div>
+        <h1 class="entete__titre">Le Grand Pic</h1>
+        <div class="entete__sous">Commune d'Oz-en-Oisans · Route de l'Alpette, 38114 Oz · DO + TRC · 12 480 000 € HT</div>
+      </div>
+      <div class="entete__actions">
+        <button class="btn" type="button">Exporter</button>
+        <button class="btn btn--primaire" type="button">Valider l'étape 3</button>
+      </div>
+    </div>
+
+    <!-- SIGNATURE : barre d'étapes segmentée -->
+    <div class="etapes">
+      <button class="etape" type="button">
+        <span class="etape__barre"><span class="etape__remplie" style="width:100%"></span></span>
+        <span class="etape__nom">1 · Classification</span>
+        <span class="etape__etat">36/36 fichiers · validée</span>
+      </button>
+      <button class="etape" type="button">
+        <span class="etape__barre"><span class="etape__remplie" style="width:100%"></span></span>
+        <span class="etape__nom">2 · Complétude</span>
+        <span class="etape__etat">16/16 pièces · validée</span>
+      </button>
+      <button class="etape etape--attente" type="button">
+        <span class="etape__barre"><span class="etape__remplie" style="width:94%"></span></span>
+        <span class="etape__nom">3 · Extraction</span>
+        <span class="etape__etat">47/50 champs · à valider</span>
+      </button>
+    </div>
+
+    <div class="onglets" role="tablist">
+      <button class="onglet" role="tab" aria-selected="true">Données extraites</button>
+      <button class="onglet" role="tab" aria-selected="false">Synthèse projet</button>
+      <button class="onglet" role="tab" aria-selected="false">Audit des risques</button>
+      <button class="onglet" role="tab" aria-selected="false">Arborescence</button>
+    </div>
+
+    <div class="volets">
+      <div class="travail">
+        <div class="filtre">
+          <button class="puce" aria-pressed="true" type="button">Tous <span class="puce__n">50</span></button>
+          <button class="puce" aria-pressed="false" type="button">Non trouvés <span class="puce__n">3</span></button>
+          <button class="puce" aria-pressed="false" type="button">Recoupés <span class="puce__n">12</span></button>
+          <button class="puce" aria-pressed="false" type="button">Modifiés <span class="puce__n">2</span></button>
+          <span class="filtre__reste">11 sections</span>
+        </div>
+
+        <div class="champs">
+          <div class="section-titre">Identification de l'opération</div>
+          <div class="champ">
+            <span class="champ__cle">Nom du chantier</span>
+            <span class="champ__val">Le Grand Pic</span>
+            <span class="jeton">RC · p. 3</span>
+          </div>
+          <div class="champ champ--actif">
+            <span class="champ__cle">Adresse du chantier</span>
+            <span class="champ__val">Route de l'Alpette, 38114 Oz</span>
+            <span class="jeton jeton--actif">Arrêté PC · p. 1</span>
+          </div>
+          <div class="champ">
+            <span class="champ__cle">Nom du MOA</span>
+            <span class="champ__val">Commune d'Oz-en-Oisans</span>
+            <span class="jeton">AE · p. 1</span>
+          </div>
+
+          <div class="section-titre">Garanties demandées</div>
+          <div class="champ">
+            <span class="champ__cle">Garanties demandées</span>
+            <span class="champ__val">Dommages-ouvrage + TRC</span>
+            <span class="jeton">CCTP ASS · p. 4</span>
+          </div>
+          <div class="champ">
+            <span class="champ__cle">Montants des garanties</span>
+            <span class="champ__val champ__val--num">12 480 000 € HT</span>
+            <span class="jeton jeton--recoupe">Recoupé ×3</span>
+          </div>
+
+          <div class="section-titre">Ouvrage, destination et volumétrie</div>
+          <div class="champ">
+            <span class="champ__cle">Destination du bâtiment</span>
+            <span class="champ__val">ERP 3ᵉ famille B</span>
+            <span class="jeton">Notice archi · p. 7</span>
+          </div>
+          <div class="champ">
+            <span class="champ__cle">Hauteur totale</span>
+            <span class="champ__val champ__val--num">18,40 m</span>
+            <span class="jeton">Coupe AA · p. 2</span>
+          </div>
+          <div class="champ">
+            <span class="champ__cle">Niveaux des plus hautes eaux</span>
+            <span class="champ__val champ__val--vide">Non trouvé dans le dossier</span>
+            <span class="jeton jeton--absent">À demander</span>
+          </div>
+
+          <div class="section-titre">Constructif et procédés particuliers</div>
+          <div class="champ">
+            <span class="champ__cle">Type d'ossature</span>
+            <span class="champ__val">Voiles BA + charpente bois Douglas</span>
+            <span class="jeton">CCTP lot 02 · p. 14</span>
+          </div>
+          <div class="champ">
+            <span class="champ__cle">Portée max. entre 2 appuis</span>
+            <span class="champ__val champ__val--num">14,20 m</span>
+            <span class="jeton">Note BOIS · p. 9</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- SIGNATURE : le volet de preuve, toujours à l'écran -->
+      <aside class="preuve">
+        <div class="preuve__tete">
+          <div class="preuve__cle">Pièce justificative</div>
+          <div class="preuve__champ">Adresse du chantier</div>
+          <div class="preuve__val">Route de l'Alpette, 38114 Oz</div>
+        </div>
+        <div class="preuve__doc">
+          <span>ARRETE_PC_038289_26_00012.pdf</span>
+          <span class="preuve__page">p. 1 / 4</span>
+        </div>
+        <div class="preuve__corps">
+          <div class="feuille">
+            <div class="feuille__h">Arrêté n° PC 038 289 26 00012</div>
+            <p>Le Maire de la commune d'Oz-en-Oisans,</p>
+            <p>Vu le code de l'urbanisme et notamment ses articles L. 421-1 et suivants ;</p>
+            <p>Vu la demande de permis de construire présentée le 14 novembre 2025 ;</p>
+            <p class="feuille__ancre">Vu le projet de construction d'une résidence de tourisme et d'un centre aqualudique sis <mark>route de l'Alpette, 38114 Oz</mark>, cadastré section AB n° 214, 215 et 217 ;</p>
+            <p>Vu l'avis favorable du service départemental d'incendie et de secours en date du 8 janvier 2026 ;</p>
+            <p>Considérant que le terrain d'assiette est situé en zone sismique 3 (sismicité modérée) au sens de l'article D. 563-8-1 du code de l'environnement ;</p>
+            <p>Considérant que le projet respecte les dispositions du plan local d'urbanisme approuvé le 22 juin 2021 ;</p>
+            <p><strong>ARRÊTE</strong></p>
+            <p>Article 1er — Le permis de construire est accordé pour le projet décrit dans la demande susvisée.</p>
+          </div>
+        </div>
+        <div class="preuve__pied">
+          <button class="btn" type="button">Ouvrir le PDF</button>
+          <button class="btn" type="button">Corriger la valeur</button>
+        </div>
+      </aside>
+    </div>
+  </div>
+</div>
+
+<!-- ══ ÉCRAN 3 ═══════════════════════════════════════════════════════ -->
+<div class="annot">
+  <span class="annot__num">B.3</span>
+  <span class="annot__txt">Audit des risques — synoptique A→G et contexte Géorisques</span>
+  <span class="annot__rule"></span>
+</div>
+
+<div class="poste" style="min-height:auto">
+  <nav class="rail">
+    <span class="rail__sigle">AOP</span>
+    <button class="rail__btn" aria-current="page" title="Dossiers">
+      <svg class="ico" viewBox="0 0 24 24"><path d="M3 7h6l2 2h10v10H3z"/></svg>
+    </button>
+    <button class="rail__btn" title="Veille BOAMP / TED">
+      <svg class="ico" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/></svg>
+    </button>
+    <button class="rail__btn" title="Historique">
+      <svg class="ico" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
+    </button>
+  </nav>
+
+  <div class="zone">
+    <div class="entete">
+      <div>
+        <div class="entete__fil"><a href="#">Dossiers</a> › dce_grand_pic2.zip</div>
+        <h1 class="entete__titre">Audit des risques DO / TRC</h1>
+        <div class="entete__sous">30 risques identifiés sur 6 sections d'ouvrage · généré le 11.08.2026 à 14 h 32</div>
+      </div>
+      <div class="entete__actions">
+        <button class="btn" type="button">Regénérer</button>
+        <button class="btn btn--primaire" type="button">Exporter en Word</button>
+      </div>
+    </div>
+
+    <div class="onglets" role="tablist">
+      <button class="onglet" role="tab" aria-selected="false">Données extraites</button>
+      <button class="onglet" role="tab" aria-selected="false">Synthèse projet</button>
+      <button class="onglet" role="tab" aria-selected="true">Audit des risques</button>
+      <button class="onglet" role="tab" aria-selected="false">Arborescence</button>
+    </div>
+
+    <div class="travail">
+      <div class="geo">
+        <div class="geo__tete">
+          <h2 class="geo__h">Contexte réglementaire — risques naturels</h2>
+          <span class="geo__src">Géorisques · INSEE 38289 · lon 6.07354 lat 45.13110</span>
+        </div>
+        <div class="geo__grille">
+          <div class="geo__c">
+            <div class="geo__k">Sismique</div>
+            <div class="geo__v geo__v--alerte">Zone 3 — modérée</div>
+          </div>
+          <div class="geo__c">
+            <div class="geo__k">Argiles (RGA)</div>
+            <div class="geo__v">Exposition faible</div>
+          </div>
+          <div class="geo__c">
+            <div class="geo__k">Radon</div>
+            <div class="geo__v geo__v--alerte">Catégorie 3</div>
+          </div>
+          <div class="geo__c">
+            <div class="geo__k">Inondation</div>
+            <div class="geo__v">Recensée (commune)</div>
+          </div>
+          <div class="geo__c">
+            <div class="geo__k">Cavités &lt; 1 km</div>
+            <div class="geo__v">0</div>
+          </div>
+          <div class="geo__c">
+            <div class="geo__k">Mouv. terrain &lt; 1 km</div>
+            <div class="geo__v">0</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="repartition">
+        <span class="repartition__c" style="width:30%"></span>
+        <span class="repartition__v" style="width:50%"></span>
+        <span class="repartition__m" style="width:20%"></span>
+      </div>
+      <div class="legende">
+        <span class="statut statut--c"><span class="statut__pt"></span>9 critiques</span>
+        <span class="statut statut--v"><span class="statut__pt"></span>15 points de vigilance</span>
+        <span class="statut statut--m"><span class="statut__pt"></span>6 risques maîtrisés</span>
+      </div>
+
+      <table class="synoptique">
+        <thead>
+          <tr>
+            <th scope="col">Ouvrage</th>
+            <th scope="col">Risque identifié</th>
+            <th scope="col">Action attendue</th>
+            <th scope="col">Statut</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="synoptique__ouvrage">FONDATIONS</td>
+            <td>
+              <div class="synoptique__risque">Tassement différentiel et rupture de fondations profondes</div>
+              <div class="synoptique__aleas">Hétérogénéité du sol d'assise, lentilles décomprimées à 4–7 m</div>
+            </td>
+            <td class="synoptique__action">9 essais de convenance + suivi géotechnique G4</td>
+            <td><span class="statut statut--c"><span class="statut__pt"></span>Critique</span></td>
+          </tr>
+          <tr>
+            <td class="synoptique__ouvrage">INFRASTRUCTURE</td>
+            <td>
+              <div class="synoptique__risque">Instabilité des talus et soutènements provisoires</div>
+              <div class="synoptique__aleas">Glissement de terrain, rupture des ancrages en phase provisoire</div>
+            </td>
+            <td class="synoptique__action">Inclinomètres + drainage adapté aux pressions hydrostatiques</td>
+            <td><span class="statut statut--c"><span class="statut__pt"></span>Critique</span></td>
+          </tr>
+          <tr>
+            <td class="synoptique__ouvrage">INFRASTRUCTURE</td>
+            <td>
+              <div class="synoptique__risque">Poussée hydrostatique sur les ouvrages enterrés</div>
+              <div class="synoptique__aleas">Remontée de nappe, défaut de drainage</div>
+            </td>
+            <td class="synoptique__action">Cuvelage étanche pour piscine et chaufferie</td>
+            <td><span class="statut statut--v"><span class="statut__pt"></span>Vigilance</span></td>
+          </tr>
+          <tr>
+            <td class="synoptique__ouvrage">SUPERSTRUCTURE</td>
+            <td>
+              <div class="synoptique__risque">Défaut de contreventement sismique et martèlement entre blocs</div>
+              <div class="synoptique__aleas">Aucune note de calcul en zone sismique 3</div>
+            </td>
+            <td class="synoptique__action">Exiger les notes de calcul Eurocode 8 et plans de joints</td>
+            <td><span class="statut statut--c"><span class="statut__pt"></span>Critique</span></td>
+          </tr>
+          <tr>
+            <td class="synoptique__ouvrage">TOITURE-TERRASSE</td>
+            <td>
+              <div class="synoptique__risque">Mise en charge des terrasses et infiltrations</div>
+              <div class="synoptique__aleas">Pentes non précisées, naissances EP non localisées</div>
+            </td>
+            <td class="synoptique__action">Plans d'exécution avec pentes 1–2 % (DTU 43.1)</td>
+            <td><span class="statut statut--c"><span class="statut__pt"></span>Critique</span></td>
+          </tr>
+          <tr>
+            <td class="synoptique__ouvrage">FAÇADES</td>
+            <td>
+              <div class="synoptique__risque">Instabilité des parements lourds en zone sismique</div>
+              <div class="synoptique__aleas">Pierre agrafée 15 cm sans justification de tenue sismique</div>
+            </td>
+            <td class="synoptique__action">Note de calcul agrafes selon Eurocode 8 + guide CSTB</td>
+            <td><span class="statut statut--c"><span class="statut__pt"></span>Critique</span></td>
+          </tr>
+          <tr>
+            <td class="synoptique__ouvrage">ÉQUIPEMENTS</td>
+            <td>
+              <div class="synoptique__risque">Risque incendie des installations de chauffage bois</div>
+              <div class="synoptique__aleas">Dispositifs CF et ventilation du silo non confirmés</div>
+            </td>
+            <td class="synoptique__action">Plans chaufferie/silo à valider par le bureau de contrôle</td>
+            <td><span class="statut statut--c"><span class="statut__pt"></span>Critique</span></td>
+          </tr>
+          <tr>
+            <td class="synoptique__ouvrage">ÉQUIPEMENTS</td>
+            <td>
+              <div class="synoptique__risque">Canalisations électriques non conformes aux Euroclasses</div>
+              <div class="synoptique__aleas">Arrêté du 17 mai 2024 applicable aux PC déposés après le 23 mai 2025</div>
+            </td>
+            <td class="synoptique__action">Mettre à jour les spécifications (Cca-s2, d2, a2)</td>
+            <td><span class="statut statut--v"><span class="statut__pt"></span>Vigilance</span></td>
+          </tr>
+          <tr>
+            <td class="synoptique__ouvrage">AMÉNAGEMENTS</td>
+            <td>
+              <div class="synoptique__risque">Garde-corps et mains courantes</div>
+              <div class="synoptique__aleas">Conformes NF P01-012 et NF P06-001</div>
+            </td>
+            <td class="synoptique__action">Essais au sac NF P01-013 avant réception</td>
+            <td><span class="statut statut--m"><span class="statut__pt"></span>Maîtrisé</span></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+</body>
+</html>

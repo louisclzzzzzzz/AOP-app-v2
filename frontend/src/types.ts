@@ -250,8 +250,19 @@ export interface ExtractionFieldItem {
   reference_categories: string[]
 }
 
+/** Rectangle en points PDF, origine en haut à gauche (même convention que pdfplumber côté
+ *  serveur) — un rectangle par ligne du passage surligné. */
+export interface CitationRect {
+  x0: number
+  top: number
+  x1: number
+  bottom: number
+}
+
 /** Localisation du passage cité dans le document d'origine — support de la preuve visuelle
- *  affichée à l'étape 3 (`CitationPreview`). */
+ *  affichée à l'étape 3 (`CitationPreview`). Le rendu de la page se fait côté client (PDF.js) ;
+ *  seules les coordonnées du surlignage viennent du serveur, qui seul sait faire correspondre
+ *  la citation (reformulée par le LLM) au texte réel du PDF. */
 export interface CitationLocation {
   found: boolean
   /** Index 0. */
@@ -261,6 +272,7 @@ export interface CitationLocation {
   highlighted: boolean
   reason: 'not_a_pdf' | 'not_found' | 'scanned_page_only' | null
   filename: string | null
+  rects: CitationRect[]
 }
 
 export interface ExtractionSource {
@@ -271,6 +283,10 @@ export interface ExtractionSource {
   /** 'semantic' : document proposé par la seule recherche sémantique de la couche 2 — il ne
    *  contient aucun mot-clé du champ, la valeur mérite donc une relecture de la citation. */
   selection?: 'semantic' | null
+  /** Citation PROPRE à ce document — absente (null) sur les extractions faites avant l'ajout de
+   *  ce champ. Distincte de `ExtractionEntry.citation` (celle du document retenu) : c'est elle
+   *  qui permet de surligner CHAQUE source d'une incohérence dans SON propre PDF. */
+  citation?: string | null
 }
 
 export interface ExtractionEntry {
@@ -351,7 +367,7 @@ export interface ProgressEvent {
   timestamp: string
 }
 
-// --- Veille BOAMP / JOUE ---------------------------------------------------
+// --- Veille BOAMP / JOUE -----------------------------------------------------------------
 
 export type VeilleNoticeStatus =
   | 'new'

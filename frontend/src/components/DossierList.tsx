@@ -1,5 +1,7 @@
 import { useMemo, useState } from 'react'
 import type { Dossier, DossierStatus } from '../types'
+import { isAtOrAfter } from '../statusFlow'
+import { BTN_DANGER, BTN_PETIT, CHAMP_SAISIE, JETON_ALERTE } from '../ui'
 import { StatusBadge } from './StatusBadge'
 
 interface Props {
@@ -62,23 +64,24 @@ export function DossierList({ dossiers, onSelect, onDelete }: Props) {
   }
 
   if (dossiers.length === 0) {
-    return <p className="text-sm text-slate-400">Aucun dossier traité pour l’instant.</p>
+    return <p className="text-sm text-encre-3">Aucun dossier traité pour l’instant.</p>
   }
 
   return (
     <div className="flex flex-col gap-3">
-      <div className="flex flex-wrap gap-2">
+      <div className="flex flex-wrap items-center gap-2">
+        <h2 className="mr-1 text-sm font-bold tracking-tight text-encre">Dossiers</h2>
         <input
           type="text"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           placeholder="Rechercher un dossier par nom…"
-          className="min-w-[16rem] flex-1 rounded-md border border-slate-300 px-3 py-1.5 text-sm"
+          className={`min-w-[16rem] flex-1 ${CHAMP_SAISIE}`}
         />
         <select
           value={statusFilter}
           onChange={(e) => setStatusFilter(e.target.value as StatusFilter)}
-          className="rounded-md border border-slate-300 bg-white px-2 py-1.5 text-sm"
+          className={CHAMP_SAISIE}
         >
           {STATUS_FILTER_OPTIONS.map((opt) => (
             <option key={opt.value} value={opt.value}>
@@ -89,57 +92,60 @@ export function DossierList({ dossiers, onSelect, onDelete }: Props) {
       </div>
 
       {filtered.length === 0 ? (
-        <p className="text-sm text-slate-400">Aucun dossier ne correspond à cette recherche.</p>
+        <p className="text-sm text-encre-3">Aucun dossier ne correspond à cette recherche.</p>
       ) : (
-        <ul className="divide-y divide-slate-200 rounded-lg border border-slate-200 bg-white">
+        <ul className="grid gap-3 md:grid-cols-2">
           {filtered.map((d) => (
-            <li key={d.id} className="flex items-center gap-2 px-4 py-3 hover:bg-slate-50">
+            <li
+              key={d.id}
+              className="group relative rounded-lg border border-bord bg-surface transition-colors hover:border-ardoise-moyen"
+            >
               <button
                 onClick={() => onSelect(d.id)}
-                className="flex min-w-0 flex-1 items-center justify-between gap-4 text-left"
+                className="w-full px-4 py-3.5 text-left"
               >
-                <div className="min-w-0">
-                  <p className="truncate text-sm font-medium text-slate-800" title={d.original_filename}>
-                    {d.original_filename}
-                  </p>
-                  <p className="text-xs text-slate-400">
-                    {formatDate(d.created_at)} · {d.counters.total_files} fichier(s)
-                    {d.duplicate_of_dossier_id && (
-                      <span
-                        className="ml-2 rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-700"
-                        title={`Semble identique à « ${d.duplicate_of_filename} »`}
-                      >
-                        doublon probable
-                      </span>
-                    )}
-                  </p>
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    {/* pr-6 : réserve la place du bouton de suppression posé en absolu */}
+                    <p className="truncate pr-6 text-[15px] font-bold tracking-tight" title={d.original_filename}>
+                      {d.original_filename}
+                    </p>
+                    <p className="mt-0.5 font-mono text-[11px] text-encre-3">{formatDate(d.created_at)}</p>
+                  </div>
+                  <StatusBadge status={d.status} />
                 </div>
-                <StatusBadge status={d.status} />
+
+                <div className="tabulaire mt-2.5 flex flex-wrap items-center gap-x-3.5 gap-y-1 border-t border-bord pt-2.5 font-mono text-[11.5px] text-encre-2">
+                  <span>{d.counters.total_files} fichiers</span>
+                  {avancement(d).map((mesure) => (
+                    <span key={mesure}>{mesure}</span>
+                  ))}
+                  {d.duplicate_of_dossier_id && (
+                    <span
+                      className={JETON_ALERTE}
+                      title={`Semble identique à « ${d.duplicate_of_filename} »`}
+                    >
+                      doublon probable
+                    </span>
+                  )}
+                </div>
               </button>
 
               {confirmingId === d.id ? (
-                <div className="flex shrink-0 items-center gap-1.5">
-                  <button
-                    onClick={() => handleConfirmDelete(d.id)}
-                    disabled={deletingId === d.id}
-                    className="rounded-md bg-red-600 px-2 py-1 text-xs font-medium text-white hover:bg-red-700 disabled:opacity-50"
-                  >
+                <div className="absolute right-3 top-3 flex items-center gap-1.5">
+                  <button onClick={() => handleConfirmDelete(d.id)} disabled={deletingId === d.id} className={BTN_DANGER}>
                     {deletingId === d.id ? 'Suppression…' : 'Confirmer'}
                   </button>
-                  <button
-                    onClick={() => setConfirmingId(null)}
-                    disabled={deletingId === d.id}
-                    className="rounded-md border border-slate-300 px-2 py-1 text-xs font-medium text-slate-600 hover:bg-slate-100"
-                  >
+                  <button onClick={() => setConfirmingId(null)} disabled={deletingId === d.id} className={BTN_PETIT}>
                     Annuler
                   </button>
                 </div>
               ) : (
                 <button
                   onClick={() => setConfirmingId(d.id)}
-                  className="shrink-0 rounded-md p-1.5 text-slate-400 hover:bg-red-50 hover:text-red-600"
+                  className="absolute right-2.5 top-3 rounded p-1 text-encre-3 opacity-0 transition-opacity hover:bg-rouge-clair hover:text-rouge focus-visible:opacity-100 group-hover:opacity-100"
                   title="Supprimer ce dossier"
-                  aria-label="Supprimer ce dossier"
+                  aria-label={`Supprimer le dossier ${d.original_filename}`}
                 >
                   <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
                     <path
@@ -156,4 +162,21 @@ export function DossierList({ dossiers, onSelect, onDelete }: Props) {
       )}
     </div>
   )
+}
+
+/** Mesures d'avancement à afficher en pied de carte, choisies selon l'étape
+ * atteinte : afficher « 0/50 champs » sur un dossier encore en classification
+ * ne dirait rien d'utile, et remplirait la carte de zéros. */
+function avancement(d: Dossier): string[] {
+  const c = d.counters
+  const mesures: string[] = []
+  if (isAtOrAfter(d.status, 'completeness_review') && c.pieces_selected > 0) {
+    mesures.push(`${c.pieces_present}/${c.pieces_selected} pièces`)
+  }
+  if (isAtOrAfter(d.status, 'extraction_review') && c.fields_total > 0) {
+    mesures.push(`${c.fields_present}/${c.fields_total} champs`)
+  } else if (d.status === 'classifying' || d.status === 'classified') {
+    mesures.push(`${c.classified}/${c.total_files} classés`)
+  }
+  return mesures
 }

@@ -19,23 +19,30 @@ const LABELS: Record<DossierStatus, string> = {
   error: 'Erreur',
 }
 
+/** Trois familles seulement, pour que le statut se lise sans être relu :
+ * ardoise = la machine travaille, ambre = c'est à vous, vert = c'est acquis.
+ * (rouge pour l'échec, neutre pour le simple dépôt). */
+const EN_COURS = 'bg-ardoise-clair text-ardoise'
+const A_VALIDER = 'bg-ambre-clair text-ambre'
+const ACQUIS = 'bg-vert-clair text-vert'
+
 const STYLES: Record<DossierStatus, string> = {
-  uploaded: 'bg-slate-100 text-slate-600',
-  unzipping: 'bg-blue-100 text-blue-700',
-  inventorying: 'bg-blue-100 text-blue-700',
-  extracting_text: 'bg-amber-100 text-amber-700',
-  ready_step1: 'bg-green-100 text-green-700',
-  classifying: 'bg-blue-100 text-blue-700',
-  classified: 'bg-amber-100 text-amber-700',
-  reorganizing: 'bg-blue-100 text-blue-700',
-  reorganized: 'bg-green-100 text-green-700',
-  analyzing_completeness: 'bg-blue-100 text-blue-700',
-  completeness_review: 'bg-amber-100 text-amber-700',
-  completeness_validated: 'bg-green-100 text-green-700',
-  extracting: 'bg-blue-100 text-blue-700',
-  extraction_review: 'bg-amber-100 text-amber-700',
-  extraction_validated: 'bg-green-100 text-green-700',
-  error: 'bg-red-100 text-red-700',
+  uploaded: 'bg-surface-3 text-encre-2',
+  unzipping: EN_COURS,
+  inventorying: EN_COURS,
+  extracting_text: EN_COURS,
+  ready_step1: ACQUIS,
+  classifying: EN_COURS,
+  classified: A_VALIDER,
+  reorganizing: EN_COURS,
+  reorganized: ACQUIS,
+  analyzing_completeness: EN_COURS,
+  completeness_review: A_VALIDER,
+  completeness_validated: ACQUIS,
+  extracting: EN_COURS,
+  extraction_review: A_VALIDER,
+  extraction_validated: ACQUIS,
+  error: 'bg-rouge-clair text-rouge',
 }
 
 const ACTIVE_STATUSES: DossierStatus[] = [
@@ -52,7 +59,7 @@ export function StatusBadge({ status }: { status: DossierStatus }) {
   const isActive = ACTIVE_STATUSES.includes(status)
   return (
     <span
-      className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium ${STYLES[status] ?? 'bg-slate-100 text-slate-600'}`}
+      className={`inline-flex shrink-0 items-center gap-1.5 rounded px-2 py-0.5 text-[11px] font-bold ${STYLES[status] ?? 'bg-surface-3 text-encre-2'}`}
     >
       {isActive && (
         <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-current" />

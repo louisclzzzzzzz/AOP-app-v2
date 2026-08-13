@@ -9,7 +9,7 @@ import {
 } from '../api'
 import type { CompletenessEntry, DocumentItem, DossierStatus } from '../types'
 import { isAtOrAfter } from '../statusFlow'
-import { HOVER_HINT_CLASS } from '../ui'
+import { BTN_PRIMAIRE, HOVER_HINT_CLASS } from '../ui'
 import { ReopenButton } from './ReopenButton'
 
 const REOPENABLE_COMPLETENESS_STATUSES: DossierStatus[] = [
@@ -46,17 +46,17 @@ export const CERTAINTY_LABELS: Record<string, string> = {
 const SELECTION_STATUSES: DossierStatus[] = ['reorganized']
 
 function presenceBadgeClasses(presence: string | null): string {
-  if (presence === 'present') return 'bg-green-100 text-green-700'
-  if (presence === 'partial') return 'bg-amber-100 text-amber-700'
-  if (presence === 'absent') return 'bg-red-100 text-red-700'
-  return 'bg-slate-100 text-slate-400'
+  if (presence === 'present') return 'bg-vert-clair text-vert'
+  if (presence === 'partial') return 'bg-ambre-clair text-ambre'
+  if (presence === 'absent') return 'bg-rouge-clair text-rouge'
+  return 'bg-surface-3 text-encre-3'
 }
 
 function certaintyTone(certainty: string | null): string {
-  if (certainty === 'certain') return 'text-green-700'
-  if (certainty === 'probable') return 'text-amber-700'
-  if (certainty === 'a_verifier') return 'text-red-700'
-  return 'text-slate-400'
+  if (certainty === 'certain') return 'text-vert'
+  if (certainty === 'probable') return 'text-ambre'
+  if (certainty === 'a_verifier') return 'text-rouge'
+  return 'text-encre-3'
 }
 
 function LocalisationCell({
@@ -67,7 +67,7 @@ function LocalisationCell({
   items: { documentId: string; path: string }[]
 }) {
   const [expanded, setExpanded] = useState(false)
-  if (items.length === 0) return <span className="text-slate-300">—</span>
+  if (items.length === 0) return <span className="text-bord-fort">—</span>
 
   const shown = expanded ? items : items.slice(0, 1)
   return (
@@ -78,7 +78,7 @@ function LocalisationCell({
           href={documentFileUrl(dossierId, it.documentId)}
           target="_blank"
           rel="noreferrer"
-          className={`max-w-full truncate rounded bg-slate-100 px-1.5 py-0.5 text-[10px] text-blue-700 hover:bg-blue-50 hover:underline ${HOVER_HINT_CLASS}`}
+          className={`max-w-full truncate rounded bg-surface-3 px-1.5 py-0.5 text-[10px] text-ardoise-fonce hover:bg-ardoise-clair hover:underline ${HOVER_HINT_CLASS}`}
           title={`${it.path} — ouvrir le document original`}
         >
           {it.path}
@@ -88,7 +88,7 @@ function LocalisationCell({
         <button
           type="button"
           onClick={() => setExpanded((v) => !v)}
-          className="text-[10px] font-medium text-blue-600 hover:underline"
+          className="text-[10px] font-medium text-ardoise hover:underline"
         >
           {expanded ? 'Réduire' : `+ ${items.length - 1} autre${items.length - 1 > 1 ? 's' : ''}`}
         </button>
@@ -201,14 +201,14 @@ export function CompletenessChecklist({ dossierId, status, documents, onApplied 
   if (status === 'analyzing_completeness') {
     return (
       <div className="flex flex-col gap-2">
-        <h3 className="text-sm font-medium text-slate-600">Analyse de complétude — étape 2</h3>
-        <p className="text-sm text-slate-400">Analyse en cours (fichier direct, recherche intra-document, LLM)…</p>
+        <h3 className="text-sm font-medium text-encre-2">Analyse de complétude — étape 2</h3>
+        <p className="text-sm text-encre-3">Analyse en cours (fichier direct, recherche intra-document, LLM)…</p>
       </div>
     )
   }
 
   if (!entries) {
-    return <p className="text-sm text-slate-400">Chargement de la checklist de complétude…</p>
+    return <p className="text-sm text-encre-3">Chargement de la checklist de complétude…</p>
   }
 
   const isSelectionPhase = SELECTION_STATUSES.includes(status)
@@ -218,7 +218,7 @@ export function CompletenessChecklist({ dossierId, status, documents, onApplied 
   return (
     <div className="flex flex-col gap-4">
       <div className="flex items-center justify-between">
-        <h3 className="text-sm font-medium text-slate-600">
+        <h3 className="text-sm font-medium text-encre-2">
           {isSelectionPhase
             ? `Sélection des pièces recherchées — étape 2 (${selectedCount} sélectionnée${selectedCount > 1 ? 's' : ''})`
             : `Complétude — étape 2 (${visibleEntries.length} pièce${visibleEntries.length > 1 ? 's' : ''})`}
@@ -227,7 +227,7 @@ export function CompletenessChecklist({ dossierId, status, documents, onApplied 
           <button
             onClick={handleRun}
             disabled={running || selectedCount === 0}
-            className="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+            className={BTN_PRIMAIRE}
           >
             {running ? 'Lancement…' : "Lancer l'analyse"}
           </button>
@@ -247,26 +247,26 @@ export function CompletenessChecklist({ dossierId, status, documents, onApplied 
 
       {isSelectionPhase && (
         <div className="flex items-center justify-between gap-3">
-          <p className="text-sm text-slate-500">
+          <p className="text-sm text-encre-2">
             Cochez les pièces recherchées pour ce dossier. Les pièces obligatoires sont pré-cochées.
           </p>
           <button
             type="button"
             onClick={handleToggleAll}
-            className="shrink-0 rounded border border-slate-200 bg-white px-2 py-1 text-[11px] font-medium text-slate-600 hover:bg-slate-100"
+            className="shrink-0 rounded border border-bord bg-white px-2 py-1 text-[11px] font-medium text-encre-2 hover:bg-surface-3"
           >
             {allSelected ? 'Tout décocher' : 'Tout cocher'}
           </button>
         </div>
       )}
-      {error && <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p>}
+      {error && <p className="rounded-md bg-rouge-clair px-3 py-2 text-sm text-rouge">{error}</p>}
 
       {isSelectionPhase ? (
         <div className="flex flex-col gap-3">
           {[...byPhase.keys()].sort().map((phase) => (
             <div key={phase}>
-              <h4 className="mb-1 text-xs font-medium text-slate-500">{PHASE_LABELS[phase] ?? `Phase ${phase}`}</h4>
-              <div className="divide-y divide-slate-100 rounded-lg border border-slate-200 bg-white">
+              <h4 className="mb-1 text-xs font-medium text-encre-2">{PHASE_LABELS[phase] ?? `Phase ${phase}`}</h4>
+              <div className="divide-y divide-surface-3 rounded-lg border border-bord bg-white">
                 {byPhase.get(phase)?.map((entry) => (
                   <label
                     key={entry.piece_id}
@@ -285,9 +285,9 @@ export function CompletenessChecklist({ dossierId, status, documents, onApplied 
           ))}
         </div>
       ) : (
-        <div className="max-h-[32rem] overflow-y-auto rounded-lg border border-slate-200">
+        <div className="max-h-[32rem] overflow-y-auto rounded-lg border border-bord">
           <table className="w-full text-left text-xs">
-            <thead className="sticky top-0 bg-slate-100 text-slate-500">
+            <thead className="sticky top-0 bg-surface-3 text-encre-2">
               <tr>
                 <th className="px-3 py-2">Pièce</th>
                 <th className="px-3 py-2">Statut</th>
@@ -296,7 +296,7 @@ export function CompletenessChecklist({ dossierId, status, documents, onApplied 
                 <th className="px-3 py-2">Justification</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-slate-100">
+            <tbody className="divide-y divide-surface-3">
               {visibleEntries.map((entry) => (
                 <tr key={entry.piece_id} className={savingId === entry.piece_id ? 'opacity-50' : ''}>
                   <td className="px-3 py-1.5">{entry.libelle}</td>
@@ -312,10 +312,10 @@ export function CompletenessChecklist({ dossierId, status, documents, onApplied 
                       {CERTAINTY_LABELS[entry.final_certainty ?? ''] ?? '—'}
                     </span>
                     {entry.is_manually_corrected && (
-                      <span className="ml-1 rounded bg-slate-100 px-1 text-[10px] text-slate-500">corrigé</span>
+                      <span className="ml-1 rounded bg-surface-3 px-1 text-[10px] text-encre-2">corrigé</span>
                     )}
                   </td>
-                  <td className="px-3 py-1.5 text-slate-500">
+                  <td className="px-3 py-1.5 text-encre-2">
                     <LocalisationCell
                       dossierId={dossierId}
                       items={entry.matched_document_ids.map((id) => ({
@@ -325,11 +325,11 @@ export function CompletenessChecklist({ dossierId, status, documents, onApplied 
                     />
                   </td>
                   <td
-                    className={`max-w-xs truncate px-3 py-1.5 text-slate-500 ${entry.justification ? HOVER_HINT_CLASS : ''}`}
+                    className={`max-w-xs truncate px-3 py-1.5 text-encre-2 ${entry.justification ? HOVER_HINT_CLASS : ''}`}
                     title={entry.justification ?? ''}
                   >
                     {entry.completeness_error ? (
-                      <span className="text-red-600">{entry.completeness_error}</span>
+                      <span className="text-rouge">{entry.completeness_error}</span>
                     ) : (
                       entry.justification ?? '—'
                     )}

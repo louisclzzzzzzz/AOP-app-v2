@@ -1,17 +1,20 @@
-"""Localisation et rendu d'une citation dans le PDF d'origine — la preuve visuelle de l'étape 3.
+"""Localisation d'une citation dans le PDF d'origine — la preuve visuelle de l'étape 3.
 
 À l'écran de validation, l'expert relit une cinquantaine de valeurs. Jusqu'ici il voyait la
 valeur, un nom de fichier et, dans le rapport, une citation textuelle : vérifier réellement une
-donnée supposait d'ouvrir le PDF et d'y chercher le passage à la main. Ce module rend la page
-concernée avec le passage SURLIGNÉ, ce qui ramène la vérification à un coup d'œil.
+donnée supposait d'ouvrir le PDF et d'y chercher le passage à la main. Ce module trouve la page et
+les coordonnées exactes du passage, que le frontend surligne par-dessus son propre rendu de la
+page (PDF.js) — ce qui ramène la vérification à un coup d'œil.
 
 Deux décisions structurantes :
 
-1. **Tout se fait côté serveur** (pdfplumber pour les coordonnées, pypdfium2 pour le rendu,
-   Pillow pour le surlignage), et le frontend n'affiche qu'une image. L'alternative — PDF.js dans
-   le navigateur — imposait une dépendance et un worker à empaqueter, et surtout ne savait rien
-   surligner sur un PDF scanné, qui n'a aucune couche de texte. Ces trois bibliothèques sont déjà
-   installées (pypdfium2 et Pillow arrivent avec pdfplumber).
+1. **Seule la LOCALISATION reste côté serveur** (pdfplumber, pour extraire les mots et leurs
+   coordonnées), le RENDU de la page appartient au frontend (PDF.js sur le fichier servi par
+   `/file`). Un rendu serveur (pypdfium2 + Pillow, l'approche initiale) empaquetait bien mais
+   figeait la preuve en image plate — pas de zoom vectoriel, pas de navigation dans le reste du
+   document. pdfplumber reste nécessaire dans les deux approches : lui seul sait faire
+   correspondre une citation reformulée par le LLM au texte réel du PDF ; PDF.js sait rendre une
+   page mais pas y localiser un passage approximativement cité.
 
 2. **La correspondance est faite sur du texte NORMALISÉ**, jamais littéral. La citation vient du
    LLM : il rétablit les accents, remplace « … » par "…", recolle les mots coupés en fin de ligne,
@@ -19,12 +22,12 @@ Deux décisions structurantes :
    citations pourtant parfaitement fidèles.
 
 Quand le PDF n'a pas de couche de texte (document scanné, lu par OCR), les coordonnées n'existent
-pas : on retombe sur la recherche de la PAGE dans le texte OCR mis en cache, et la page est rendue
-sans rectangle. Mieux vaut ouvrir l'expert à la bonne page sans surlignage que de ne rien montrer.
+pas : on retombe sur la recherche de la PAGE dans le texte OCR mis en cache. Le frontend rend
+alors la page sans rectangle (une page scannée reste un PDF valide, PDF.js la rend comme les
+autres) — mieux vaut ouvrir l'expert à la bonne page sans surlignage que de ne rien montrer.
 """
 from __future__ import annotations
 
-import io
 import logging
 import re
 import unicodedata
@@ -33,10 +36,6 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-# Résolution de rendu. 2.0 (~144 dpi) reste lisible au zoom sur un A4 sans peser lourd : une page
-# dense pèse quelques centaines de Ko en PNG.
-DEFAULT_SCALE = 2.0
-MAX_SCALE = 4.0
 # Au-delà, la citation est presque sûrement une paraphrase tronquée : on cherche sur son début.
 _MATCH_PREFIX_LENGTHS = (400, 200, 120, 60, 40)
 # En deçà, un fragment devient trop générique pour désigner un passage sans ambiguïté.
@@ -228,42 +227,3 @@ def locate_in_ocr_pages(page_texts: list[str], citation: str) -> CitationLocatio
         if any(_find_in_page(normalized, fragment) is not None for fragment in fragments):
             return CitationLocation(page=page_index, rects=[], method="ocr_page")
     return None
-
-
-# --- Rendu --------------------------------------------------------------------------------------
-
-def render_page(pdf_path: Path, page: int, rects: list[Rect], *, scale: float = DEFAULT_SCALE) -> bytes:
-    """PNG de la page demandée, passage surligné.
-
-    Le surlignage est peint en jaune SEMI-TRANSPARENT par-dessus la page : le texte doit rester
-    lisible sous la couleur, sinon la preuve devient invérifiable — c'est tout l'inverse du but."""
-    import pypdfium2
-    from PIL import Image, ImageDraw
-
-    scale = max(0.5, min(float(scale), MAX_SCALE))
-    document = pypdfium2.PdfDocument(str(pdf_path))
-    try:
-        if not 0 <= page < len(document):
-            raise IndexError(f"page {page} hors du document ({len(document)} page(s))")
-        rendered = document[page].render(scale=scale).to_pil().convert("RGBA")
-    finally:
-        document.close()
-
-    if rects:
-        overlay = Image.new("RGBA", rendered.size, (0, 0, 0, 0))
-        draw = ImageDraw.Draw(overlay)
-        for rect in rects:
-            # Marge de 1 pt : les rectangles pdfplumber collent aux glyphes, un surlignage au ras
-            # du texte a l'air d'un défaut d'alignement.
-            box = (
-                (rect.x0 - 1) * scale,
-                (rect.top - 1) * scale,
-                (rect.x1 + 1) * scale,
-                (rect.bottom + 1) * scale,
-            )
-            draw.rectangle(box, fill=(255, 214, 0, 90), outline=(240, 160, 0, 220), width=max(1, int(scale)))
-        rendered = Image.alpha_composite(rendered, overlay)
-
-    buffer = io.BytesIO()
-    rendered.convert("RGB").save(buffer, format="PNG", optimize=True)
-    return buffer.getvalue()
