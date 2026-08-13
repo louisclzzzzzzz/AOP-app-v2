@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime as dt
+import json
 import logging
 import time
 
@@ -209,7 +210,7 @@ async def run_audit_pipeline(dossier_id: str) -> None:
         dossier_id, total_elapsed, len(map_jobs), len(schema.sections), total_risks,
     )
 
-    report_md = assemble_report(outcomes, schema, georisques=georisques)
+    report = assemble_report(outcomes, schema, georisques=georisques)
     # Les deux étapes comptent : `audit_risques_model` doit refléter tous les modèles ayant
     # réellement contribué au rapport, pas seulement ceux de l'appel final.
     model_names = {o.model_name for o in outcomes if o.model_name}
@@ -219,7 +220,8 @@ async def run_audit_pipeline(dossier_id: str) -> None:
         with session_scope() as s:
             dossier = get_dossier(s, dossier_id)
             assert dossier is not None
-            dossier.audit_risques_md = report_md
+            dossier.audit_risques_md = report.markdown
+            dossier.audit_risques_citations = json.dumps(report.citations, ensure_ascii=False)
             dossier.audit_risques_model = ", ".join(sorted(model_names)) if model_names else None
             dossier.audit_risques_status = "done"
             dossier.audit_risques_error = None

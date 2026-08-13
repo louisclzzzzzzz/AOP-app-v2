@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime as dt
+import json
 import logging
 import time
 
@@ -236,7 +237,7 @@ async def run_project_synthesis_pipeline(dossier_id: str) -> None:
     )
 
     cartography_md = build_documents_cartography(list(signals_by_id.values()), taxonomy)
-    report_md = assemble_report(outcomes, schema, cartography_md=cartography_md)
+    report = assemble_report(outcomes, schema, cartography_md=cartography_md)
     # Les deux étapes (map et reduce) comptent : `synthese_projet_model` doit refléter tous les
     # modèles qui ont réellement contribué au rapport, pas seulement ceux de l'appel final.
     model_names = {o.model_name for o in outcomes if o.model_name}
@@ -250,7 +251,8 @@ async def run_project_synthesis_pipeline(dossier_id: str) -> None:
         with session_scope() as s:
             dossier = get_dossier(s, dossier_id)
             assert dossier is not None
-            dossier.synthese_projet_md = report_md
+            dossier.synthese_projet_md = report.markdown
+            dossier.synthese_projet_citations = json.dumps(report.citations, ensure_ascii=False)
             dossier.synthese_projet_model = ", ".join(sorted(model_names)) if model_names else None
             dossier.synthese_projet_status = "done"
             dossier.synthese_projet_error = None

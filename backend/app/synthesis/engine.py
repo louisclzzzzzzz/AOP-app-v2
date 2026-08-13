@@ -40,6 +40,7 @@ from app.classify.taxonomy import Taxonomy
 from app.ingestion.document_signal import DocumentSignal
 from app.mistral import call_log
 from app.mistral.client import call_structured_chat, document_summary_max_tokens
+from app.reports.citations import REFS_PROMPT_RULES, CitationAllocator, CitationRef
 from app.synthesis.schema import SynthesisSchema, SynthesisTopic
 
 logger = logging.getLogger(__name__)
@@ -90,6 +91,9 @@ class TopicOutcome:
     documents_used: list[str] = field(default_factory=list)
     candidates_count: int = 0
     documents_degraded: list[str] = field(default_factory=list)
+    # Étiquettes (`D1`…) proposées au LLM pour CE thème : locales au thème, donc ré-attribuées
+    # globalement à l'assemblage (§`assemble_report`).
+    citation_refs: dict[str, CitationRef] = field(default_factory=dict)
 
 
 class _TopicResponse(BaseModel):
@@ -292,8 +296,9 @@ l'inventer.
 (classement ERP, nombre de niveaux, surfaces, montants, avis émis…), signale la divergence \
 explicitement en nommant les deux fichiers sources, au lieu de trancher en silence.
 - Indique la source de chaque donnée factuelle. Dans un tableau, c'est le rôle de la colonne \
-"Source" : n'y remets pas le mot « Source », juste le nom du fichier. Hors tableau, mets le nom \
-du fichier entre parenthèses.
+"Source" : n'y remets pas le mot « Source », juste le nom du fichier. Hors tableau, n'écris PAS le \
+nom du fichier entre parenthèses — utilise les étiquettes de renvoi décrites ci-dessous, qui \
+deviennent des liens vers le document à l'écran.
 
 Règles impératives — forme. Ce rapport est un outil de travail pour un souscripteur, pas une \
 note de synthèse rédigée : il doit se lire et se vérifier vite.
@@ -313,7 +318,9 @@ ou avec un titre de niveau 4 (####) au maximum.
 ailleurs", "il convient de noter que", "en résumé"), les adjectifs d'appréciation ("ambitieux", \
 "remarquable", "notable") et toute analyse que les documents ne portent pas.
 - Réponds uniquement avec le contenu Markdown de cette section, sans reprendre le titre de la \
-section (déjà affiché séparément dans le rapport)."""
+section (déjà affiché séparément dans le rapport).
+
+""" + REFS_PROMPT_RULES
 
 
 def select_topic_documents(topic: SynthesisTopic, documents: list[DocumentSignal]) -> list[DocumentSignal]:
@@ -332,6 +339,8 @@ class _TopicContext:
     documents_used: list[str]
     documents_degraded: list[str]
     documents_without_info: list[str]
+    # Étiquette (`D1`…) → document cité, pour résoudre les renvois du LLM à l'assemblage.
+    refs: dict[str, CitationRef] = field(default_factory=dict)
 
 
 def _build_topic_context(
@@ -353,14 +362,22 @@ def _build_topic_context(
     used: list[str] = []
     degraded: list[str] = []
     without_info: list[str] = []
+    refs: dict[str, CitationRef] = {}
     remaining = fallback_total_budget
+
+    # Seuls les documents RÉELLEMENT présents dans le prompt reçoivent une étiquette : le LLM ne
+    # peut renvoyer qu'à ce qu'il voit.
+    def _header(doc: DocumentSignal, excerpt: str) -> str:
+        ref = f"D{len(refs) + 1}"
+        refs[ref] = CitationRef(document_id=doc.document_id, filename=doc.filename, excerpt=excerpt)
+        return f"### [{ref}] {doc.filename} (catégorie : {doc.final_category or 'inconnue'})"
 
     for doc in candidates:
         summary = summaries.get(doc.document_id)
-        header = f"### Document : {doc.filename} (catégorie : {doc.final_category or 'inconnue'})"
 
         if summary is not None and topic.id in summary.summaries_by_topic:
-            blocks.append(f"{header}\n{summary.summaries_by_topic[topic.id]}")
+            releve = summary.summaries_by_topic[topic.id]
+            blocks.append(f"{_header(doc, releve)}\n{releve}")
             used.append(doc.filename)
             continue
 
@@ -405,7 +422,9 @@ def _build_topic_context(
                 limit_value=cap,
                 extra={"topic": topic.id},
             )
-        blocks.append(f"{header} — relevé indisponible, extrait brut du document (tronqué) :\n{excerpt}")
+        # Repli « extrait brut » : le document reste citable (l'expert doit pouvoir l'ouvrir), mais
+        # sans relevé il n'y a pas de paragraphe propre à montrer au survol — d'où l'extrait vide.
+        blocks.append(f"{_header(doc, '')} — relevé indisponible, extrait brut du document (tronqué) :\n{excerpt}")
         used.append(doc.filename)
         degraded.append(doc.filename)
         remaining -= len(excerpt)
@@ -420,6 +439,7 @@ def _build_topic_context(
         documents_used=used,
         documents_degraded=degraded,
         documents_without_info=without_info,
+        refs=refs,
     )
 
 
@@ -543,6 +563,7 @@ def generate_topic(
             documents_used=context.documents_used,
             candidates_count=len(candidates),
             documents_degraded=context.documents_degraded,
+            citation_refs=context.refs,
         )
 
     return TopicOutcome(
@@ -553,6 +574,7 @@ def generate_topic(
         documents_used=context.documents_used,
         candidates_count=len(candidates),
         documents_degraded=context.documents_degraded,
+        citation_refs=context.refs,
     )
 
 
@@ -619,9 +641,18 @@ def _sources_note(outcome: TopicOutcome) -> str:
     return " ".join(parts)
 
 
+@dataclass(frozen=True)
+class AssembledReport:
+    markdown: str
+    # Clé de marqueur (`c1`…) → {document_id, filename, excerpt}, livré à côté du Markdown —
+    # même contrat que l'audit (§app/audit/engine.py `AssembledReport`).
+    citations: dict[str, dict[str, str]]
+
+
 def assemble_report(
     outcomes: list[TopicOutcome], schema: SynthesisSchema, *, cartography_md: str | None = None
-) -> str:
+) -> AssembledReport:
+    allocator = CitationAllocator()
     sections: list[str] = ["# Synthèse projet — Phase 1"]
     if cartography_md:
         sections.append("## Cartographie des documents pivots\n\n" + cartography_md)
@@ -634,10 +665,16 @@ def assemble_report(
         if outcome.error:
             body = f"_Section non générée (erreur : {outcome.error})._"
         else:
-            body = outcome.content_md or "_Aucune donnée disponible._"
+            # Les thèmes `extraction_fields` sont un reformatage déterministe sans appel LLM : ils
+            # n'ont pas d'étiquette, `resolve` les traverse donc sans rien changer.
+            body = allocator.resolve(
+                outcome.content_md or "_Aucune donnée disponible._",
+                scope=topic.id,
+                refs=outcome.citation_refs,
+            )
             note = _sources_note(outcome)
             if note:
                 body += "\n\n" + note
         sections.append(f"## {topic.titre}\n\n{body}")
 
-    return "\n\n".join(sections) + "\n"
+    return AssembledReport(markdown="\n\n".join(sections) + "\n", citations=allocator.registry)

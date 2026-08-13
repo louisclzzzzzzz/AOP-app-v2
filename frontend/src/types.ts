@@ -36,6 +36,15 @@ export type DossierStatus =
   | 'extraction_validated'
   | 'error'
 
+/** Une citation d'un rapport IA : le document qui fonde un passage rédigé, et le relevé factuel
+ * qui en a été tiré. Les rapports portent des marqueurs `⟦cite:cN⟧` dont la clé pointe ici
+ * (§`backend/app/audit/engine.py` `AssembledReport`). */
+export interface Citation {
+  document_id: string
+  filename: string
+  excerpt: string
+}
+
 export interface Dossier {
   id: string
   original_filename: string
@@ -48,11 +57,13 @@ export interface Dossier {
   extraction_validated_at: string | null
   synthese_ia: string | null
   synthese_projet_md: string | null
+  synthese_projet_citations: Record<string, Citation>
   synthese_projet_model: string | null
   synthese_projet_status: 'not_generated' | 'generating' | 'done' | 'error'
   synthese_projet_error: string | null
   synthese_projet_generated_at: string | null
   audit_risques_md: string | null
+  audit_risques_citations: Record<string, Citation>
   audit_risques_model: string | null
   audit_risques_status: 'not_generated' | 'generating' | 'done' | 'error'
   audit_risques_error: string | null

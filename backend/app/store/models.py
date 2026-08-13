@@ -205,6 +205,11 @@ class Dossier(Base):
     # directement les documents pivots (app/synthesis/) — distincte de `synthese_ia` ci-dessus.
     # Générée à la demande de l'expert, jamais automatiquement enchaînée à l'étape 3.
     synthese_projet_md: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Registre JSON des citations du rapport : clé de marqueur `⟦cite:cN⟧` présent dans le Markdown
+    # → {document_id, filename, excerpt}. Permet de remonter d'une phrase rédigée au document qui la
+    # fonde, et de l'ouvrir dans le volet de preuve. Null sur les rapports générés avant son
+    # introduction : ils s'affichent simplement sans pastille de citation.
+    synthese_projet_citations: Mapped[str | None] = mapped_column(Text, nullable=True)
     synthese_projet_model: Mapped[str | None] = mapped_column(String(128), nullable=True)
     synthese_projet_status: Mapped[str] = mapped_column(String(16), default="not_generated")
     synthese_projet_error: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -216,6 +221,8 @@ class Dossier(Base):
     # relisant les CCTP/étude de sol/RICT pivots et croisant les données publiques Géorisques
     # (app/audit/). Générée à la demande de l'expert, comme la Phase 1.
     audit_risques_md: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Même registre de citations que `synthese_projet_citations` ci-dessus.
+    audit_risques_citations: Mapped[str | None] = mapped_column(Text, nullable=True)
     audit_risques_model: Mapped[str | None] = mapped_column(String(128), nullable=True)
     audit_risques_status: Mapped[str] = mapped_column(String(16), default="not_generated")
     audit_risques_error: Mapped[str | None] = mapped_column(Text, nullable=True)

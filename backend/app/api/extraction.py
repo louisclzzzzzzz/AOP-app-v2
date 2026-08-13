@@ -24,6 +24,7 @@ from app.extraction.report import REPORT_JSON_FILENAME, validate_extraction
 from app.pipeline_support import owner_api_key, run_pipeline_safely
 from app.progress import progress_manager
 from app.reports.docx_export import markdown_to_docx, report_docx_filename
+from app.reports.pdf_export import markdown_to_pdf, report_pdf_filename
 from app.settings import get_settings
 from app.store.db import session_scope
 from app.store.models import DossierStatus, ExtractionResult
@@ -261,5 +262,23 @@ async def export_report_docx(dossier_id: str, payload: ReportExportIn) -> Respon
     return Response(
         content=content,
         media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.post("/{dossier_id}/report/export.pdf")
+async def export_report_pdf(dossier_id: str, payload: ReportExportIn) -> Response:
+    """Même rapport composite que `export_report_docx` ci-dessus, au format PDF
+    (§app/reports/pdf_export.py) — même Markdown assemblé côté frontend, aucune requête métier ici."""
+    with session_scope() as s:
+        dossier = get_dossier(s, dossier_id)
+        if dossier is None:
+            raise HTTPException(404, "Dossier introuvable")
+        filename = report_pdf_filename(dossier)
+
+    content = markdown_to_pdf(payload.markdown)
+    return Response(
+        content=content,
+        media_type="application/pdf",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )

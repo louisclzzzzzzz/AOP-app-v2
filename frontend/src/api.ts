@@ -249,6 +249,20 @@ export async function exportReportDocx(dossierId: string, markdown: string): Pro
   return res.blob()
 }
 
+/** Même route que `exportReportDocx`, au format PDF (§app/reports/pdf_export.py). */
+export async function exportReportPdf(dossierId: string, markdown: string): Promise<Blob> {
+  const res = await fetch(`/api/dossiers/${dossierId}/report/export.pdf`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ markdown }),
+  })
+  if (!res.ok) {
+    const body = await res.text().catch(() => '')
+    throw new Error(`${res.status} ${res.statusText} — ${body}`)
+  }
+  return res.blob()
+}
+
 export async function generateProjectSynthesis(dossierId: string): Promise<Dossier> {
   const res = await fetch(`/api/dossiers/${dossierId}/synthese-projet/generate`, { method: 'POST' })
   return handle<Dossier>(res)

@@ -370,15 +370,13 @@ export function DossierProgress({ dossierId, onBack, onSelectDossier }: Props) {
             {activeStep === 3 && (
               <ExtractionSheet dossierId={dossierId} dossier={dossier} documents={documents} onApplied={handleApplied} />
             )}
+            {/* Comme l'étape 3, les rapports gèrent eux-mêmes leur gouttière : l'audit se scinde
+                en deux volets (risques | document cité) qui vont jusqu'au bord de l'écran. */}
             {activeStep === 4 && (
-              <div className="px-6 py-5">
-                <RapportPanel dossierId={dossierId} dossier={dossier} kind="synthese" onApplied={handleApplied} />
-              </div>
+              <RapportPanel dossierId={dossierId} dossier={dossier} kind="synthese" onApplied={handleApplied} />
             )}
             {activeStep === 5 && (
-              <div className="px-6 py-5">
-                <RapportPanel dossierId={dossierId} dossier={dossier} kind="audit" onApplied={handleApplied} />
-              </div>
+              <RapportPanel dossierId={dossierId} dossier={dossier} kind="audit" onApplied={handleApplied} />
             )}
           </div>
         </>

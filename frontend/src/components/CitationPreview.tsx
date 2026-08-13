@@ -1,10 +1,8 @@
-import { useEffect, useRef, useState } from 'react'
-import type { PDFDocumentProxy, PDFPageProxy, RenderTask } from 'pdfjs-dist'
-import type * as PdfjsLib from 'pdfjs-dist'
-import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { documentFileUrl, locateCitation } from '../api'
-import type { CitationLocation, CitationRect, ExtractionSource } from '../types'
+import type { CitationLocation, ExtractionSource } from '../types'
 import { BTN_PETIT, CLE } from '../ui'
+import { PdfViewer } from './PdfViewer'
 
 interface Props {
   dossierId: string
@@ -26,40 +24,9 @@ const REASONS: Record<string, string> = {
     'Document scanné : la page a été retrouvée, mais le passage ne peut pas être encadré précisément.',
 }
 
-// 1 point PDF = 1/72 pouce. À l'échelle 1, la page s'affiche à sa taille physique réelle sur un
-// écran à 96 px/pouce (convention des visualisateurs PDF : 100 % = taille réelle), d'où ce facteur
-// plutôt qu'un `scale` pdf.js brut qui n'aurait aucune signification physique pour l'expert.
-const POINTS_TO_CSS_PX = 96 / 72
 const ZOOM_MIN = 0.4
 const ZOOM_MAX = 4
 const ZOOM_STEP = 0.25
-
-interface Box {
-  left: number
-  top: number
-  width: number
-  height: number
-}
-
-/** Transforme les rectangles du surlignage (points PDF, origine en haut à gauche — même
- * convention que pdfplumber côté serveur) en boîtes CSS dans l'espace du viewport pdf.js
- * actuel, quels que soient le zoom et la rotation de la page. */
-function highlightBoxes(page: PDFPageProxy, viewport: PdfjsLib.PageViewport, rects: CitationRect[]): Box[] {
-  const pageHeight = page.view[3] - page.view[1]
-  return rects.map((r) => {
-    // pdf.js travaille en espace PDF natif (origine en bas à gauche) : on ré-y-inverse les
-    // coordonnées avant de convertir chaque coin séparément (`convertToViewportRectangle` a
-    // disparu en v6), en laissant `convertToViewportPoint` gérer rotation et mise à l'échelle.
-    const [vx0, vy0] = viewport.convertToViewportPoint(r.x0, pageHeight - r.bottom)
-    const [vx1, vy1] = viewport.convertToViewportPoint(r.x1, pageHeight - r.top)
-    return {
-      left: Math.min(vx0, vx1),
-      top: Math.min(vy0, vy1),
-      width: Math.abs(vx1 - vx0),
-      height: Math.abs(vy1 - vy0),
-    }
-  })
-}
 
 // --- Recherche de la citation dans le texte déjà rendu d'un .docx -----------------------------
 // docx-preview ne fournit aucune coordonnée (contrairement à pdfplumber côté serveur pour les
@@ -194,12 +161,16 @@ export function CitationPreview({ dossierId, source, libelle, value, citation }:
   const [location, setLocation] = useState<CitationLocation | null>(null)
   const [locateError, setLocateError] = useState<string | null>(null)
 
-  const [pdfDoc, setPdfDoc] = useState<PDFDocumentProxy | null>(null)
-  const [docError, setDocError] = useState<string | null>(null)
-  const [pageNum, setPageNum] = useState(1) // pdf.js est indexé à partir de 1
-  const [renderError, setRenderError] = useState<string | null>(null)
-  const [boxes, setBoxes] = useState<Box[]>([])
-  const [pageCss, setPageCss] = useState<{ width: number; height: number } | null>(null)
+  // Le rendu PDF proprement dit vit dans `PdfViewer` (défilement continu) : il ne reste ici que
+  // ce dont l'en-tête et le pied ont besoin pour s'afficher.
+  const [numPages, setNumPages] = useState<number | null>(null)
+  const [pageNum, setPageNum] = useState(1) // 1-indexée, comme l'affichage
+  // Incrémenté par « ‹ », « › » et « revenir à la page citée » : c'est le signal qui demande au
+  // visualisateur de se repositionner. Un simple numéro de page ne suffirait pas — redemander la
+  // page où l'on est déjà (après avoir fait défiler) ne changerait aucune valeur, donc ne
+  // déclencherait aucun effet.
+  const [nonceRetour, setNonceRetour] = useState(0)
+  const [pageDemandee, setPageDemandee] = useState<number | null>(null)
   // null = pas encore calculé : le premier rendu de page PDF ajuste le zoom pour qu'elle tienne
   // dans la largeur du volet, comme le ferait n'importe quel visualisateur PDF. Un .docx, lui,
   // part directement à 100 % (§effet ci-dessous) : une page Word rendue par docx-preview est déjà
@@ -210,10 +181,8 @@ export function CitationPreview({ dossierId, source, libelle, value, citation }:
   const [docxError, setDocxError] = useState<string | null>(null)
   const [docxHighlighted, setDocxHighlighted] = useState(true) // true tant qu'on ne sait pas encore que ça a échoué
 
-  const canvasRef = useRef<HTMLCanvasElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
   const docxContainerRef = useRef<HTMLDivElement>(null)
-  const renderTaskRef = useRef<RenderTask | null>(null)
 
   // --- Localisation de la citation (page + coordonnées du surlignage, côté serveur) ------------
   useEffect(() => {
@@ -243,40 +212,6 @@ export function CitationPreview({ dossierId, source, libelle, value, citation }:
   // .docx compris) : pour un .docx, ce champ ne dit donc rien d'utile, et un document EST
   // consultable dès que sa localisation a répondu, quel que soit ce qu'elle contient.
   const consultable = location !== null && (isPdf || isDocx || location.reason !== 'not_a_pdf')
-
-  // --- Chargement du PDF (une fois par document, réutilisé d'une citation à l'autre sur le même
-  //     fichier — cliquer deux champs sourcés par le même CCTP ne doit pas le retélécharger) -----
-  useEffect(() => {
-    if (!isPdf) return
-    let cancelled = false
-    setDocError(null)
-    // Repasse par `null` IMMÉDIATEMENT (pas seulement à la résolution du nouveau chargement) :
-    // sinon les effets de mise à l'échelle/rendu ci-dessous — qui dépendent aussi de `pdfDoc` et
-    // peuvent se redéclencher dans la même passe (ex. reset du zoom sur nouvelle citation) —
-    // continuent de voir l'ANCIEN document alors que sa tâche vient d'être détruite, et appellent
-    // `getPage()` sur un transport déjà mort (crash : « Cannot read properties of null »).
-    setPdfDoc(null)
-    // La destruction se fait exclusivement via la TÂCHE de chargement (`task.destroy()`), jamais
-    // via le document résolu : `PDFDocumentProxy` n'expose plus `.destroy()` depuis pdf.js v6. La
-    // tâche, elle, reste valide et destructible même après résolution.
-    let task: PDFDocumentLoadingTaskLike | null = null
-    ;(async () => {
-      const pdfjsLib = await import('pdfjs-dist')
-      if (cancelled) return
-      pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl
-      task = pdfjsLib.getDocument({ url: documentFileUrl(dossierId, source.document_id), withCredentials: true })
-      try {
-        const doc = await task.promise
-        if (!cancelled) setPdfDoc(doc)
-      } catch {
-        if (!cancelled) setDocError('Le document n’a pas pu être chargé.')
-      }
-    })()
-    return () => {
-      cancelled = true
-      task?.destroy()
-    }
-  }, [isPdf, dossierId, source.document_id])
 
   // --- Chargement + rendu du .docx (une fois par document, même logique que le PDF ci-dessus) ---
   useEffect(() => {
@@ -321,87 +256,23 @@ export function CitationPreview({ dossierId, source, libelle, value, citation }:
   // document laisserait l'expert sur la page 12 au lieu de la nouvelle preuve.
   useEffect(() => {
     setPageNum(location?.found && location.page !== null ? location.page + 1 : 1)
+    setPageDemandee(null)
     setZoom(isDocx ? 1 : null)
   }, [location, source.document_id, isDocx])
 
-  // Premier affichage de cette page PDF (zoom encore inconnu) : ajuste l'échelle pour qu'elle
-  // tienne dans la largeur du volet, comme le ferait n'importe quel visualisateur PDF plutôt que
-  // de choisir un pourcentage arbitraire. Séparée du rendu proprement dit (ci-dessous) : les deux
-  // ne doivent PAS tourner dans le même passage, sinon le second démarre un `render()` sur le
-  // canevas pendant que le premier (au zoom pas encore ajusté) est toujours en vol.
+  const handlePageCourante = useCallback((page: number) => setPageNum(page + 1), [])
+
+  const allerVersPage = useCallback((page1: number) => {
+    setPageDemandee(page1 - 1)
+    setNonceRetour((n) => n + 1)
+  }, [])
+
+  // Un nouveau document remet le compteur de pages à zéro tant que PdfViewer n'a pas relu le
+  // sien : sinon l'en-tête afficherait « p. 3 / 210 » sur un document qui n'en a que 4.
   useEffect(() => {
-    if (!pdfDoc || zoom !== null) return
-    let cancelled = false
-    pdfDoc.getPage(pageNum).then((page) => {
-      if (cancelled) return
-      const containerWidth = containerRef.current?.clientWidth ?? 0
-      const pageWidthCss = page.view[2] - page.view[0]
-      const fitted = containerWidth > 0 ? containerWidth / (pageWidthCss * POINTS_TO_CSS_PX) : 1
-      setZoom(Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, Math.round(fitted * 100) / 100)))
-    })
-    return () => {
-      cancelled = true
-    }
-  }, [pdfDoc, pageNum, zoom])
+    setNumPages(null)
+  }, [source.document_id])
 
-  // --- Rendu de la page PDF courante sur le canevas + calcul du surlignage -----------------------
-  useEffect(() => {
-    if (!pdfDoc || zoom === null) return
-    let cancelled = false
-    setRenderError(null)
-
-    ;(async () => {
-      try {
-        // pdf.js refuse un nouveau render() sur le même canevas tant que le précédent n'est pas
-        // RÉELLEMENT terminé — annuler ne suffit pas, il faut attendre que la promesse se règle
-        // (elle rejette avec RenderingCancelledException, qu'on avale ici).
-        if (renderTaskRef.current) {
-          renderTaskRef.current.cancel()
-          await renderTaskRef.current.promise.catch(() => {})
-        }
-        if (cancelled) return
-
-        const page = await pdfDoc.getPage(pageNum)
-        if (cancelled) return
-
-        const viewport = page.getViewport({ scale: zoom * POINTS_TO_CSS_PX })
-        const canvas = canvasRef.current
-        if (!canvas) return
-        const outputScale = window.devicePixelRatio || 1
-        canvas.width = Math.floor(viewport.width * outputScale)
-        canvas.height = Math.floor(viewport.height * outputScale)
-        const ctx = canvas.getContext('2d')
-        if (!ctx) return
-
-        const renderTask = page.render({
-          canvas,
-          canvasContext: ctx,
-          viewport,
-          transform: outputScale !== 1 ? [outputScale, 0, 0, outputScale, 0, 0] : undefined,
-        })
-        renderTaskRef.current = renderTask
-        await renderTask.promise
-        if (cancelled) return
-
-        setPageCss({ width: viewport.width, height: viewport.height })
-        setBoxes(
-          location?.page === pageNum - 1 && location.rects.length > 0
-            ? highlightBoxes(page, viewport, location.rects)
-            : [],
-        )
-      } catch (err) {
-        if (cancelled) return
-        if (err instanceof Error && err.name === 'RenderingCancelledException') return
-        setRenderError('Le rendu de la page a échoué.')
-      }
-    })()
-
-    return () => {
-      cancelled = true
-    }
-  }, [pdfDoc, pageNum, zoom, location])
-
-  const numPages = pdfDoc?.numPages ?? null
   const surPageCitee = location?.found === true && location.page === pageNum - 1
   const reason = location && !location.highlighted ? location.reason : null
 
@@ -410,7 +281,7 @@ export function CitationPreview({ dossierId, source, libelle, value, citation }:
       <div className="border-b border-bord bg-surface px-4 py-3">
         <div className={CLE}>Pièce justificative</div>
         <div className="mt-0.5 text-sm font-bold leading-tight tracking-tight">{libelle}</div>
-        <div className="text-[13px] font-semibold text-ardoise">{value ?? 'Non trouvée'}</div>
+        {value !== null && <div className="text-[13px] font-semibold text-ardoise">{value}</div>}
       </div>
 
       <div className="flex items-center justify-between gap-2 border-b border-bord px-4 py-2 font-mono text-[11.5px] text-encre-2">
@@ -421,7 +292,7 @@ export function CitationPreview({ dossierId, source, libelle, value, citation }:
           <div className="flex shrink-0 items-center gap-1">
             <button
               type="button"
-              onClick={() => setPageNum((p) => Math.max(1, p - 1))}
+              onClick={() => allerVersPage(Math.max(1, pageNum - 1))}
               disabled={pageNum <= 1}
               className="grid h-5 w-5 place-items-center text-encre-2 hover:text-encre disabled:cursor-not-allowed disabled:opacity-30"
               title="Page précédente"
@@ -434,7 +305,7 @@ export function CitationPreview({ dossierId, source, libelle, value, citation }:
             </span>
             <button
               type="button"
-              onClick={() => setPageNum((p) => Math.min(numPages, p + 1))}
+              onClick={() => allerVersPage(Math.min(numPages, pageNum + 1))}
               disabled={pageNum >= numPages}
               className="grid h-5 w-5 place-items-center text-encre-2 hover:text-encre disabled:cursor-not-allowed disabled:opacity-30"
               title="Page suivante"
@@ -448,20 +319,46 @@ export function CitationPreview({ dossierId, source, libelle, value, citation }:
         )}
       </div>
 
-      <div className="border-b border-bord bg-surligne/40 px-4 py-2 text-xs italic leading-relaxed text-encre">
-        «&nbsp;{citation}&nbsp;»
-      </div>
+      {/* Borné à trois lignes : sur une donnée d'extraction la citation tient en une phrase, mais
+          le relevé d'un rapport IA fait plusieurs centaines de caractères et occupait alors tout le
+          volet, ne laissant qu'une bande de 167 px au document — l'inverse du but recherché. Le
+          texte entier reste lisible au survol. */}
+      {citation.trim() && (
+        <div
+          title={citation}
+          className="line-clamp-3 border-b border-bord bg-surligne/40 px-4 py-2 text-xs italic leading-relaxed text-encre"
+        >
+          «&nbsp;{citation}&nbsp;»
+        </div>
+      )}
 
       {!surPageCitee && location?.found && location.page !== null && (
         <button
           type="button"
-          onClick={() => setPageNum(location.page! + 1)}
+          onClick={() => allerVersPage(location.page! + 1)}
           className="border-b border-bord bg-surface-2 px-4 py-1.5 text-left text-[11.5px] font-medium text-ardoise hover:underline"
         >
           ↩ Revenir à la page {location.page + 1}, où le passage est surligné
         </button>
       )}
 
+      {/* Le PDF gère son propre défilement (toutes les pages empilées, §PdfViewer) : il est donc
+          sorti du conteneur scrollable commun, qui ne sert plus qu'aux messages et au .docx. */}
+      {consultable && isPdf ? (
+        <>
+          {reason && <p className="px-4 pt-2 text-xs text-encre-3">{REASONS[reason] ?? ''}</p>}
+          <PdfViewer
+            url={documentFileUrl(dossierId, source.document_id)}
+            pageCible={pageDemandee ?? (location?.found ? location.page : null)}
+            rects={location?.rects ?? []}
+            zoom={zoom}
+            onZoomAjuste={setZoom}
+            onNombreDePages={setNumPages}
+            onPageCourante={handlePageCourante}
+            nonceRetour={nonceRetour}
+          />
+        </>
+      ) : (
       <div ref={containerRef} className="min-h-0 flex-1 overflow-auto p-3">
         {locateError && <p className="py-8 text-center text-sm text-encre-2">{locateError}</p>}
         {!locateError && location === null && (
@@ -469,34 +366,6 @@ export function CitationPreview({ dossierId, source, libelle, value, citation }:
         )}
         {location && !consultable && (
           <p className="py-8 text-center text-sm text-encre-2">{REASONS[location.reason ?? ''] ?? REASONS.unsupported}</p>
-        )}
-
-        {consultable && isPdf && (
-          <>
-            {reason && <p className="mb-2 text-xs text-encre-3">{REASONS[reason] ?? ''}</p>}
-            {docError && <p className="py-8 text-center text-sm text-encre-2">{docError}</p>}
-            {!docError && !pdfDoc && <p className="py-8 text-center text-sm text-encre-3">Chargement du document…</p>}
-            {renderError && <p className="mb-2 text-xs text-rouge">{renderError}</p>}
-            {pdfDoc && (
-              <div
-                className="relative mx-auto bg-surface shadow-sm"
-                style={pageCss ? { width: pageCss.width, height: pageCss.height } : undefined}
-              >
-                <canvas
-                  ref={canvasRef}
-                  className="block border border-bord-fort"
-                  style={pageCss ? { width: pageCss.width, height: pageCss.height } : undefined}
-                />
-                {boxes.map((box, i) => (
-                  <div
-                    key={i}
-                    className="pointer-events-none absolute rounded-[1px] bg-surligne/55 outline outline-1 outline-offset-0 outline-[#f0a000]"
-                    style={{ left: box.left, top: box.top, width: box.width, height: box.height }}
-                  />
-                ))}
-              </div>
-            )}
-          </>
         )}
 
         {consultable && isDocx && (
@@ -517,6 +386,7 @@ export function CitationPreview({ dossierId, source, libelle, value, citation }:
           </>
         )}
       </div>
+      )}
 
       <div className="flex items-center gap-2 border-t border-bord bg-surface px-4 py-2.5">
         <a
@@ -560,10 +430,3 @@ export function CitationPreview({ dossierId, source, libelle, value, citation }:
   )
 }
 
-/** Sous-ensemble de `PDFDocumentLoadingTask` réellement utilisé ici — évite d'importer le type
- * complet depuis `pdfjs-dist` juste pour une variable locale typée dans un effet où le module
- * lui-même n'est importé que dynamiquement. */
-interface PDFDocumentLoadingTaskLike {
-  promise: Promise<PDFDocumentProxy>
-  destroy(): Promise<void>
-}

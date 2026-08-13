@@ -270,8 +270,12 @@ def test_build_topic_context_keeps_every_pivot_document_attributed_to_its_file()
 
     assert context.documents_used == ["arrete_pc.pdf"] + [c.filename for c in cctps]
     assert context.documents_degraded == []
-    assert "### Document : arrete_pc.pdf" in context.text
-    assert "### Document : cctp_29.pdf" in context.text
+    assert "### [D1] arrete_pc.pdf" in context.text
+    assert "### [D31] cctp_29.pdf" in context.text
+    # Chaque document du prompt reçoit une étiquette distincte, base des renvois du LLM — dans
+    # l'ordre où les blocs apparaissent, pour que le modèle puisse les recopier de visu.
+    assert [r.filename for r in context.refs.values()] == ["arrete_pc.pdf"] + [c.filename for c in cctps]
+    assert len(set(context.refs)) == 31
     assert 'ERP "type O, catégorie 2".' in context.text
 
 
@@ -293,7 +297,7 @@ def test_build_topic_context_groups_documents_without_information():
     assert context.documents_without_info == ["b.pdf"]
     assert context.documents_degraded == []
     assert "sans information utile" in context.text
-    assert context.text.count("### Document : ") == 1
+    assert context.text.count("### [D") == 1
 
 
 def test_build_topic_context_falls_back_to_raw_excerpt_when_summary_is_missing():
@@ -487,7 +491,7 @@ def test_assemble_report_includes_cartography_and_topics_in_schema_order():
         TopicOutcome(topic_id="t1", content_md="Contenu 1", model_name=None, error=None),
     ]
 
-    report = assemble_report(outcomes, schema, cartography_md="| a | b |")
+    report = assemble_report(outcomes, schema, cartography_md="| a | b |").markdown
 
     assert report.index("Premier") < report.index("Second")
     assert "Contenu 1" in report
@@ -511,7 +515,7 @@ def test_assemble_report_traces_sources_and_documents_without_information():
         )
     ]
 
-    report = assemble_report(outcomes, schema)
+    report = assemble_report(outcomes, schema).markdown
 
     assert "_Sources (1) : a.pdf_" in report
     assert "+2 pivot(s) sans information utile" in report
@@ -535,7 +539,7 @@ def test_sources_note_truncates_long_file_lists_but_keeps_the_count():
         )
     ]
 
-    report = assemble_report(outcomes, schema)
+    report = assemble_report(outcomes, schema).markdown
 
     assert "_Sources (20) : " in report  # le compte total reste affiché, rien n'est masqué
     assert "lot00.pdf" in report
@@ -560,7 +564,7 @@ def test_sources_note_never_truncates_degraded_documents():
         )
     ]
 
-    report = assemble_report(outcomes, schema)
+    report = assemble_report(outcomes, schema).markdown
 
     assert all(name in report for name in degraded)
 
@@ -569,7 +573,47 @@ def test_assemble_report_shows_error_note_for_failed_topic():
     schema = SynthesisSchema(topics=[_topic(id="t1", titre="Premier")])
     outcomes = [TopicOutcome(topic_id="t1", content_md=None, model_name=None, error="API indisponible")]
 
-    report = assemble_report(outcomes, schema)
+    report = assemble_report(outcomes, schema).markdown
 
     assert "Section non générée" in report
     assert "API indisponible" in report
+
+
+# --- Citations : renvois [Dn] du LLM → marqueurs globaux + registre -----------------------------
+
+def test_assemble_report_resolves_llm_refs_into_citation_markers_and_registry():
+    """La synthèse rédige en prose libre : les renvois posés en fin de phrase deviennent des
+    marqueurs résolubles, et le registre permet d'ouvrir le document depuis l'écran."""
+    schema = SynthesisSchema(topics=[_topic(id="t1", titre="Thème 1")])
+    outcome = TopicOutcome(
+        topic_id="t1",
+        content_md="Le classement ERP est de type O, catégorie 2. [D1] Le CCTP retient la 5e. [D2]",
+        model_name="m",
+        error=None,
+        citation_refs={
+            "D1": engine.CitationRef(document_id="pc", filename="arrete_pc.pdf", excerpt="ERP type O."),
+            "D2": engine.CitationRef(document_id="c0", filename="cctp_0.pdf", excerpt="ERP 5e catégorie."),
+        },
+    )
+
+    report = assemble_report([outcome], schema)
+
+    assert "[D1]" not in report.markdown and "[D2]" not in report.markdown
+    assert "type O, catégorie 2. ⟦cite:c1⟧" in report.markdown
+    assert report.citations == {
+        "c1": {"document_id": "pc", "filename": "arrete_pc.pdf", "excerpt": "ERP type O."},
+        "c2": {"document_id": "c0", "filename": "cctp_0.pdf", "excerpt": "ERP 5e catégorie."},
+    }
+
+
+def test_assemble_report_leaves_deterministic_topics_untouched():
+    """Un thème `extraction_fields` est un reformatage sans appel LLM : il n'a aucune étiquette, et
+    doit traverser la résolution sans être modifié."""
+    schema = SynthesisSchema(topics=[_topic(id="t1", titre="Thème 1")])
+    contenu = "| Donnée | Valeur | Source |\n|---|---|---|\n| Maître d'ouvrage | Ville de X | pc.pdf |"
+    outcome = TopicOutcome(topic_id="t1", content_md=contenu, model_name=None, error=None)
+
+    report = assemble_report([outcome], schema)
+
+    assert contenu in report.markdown
+    assert report.citations == {}

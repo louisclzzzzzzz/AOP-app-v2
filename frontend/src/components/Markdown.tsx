@@ -1,7 +1,14 @@
 import { createElement, type ReactNode } from 'react'
+import type { Citation } from '../types'
+import { TexteCite } from './CitationChip'
 
 interface Props {
   text: string
+  /** Registre des citations du rapport. Fourni, les marqueurs `⟦cite:cN⟧` du texte deviennent des
+   * pastilles cliquables ; absent, ils sont simplement absents du texte (rapport sans citations). */
+  citations?: Record<string, Citation>
+  onOpenCitation?: (citation: Citation) => void
+  documentActif?: string | null
 }
 
 /** Rendu Markdown minimal, sans dépendance externe — couvre le sous-ensemble produit par les
@@ -12,19 +19,37 @@ interface Props {
  * parfois plusieurs titres consécutifs sans ligne vide entre eux (ex. "### Objectifs\n####
  * Environnementaux\ntexte..."), ce qu'un découpage par bloc fusionnerait en un seul paragraphe et
  * afficherait les `#`/`##` littéralement au lieu de les styler. */
-export function Markdown({ text }: Props) {
+export function Markdown({ text, citations, onOpenCitation, documentActif }: Props) {
+  // Le rendu inline est injecté plutôt que codé en dur : c'est le SEUL point qui change entre un
+  // rapport avec citations et un rapport sans, et le reste du parseur (titres, tableaux, listes)
+  // n'a pas à connaître leur existence.
+  const renderInline: RenderInline =
+    citations && onOpenCitation
+      ? (texte) => (
+          <TexteCite
+            texte={texte}
+            citations={citations}
+            onOpen={onOpenCitation}
+            documentActif={documentActif}
+          />
+        )
+      : parseInline
+
   return (
     <div className="flex flex-col gap-2 text-sm leading-relaxed text-encre">
-      {renderLines(text.replace(/\r\n/g, '\n').split('\n'))}
+      {renderLines(text.replace(/\r\n/g, '\n').split('\n'), renderInline)}
     </div>
   )
 }
+
+type RenderInline = (texte: string) => ReactNode
 
 const HEADING_RE = /^(#{1,6})\s+(.*)$/
 const TABLE_SEPARATOR_RE = /^\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?$/
 const UL_RE = /^[-*]\s+(.*)$/
 const OL_RE = /^\d+\.\s+(.*)$/
 const INDENTED_RE = /^\s+\S/
+const HR_RE = /^-{3,}$/
 
 const HEADING_CLASSES: Record<number, string> = {
   1: 'text-base font-semibold text-encre',
@@ -56,7 +81,7 @@ function splitTableRow(line: string): string[] {
     .map((cell) => cell.trim())
 }
 
-function renderLines(rawLines: string[]): ReactNode[] {
+function renderLines(rawLines: string[], renderInline: RenderInline): ReactNode[] {
   const lines = rawLines.map((l) => l.replace(/\s+$/, ''))
   const out: ReactNode[] = []
   let i = 0
@@ -74,8 +99,14 @@ function renderLines(rawLines: string[]): ReactNode[] {
     if (heading) {
       const level = heading[1].length
       out.push(
-        createElement(`h${level}`, { key: key++, className: HEADING_CLASSES[level] }, parseInline(heading[2])),
+        createElement(`h${level}`, { key: key++, className: HEADING_CLASSES[level] }, renderInline(heading[2])),
       )
+      i++
+      continue
+    }
+
+    if (HR_RE.test(line.trim())) {
+      out.push(<hr key={key++} className="border-bord" />)
       i++
       continue
     }
@@ -94,7 +125,7 @@ function renderLines(rawLines: string[]): ReactNode[] {
             <tr className="border-b border-bord-fort bg-surface-2">
               {header.map((cell, ci) => (
                 <th key={ci} className="px-2 py-1 font-medium text-encre-2">
-                  {parseInline(cell)}
+                  {renderInline(cell)}
                 </th>
               ))}
             </tr>
@@ -104,7 +135,7 @@ function renderLines(rawLines: string[]): ReactNode[] {
               <tr key={ri} className="border-b border-surface-3">
                 {row.map((cell, ci) => (
                   <td key={ci} className="px-2 py-1.5 align-top">
-                    {parseInline(cell)}
+                    {renderInline(cell)}
                   </td>
                 ))}
               </tr>
@@ -133,14 +164,14 @@ function renderLines(rawLines: string[]): ReactNode[] {
         }
         items.push(
           <li key={items.length}>
-            {parseInline(marker[1])}
+            {renderInline(marker[1])}
             {extraLines.map((l, li) => (
-              <span key={`e${li}`}> {parseInline(l)}</span>
+              <span key={`e${li}`}> {renderInline(l)}</span>
             ))}
             {subBullets.length > 0 && (
               <ul className="mt-1 list-disc pl-5">
                 {subBullets.map((b, bi) => (
-                  <li key={bi}>{parseInline(b)}</li>
+                  <li key={bi}>{renderInline(b)}</li>
                 ))}
               </ul>
             )}
@@ -162,6 +193,7 @@ function renderLines(rawLines: string[]): ReactNode[] {
       i < lines.length &&
       lines[i].trim() &&
       !HEADING_RE.test(lines[i]) &&
+      !HR_RE.test(lines[i].trim()) &&
       !UL_RE.test(lines[i]) &&
       !OL_RE.test(lines[i]) &&
       !lines[i].trim().startsWith('|')
@@ -174,7 +206,7 @@ function renderLines(rawLines: string[]): ReactNode[] {
         {paraLines.map((l, li) => (
           <span key={li}>
             {li > 0 && <br />}
-            {parseInline(l)}
+            {renderInline(l)}
           </span>
         ))}
       </p>,

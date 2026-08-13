@@ -20,7 +20,9 @@ from __future__ import annotations
 import logging
 import re
 import unicodedata
+from collections.abc import Callable
 from dataclasses import dataclass, field
+from functools import partial
 from typing import Literal
 
 from pydantic import BaseModel
@@ -30,6 +32,10 @@ from app.audit.schema import LOT_FILTERED_CATEGORIES, AuditSchema, AuditSection
 from app.ingestion.document_signal import DocumentSignal
 from app.mistral import call_log
 from app.mistral.client import call_structured_chat, document_summary_max_tokens
+# `REFS_PROMPT_RULES` n'est pas repris ici : l'audit produit des CHAMPS structurés, donc sa consigne
+# nomme précisément lesquels doivent porter un renvoi (§_SYSTEM_PROMPT) — la formulation générique
+# du module partagé sert la synthèse, qui rédige en prose libre.
+from app.reports.citations import CitationAllocator, CitationRef, strip_refs
 
 logger = logging.getLogger(__name__)
 
@@ -346,6 +352,9 @@ class SectionOutcome:
     documents_used: list[str] = field(default_factory=list)
     candidates_count: int = 0
     documents_degraded: list[str] = field(default_factory=list)
+    # Étiquettes (`D1`…) proposées au LLM pour CETTE section : elles sont locales à la section, donc
+    # ré-attribuées globalement à l'assemblage (§`assemble_report`).
+    citation_refs: dict[str, CitationRef] = field(default_factory=dict)
 
 
 _SYSTEM_PROMPT = """Tu es un Expert Senior en Ingénierie des Risques Construction, en charge de \
@@ -407,6 +416,22 @@ certificats, essais, avis du bureau de contrôle à réclamer). Chaque élément
 actionnable, et se suffit à lui-même.
 - source : nom des fichiers sources et articles/avis cités.
 
+Renvois aux documents (impératif) : chaque document du contexte porte une étiquette entre \
+crochets en tête de son bloc (« ### [D1] nom_du_fichier.pdf … »). À la FIN de chaque bloc narratif \
+qui s'appuie sur un document — c'est-à-dire à la fin de `expose_situation`, à la fin de CHAQUE \
+élément de `analyse_expert` et à la fin de CHAQUE élément de `recommandations` — recopie \
+l'étiquette du ou des documents qui fondent ce que tu viens d'écrire, par exemple « … non validée \
+en phase exécution. [D1][D4] ». Règles :
+- une étiquette par crochet, collées entre elles : « [D1][D2] », JAMAIS « [D1, D2] » ni « [D1 D2] » ;
+- n'utilise QUE des étiquettes réellement présentes dans le contexte fourni, jamais une étiquette \
+inventée ni le nom du fichier à la place ;
+- place-les en toute fin de bloc, après le point final, et nulle part ailleurs — ni dans \
+`synoptique_description`, ni dans `synoptique_preconisation`, ni dans `impact_assurabilite`, ni \
+dans `source` ;
+- un bloc qui relève d'un raisonnement d'expert général (référentiel DTU/Eurocode, phénomène \
+physique) sans s'appuyer sur un document précis n'en porte aucune : mieux vaut pas d'étiquette \
+qu'une étiquette fausse.
+
 Format des valeurs texte (impératif) : n'insère JAMAIS de retour à la ligne, de puce (« - ») en \
 tête ni de numérotation (« 1. ») à l'intérieur d'une valeur — ce sont les listes `analyse_expert` \
 et `recommandations` qui structurent le propos, un élément par point. N'utilise pas non plus de \
@@ -461,9 +486,9 @@ def select_section_documents(section: AuditSection, documents: list[DocumentSign
     return selected
 
 
-def _document_header(doc: DocumentSignal) -> str:
+def _document_header(doc: DocumentSignal, ref: str) -> str:
     return (
-        f"### Document : {doc.filename} (catégorie : {doc.final_category or 'inconnue'}"
+        f"### [{ref}] {doc.filename} (catégorie : {doc.final_category or 'inconnue'}"
         + (f", lot : {doc.final_lot}" if doc.final_lot else "")
         + ")"
     )
@@ -475,6 +500,8 @@ class _SectionContext:
     documents_used: list[str]
     documents_degraded: list[str]
     documents_without_info: list[str]
+    # Étiquette (`D1`…) → document cité. Sert à résoudre les renvois du LLM à l'assemblage.
+    refs: dict[str, CitationRef] = field(default_factory=dict)
 
 
 def _build_section_context(
@@ -496,14 +523,23 @@ def _build_section_context(
     used: list[str] = []
     degraded: list[str] = []
     without_info: list[str] = []
+    refs: dict[str, CitationRef] = {}
     remaining = fallback_total_budget
+
+    # Les étiquettes ne sont attribuées qu'aux documents RÉELLEMENT présents dans le prompt (un
+    # document écarté faute de budget n'en reçoit pas) : le LLM ne peut renvoyer qu'à ce qu'il voit.
+    def _next_ref(doc: DocumentSignal, excerpt: str) -> str:
+        ref = f"D{len(refs) + 1}"
+        refs[ref] = CitationRef(document_id=doc.document_id, filename=doc.filename, excerpt=excerpt)
+        return ref
 
     for doc in candidates:
         summary = summaries.get(doc.document_id)
-        header = _document_header(doc)
 
         if summary is not None and section.id in summary.constats_by_section:
-            blocks.append(f"{header}\n{summary.constats_by_section[section.id]}")
+            constats = summary.constats_by_section[section.id]
+            header = _document_header(doc, _next_ref(doc, constats))
+            blocks.append(f"{header}\n{constats}")
             used.append(doc.filename)
             continue
 
@@ -544,6 +580,9 @@ def _build_section_context(
                 limit_value=cap,
                 extra={"section": section.id},
             )
+        # Repli « extrait brut » : le document reste citable (l'expert doit pouvoir l'ouvrir), mais
+        # sans relevé il n'y a pas de paragraphe propre à montrer au survol — d'où l'extrait vide.
+        header = _document_header(doc, _next_ref(doc, ""))
         blocks.append(f"{header} — relevé indisponible, extrait brut du document (tronqué) :\n{excerpt}")
         used.append(doc.filename)
         degraded.append(doc.filename)
@@ -559,6 +598,7 @@ def _build_section_context(
         documents_used=used,
         documents_degraded=degraded,
         documents_without_info=without_info,
+        refs=refs,
     )
 
 
@@ -627,6 +667,7 @@ def generate_section(
             documents_used=context.documents_used,
             candidates_count=len(candidates),
             documents_degraded=context.documents_degraded,
+            citation_refs=context.refs,
         )
 
     return SectionOutcome(
@@ -637,6 +678,7 @@ def generate_section(
         documents_used=context.documents_used,
         candidates_count=len(candidates),
         documents_degraded=context.documents_degraded,
+        citation_refs=context.refs,
     )
 
 
@@ -655,8 +697,9 @@ def _synoptic_table(outcomes: list[SectionOutcome]) -> str:
             any_row = True
             risque_alea = f"{r.risque} / {r.alea}" if r.alea else r.risque
             lines.append(
-                f"| **{_escape_cell(r.element_ouvrage)}** | {_escape_cell(risque_alea)} | "
-                f"{_escape_cell(r.synoptique_description)} | {_escape_cell(r.synoptique_preconisation)} | {r.statut} |"
+                f"| **{_escape_cell(strip_refs(r.element_ouvrage))}** | {_escape_cell(strip_refs(risque_alea))} | "
+                f"{_escape_cell(strip_refs(r.synoptique_description))} | "
+                f"{_escape_cell(strip_refs(r.synoptique_preconisation))} | {r.statut} |"
             )
     if not any_row:
         return "_Aucun risque identifié — voir les sections ci-dessous et l'état des documents du dossier._"
@@ -675,20 +718,23 @@ def _clean_items(items: list[str]) -> list[str]:
     return cleaned
 
 
-def _render_risk_detail(r: RiskItem) -> str:
-    header = f"[STATUT : {r.statut}] | [{r.element_ouvrage}] | [{r.risque} / {r.alea}]" if r.alea else f"[STATUT : {r.statut}] | [{r.element_ouvrage}] | [{r.risque}]"
+def _render_risk_detail(r: RiskItem, resolve: Callable[[str], str]) -> str:
+    element = strip_refs(r.element_ouvrage)
+    risque = strip_refs(r.risque)
+    alea = strip_refs(r.alea)
+    header = f"[STATUT : {r.statut}] | [{element}] | [{risque} / {alea}]" if alea else f"[STATUT : {r.statut}] | [{element}] | [{risque}]"
     # `analyse_expert` : un paragraphe par point de vérification (les éléments commencent déjà par
     # « → »), donc séparés par une ligne vide plutôt que rendus en puces.
-    analyse = "\n\n".join(_clean_items(r.analyse_expert)) or "_Non renseigné._"
-    recommandations = _clean_items(r.recommandations)
+    analyse = "\n\n".join(resolve(item) for item in _clean_items(r.analyse_expert)) or "_Non renseigné._"
+    recommandations = [resolve(item) for item in _clean_items(r.recommandations)]
     reco_block = "\n".join(f"- {item}" for item in recommandations) if recommandations else "_Non renseignée._"
     return (
         f"{header}\n\n"
-        f"**Exposé de la situation :** {r.expose_situation}\n\n"
+        f"**Exposé de la situation :** {resolve(r.expose_situation)}\n\n"
         f"**Analyse de l'Expert & Référentiel :**\n\n{analyse}\n\n"
-        f"**Impact Assurabilité :** {r.impact_assurabilite}\n\n"
+        f"**Impact Assurabilité :** {strip_refs(r.impact_assurabilite)}\n\n"
         f"**Recommandation de levée de doute :**\n\n{reco_block}\n\n"
-        f"**Source :** {r.source}"
+        f"**Source :** {strip_refs(r.source)}"
     )
 
 
@@ -712,12 +758,23 @@ def _sources_note(outcome: SectionOutcome) -> str:
     return " ".join(parts)
 
 
+@dataclass(frozen=True)
+class AssembledReport:
+    markdown: str
+    # Clé de marqueur (`c1`…) → {document_id, filename, excerpt}. Livré à côté du Markdown plutôt
+    # qu'encodé dedans : le rapport reste lisible tel quel, et les exports Word/PDF n'ont qu'à
+    # effacer les marqueurs sans avoir à démêler un extrait de plusieurs centaines de caractères
+    # au milieu d'une phrase.
+    citations: dict[str, dict[str, str]]
+
+
 def assemble_report(
     outcomes: list[SectionOutcome],
     schema: AuditSchema,
     *,
     georisques: GeorisquesReport | None = None,
-) -> str:
+) -> AssembledReport:
+    allocator = CitationAllocator()
     by_id = {o.section_id: o for o in outcomes}
     sections: list[str] = ["# Audit des risques — Phase 2"]
 
@@ -737,7 +794,8 @@ def assemble_report(
         if not outcome.risks:
             detail_parts.append("_Aucun risque saillant identifié pour cette section dans le corpus fourni._")
         else:
-            blocks = [_render_risk_detail(r) for r in outcome.risks]
+            resolve = partial(allocator.resolve, scope=section.id, refs=outcome.citation_refs)
+            blocks = [_render_risk_detail(r, resolve) for r in outcome.risks]
             body = "\n\n--------------------------------------------------------------------------------\n\n".join(blocks)
             note = _sources_note(outcome)
             if note:
@@ -745,4 +803,4 @@ def assemble_report(
             detail_parts.append(body)
 
     sections.append("\n\n".join(detail_parts))
-    return "\n\n".join(sections) + "\n"
+    return AssembledReport(markdown="\n\n".join(sections) + "\n", citations=allocator.registry)
