@@ -3,6 +3,7 @@ import type { ClassificationEntry, ReorgReportEntry } from '../types'
 
 interface TreeLeaf {
   name: string
+  originalName?: string
   meta?: string
   documentId?: string
 }
@@ -49,7 +50,11 @@ export function classificationEntriesToTree(entries: ClassificationEntry[]): Tre
         if (e.final_lot) segments.push(`LOT ${e.final_lot}`)
         return {
           segments,
-          leaf: { name: e.final_filename ?? e.filename, meta: e.is_manually_corrected ? 'corrigé' : undefined },
+          leaf: {
+            name: e.final_filename ?? e.filename,
+            originalName: e.filename,
+            meta: e.is_manually_corrected ? 'corrigé' : undefined,
+          },
         }
       }),
   )
@@ -62,7 +67,8 @@ export function reorgReportEntriesToTree(entries: ReorgReportEntry[]): TreeNode 
     entries.map((e) => {
       const segments = e.target.split('/')
       const name = segments.pop() ?? e.target
-      return { segments, leaf: { name, documentId: e.document_id } }
+      const originalName = e.source.split('/').pop() ?? e.source
+      return { segments, leaf: { name, originalName, documentId: e.document_id } }
     }),
   )
 }
@@ -201,31 +207,41 @@ function FolderRow({
             />
           ))}
           {showFiles &&
-            files.map((file, i) => (
-              <div
-                key={i}
-                className="relative flex items-center gap-1.5 px-1.5 py-1 text-xs text-encre-2"
-                title={file.name}
-              >
-                <TreeConnector />
-                {selectable && file.documentId ? (
-                  <input
-                    type="checkbox"
-                    checked={selected?.has(file.documentId) ?? false}
-                    onChange={() => file.documentId && onToggleFile?.(file.documentId)}
-                    className="shrink-0"
-                  />
-                ) : (
-                  <span className="shrink-0 text-bord-fort">·</span>
-                )}
-                <span className="truncate">{file.name}</span>
-                {file.meta && (
-                  <span className="ml-1 shrink-0 rounded bg-ambre-clair px-1 text-[10px] text-ambre">
-                    {file.meta}
+            files.map((file, i) => {
+              const renamed = Boolean(file.originalName) && file.originalName !== file.name
+              return (
+                <div
+                  key={i}
+                  className="relative flex items-center gap-1.5 px-1.5 py-1 text-xs text-encre-2"
+                  title={renamed ? `${file.name}\n(nom d'origine : ${file.originalName})` : file.name}
+                >
+                  <TreeConnector />
+                  {selectable && file.documentId ? (
+                    <input
+                      type="checkbox"
+                      checked={selected?.has(file.documentId) ?? false}
+                      onChange={() => file.documentId && onToggleFile?.(file.documentId)}
+                      className="shrink-0"
+                    />
+                  ) : (
+                    <span className="shrink-0 text-bord-fort">·</span>
+                  )}
+                  <span className="flex min-w-0 flex-1 flex-col">
+                    <span className="truncate">{file.name}</span>
+                    {renamed && (
+                      <span className="truncate text-[10px] text-encre-3">
+                        orig. {file.originalName}
+                      </span>
+                    )}
                   </span>
-                )}
-              </div>
-            ))}
+                  {file.meta && (
+                    <span className="ml-1 shrink-0 rounded bg-ambre-clair px-1 text-[10px] text-ambre">
+                      {file.meta}
+                    </span>
+                  )}
+                </div>
+              )
+            })}
         </div>
       )}
     </div>
