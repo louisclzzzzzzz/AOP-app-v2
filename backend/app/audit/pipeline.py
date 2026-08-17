@@ -74,6 +74,7 @@ def _document_signals(dossier_id: str) -> list[DocumentSignal]:
             {
                 "id": d.id,
                 "filename": d.filename,
+                "final_filename": d.final_filename,
                 "final_category": d.final_category,
                 "final_lot": d.final_lot,
                 "classification_confidence": d.classification_confidence,

@@ -530,7 +530,11 @@ def _build_section_context(
     # document écarté faute de budget n'en reçoit pas) : le LLM ne peut renvoyer qu'à ce qu'il voit.
     def _next_ref(doc: DocumentSignal, excerpt: str) -> str:
         ref = f"D{len(refs) + 1}"
-        refs[ref] = CitationRef(document_id=doc.document_id, filename=doc.filename, excerpt=excerpt)
+        # Le nom normalisé (étape 1) est celui que l'expert reconnaît dans l'arborescence : le nom
+        # d'origine dans l'archive lui est souvent opaque (export horodaté, sigle de l'auteur…).
+        refs[ref] = CitationRef(
+            document_id=doc.document_id, filename=doc.final_filename or doc.filename, excerpt=excerpt
+        )
         return ref
 
     for doc in candidates:

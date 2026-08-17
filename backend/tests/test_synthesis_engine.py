@@ -617,3 +617,25 @@ def test_assemble_report_leaves_deterministic_topics_untouched():
 
     assert contenu in report.markdown
     assert report.citations == {}
+
+
+def test_build_topic_context_shows_the_normalized_filename_in_citations_when_available():
+    """Même règle que l'audit : le nom normalisé à l'étape 1 est celui que l'expert reconnaît,
+    donc celui affiché par la pastille de citation."""
+    topic = _topic(id="t1", pivot_categories=["TECH/RICT"])
+    doc = _doc(document_id="a", filename="2024_0129_export.pdf", final_filename="RICT.pdf", final_category="TECH/RICT")
+    summaries = _index(_summary(doc, summaries_by_topic={"t1": "Constat."}))
+
+    context = engine._build_topic_context(topic, [doc], summaries)
+
+    assert context.refs["D1"].filename == "RICT.pdf"
+
+
+def test_build_topic_context_falls_back_to_the_original_filename_when_not_normalized():
+    topic = _topic(id="t1", pivot_categories=["TECH/RICT"])
+    doc = _doc(document_id="a", filename="2024_0129_export.pdf", final_filename=None, final_category="TECH/RICT")
+    summaries = _index(_summary(doc, summaries_by_topic={"t1": "Constat."}))
+
+    context = engine._build_topic_context(topic, [doc], summaries)
+
+    assert context.refs["D1"].filename == "2024_0129_export.pdf"

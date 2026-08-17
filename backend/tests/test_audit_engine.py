@@ -612,3 +612,28 @@ def test_assemble_report_leaves_untouched_a_parenthesis_that_is_not_a_citation()
 
     assert "La zone (D1) du plan" in report.markdown  # parenthèses : intactes
     assert "[D4]" not in report.markdown  # crochets : effacés
+
+
+def test_assemble_report_shows_the_normalized_filename_in_citations_when_available():
+    """Le nom d'origine dans l'archive (`filename`) est souvent opaque pour l'expert — c'est le
+    nom normalisé à l'étape 1 (`final_filename`) qu'il reconnaît dans l'arborescence, donc celui
+    que la pastille de citation doit afficher."""
+    schema = _schema()
+    context = engine._build_section_context(
+        _section(id="s1", pivot_categories=["TECH/RICT"]),
+        [_doc(document_id="a", filename="2024_0129_export.pdf", final_filename="LOT 01 - CCTP.pdf", final_category="TECH/RICT")],
+        {"a": _summary(_doc(document_id="a", final_category="TECH/RICT"), constats_by_section={"s1": "Constat."})},
+    )
+    assert context.refs["D1"].filename == "LOT 01 - CCTP.pdf"
+
+
+def test_assemble_report_falls_back_to_the_original_filename_when_not_normalized():
+    """Un document non encore normalisé (final_filename absent) garde son nom d'origine plutôt que
+    de laisser la pastille sans nom."""
+    schema = _schema()
+    context = engine._build_section_context(
+        _section(id="s1", pivot_categories=["TECH/RICT"]),
+        [_doc(document_id="a", filename="2024_0129_export.pdf", final_filename=None, final_category="TECH/RICT")],
+        {"a": _summary(_doc(document_id="a", final_category="TECH/RICT"), constats_by_section={"s1": "Constat."})},
+    )
+    assert context.refs["D1"].filename == "2024_0129_export.pdf"
