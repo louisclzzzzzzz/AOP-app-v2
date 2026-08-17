@@ -637,46 +637,6 @@ def build_documents_cartography(documents: list[DocumentSignal], taxonomy: Taxon
     return "\n".join(lines)
 
 
-# Au-delà de ce nombre, la liste des fichiers exploités est tronquée dans la note de traçabilité.
-# Sur un dossier à 24 CCTP par lot, cette ligne atteignait ~1 500 caractères PAR SECTION, soit à
-# elle seule une part majeure du rapport — pour une information de second plan, la source précise
-# de chaque donnée étant déjà portée par la colonne "Source" des tableaux. Le compte total reste
-# affiché, donc rien n'est masqué silencieusement.
-SOURCES_NOTE_MAX_FILENAMES = 6
-
-
-def _format_filenames(filenames: list[str], *, limit: int = SOURCES_NOTE_MAX_FILENAMES) -> str:
-    if len(filenames) <= limit:
-        return ", ".join(filenames)
-    hidden = len(filenames) - limit
-    return ", ".join(filenames[:limit]) + f", +{hidden} autre(s)"
-
-
-def _sources_note(outcome: TopicOutcome) -> str:
-    """Ligne de traçabilité sous une section : les fichiers réellement exploités pour ce thème.
-    C'est la trace de sourcing retenue en production — les relevés du map n'ont plus à porter une
-    citation par phrase (besoin de vérification propre à la phase de test)."""
-    if not outcome.candidates_count:
-        return ""
-    parts: list[str] = []
-    if outcome.documents_used:
-        parts.append(
-            f"_Sources ({len(outcome.documents_used)}) : " + _format_filenames(outcome.documents_used) + "_"
-        )
-    without_info = outcome.candidates_count - len(outcome.documents_used)
-    if without_info > 0:
-        parts.append(f"_(+{without_info} pivot(s) sans information utile)_")
-    if outcome.documents_degraded:
-        # Jamais tronquée : c'est un signal de qualité dégradée, l'expert doit voir tous les
-        # fichiers concernés pour juger s'il peut se fier à la section.
-        parts.append(
-            "_(relevé indisponible, extrait brut tronqué utilisé pour : "
-            + ", ".join(outcome.documents_degraded)
-            + ")_"
-        )
-    return " ".join(parts)
-
-
 @dataclass(frozen=True)
 class AssembledReport:
     markdown: str
@@ -708,9 +668,6 @@ def assemble_report(
                 scope=topic.id,
                 refs=outcome.citation_refs,
             )
-            note = _sources_note(outcome)
-            if note:
-                body += "\n\n" + note
         sections.append(f"## {topic.titre}\n\n{body}")
 
     return AssembledReport(markdown="\n\n".join(sections) + "\n", citations=allocator.registry)

@@ -304,12 +304,6 @@ function CarteRisque({
             </Bloc>
           )}
 
-          {risque.source && (
-            <p className="border-t border-bord pt-2.5 font-mono text-[10.5px] leading-relaxed text-encre-3">
-              {risque.source}
-            </p>
-          )}
-
           {risque.brut && <p className="whitespace-pre-wrap text-xs text-encre-2">{risque.brut}</p>}
         </div>
       )}

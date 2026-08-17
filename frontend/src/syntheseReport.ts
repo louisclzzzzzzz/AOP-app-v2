@@ -14,9 +14,6 @@ export interface SectionSynthese {
   ancre: string
   /** Corps du thème, en Markdown. */
   corps: string
-  /** Note de traçabilité de fin de thème (« _Sources (N) : …_ »), sortie du corps pour être
-   * affichée en pied de section dans une typographie distincte. */
-  note: string | null
   /** Paragraphes de divergence entre documents, isolés du corps : le prompt demande au modèle de
    * signaler explicitement toute contradiction (classement ERP différent entre le CCTP et l'arrêté
    * PC, phasage en 2 ou 4 phases selon la pièce…) plutôt que de trancher en silence. C'est LE
@@ -39,11 +36,15 @@ const DIVERGENCE_RE = /^\s*(?:\*\*)?\s*(?:⚠️\s*)?Divergences?\b[^:*\n]{0,40}
 const ABSENCE_RE = /non précisé|non renseigné|absent des documents|non disponible|non fourni/gi
 
 const H2_RE = /^##\s+(.*)$/
-const NOTE_RE = /^_\(?Sources?\b.*_$/
 /** Le modèle emballe parfois sa réponse dans une clôture de bloc de code (« ```markdown … ``` »)
  * alors qu'on lui demande du Markdown brut. Sans retrait, ces trois accents graves s'affichaient
  * littéralement en tête de thème — le rendu Markdown maison ne gère pas les blocs de code. */
 const CLOTURE_CODE_RE = /^```\w*\s*$/
+/** Note de traçabilité que le backend ajoutait en fin de thème avant l'introduction des pastilles
+ * de citation (retirée à l'assemblage, §`app/synthesis/engine.py`). Un rapport généré avant ce
+ * retrait la porte encore dans son Markdown stocké : sans ce filtre, elle s'afficherait telle
+ * quelle en pied de thème le temps que le dossier soit régénéré. */
+const ANCIENNE_NOTE_SOURCES_RE = /^_\(?Sources?\b.*_$/
 
 function retirerClotureCode(lignes: string[]): string[] {
   return lignes.filter((l) => !CLOTURE_CODE_RE.test(l.trim()))
@@ -79,23 +80,23 @@ export function parseSyntheseReport(markdown: string): SectionSynthese[] {
 
   const clore = () => {
     if (titre === null) return
-    // La note de sources est collée en fin de corps : on la ressort pour la styler à part.
-    let note: string | null = null
-    while (corps.length && !corps[corps.length - 1].trim()) corps.pop()
-    if (corps.length && NOTE_RE.test(corps[corps.length - 1].trim())) note = corps.pop()!.trim()
     const index = sections.length
     // Les divergences sont sorties du corps pour être remontées en tête du thème : noyées au fil
     // du texte, elles passaient inaperçues alors que ce sont elles qui appellent une décision.
     const utiles = retirerClotureCode(corps)
     const divergences = utiles.filter((l) => DIVERGENCE_RE.test(l)).map((l) => l.trim())
     const reste = utiles.filter((l) => !DIVERGENCE_RE.test(l))
+    // Compatibilité descendante : un rapport généré avant le retrait de la note de sources la
+    // porte encore, collée en fin de thème — on la jette plutôt que de laisser un rapport déjà
+    // régénéré et un rapport ancien s'afficher différemment.
+    while (reste.length && !reste[reste.length - 1].trim()) reste.pop()
+    if (reste.length && ANCIENNE_NOTE_SOURCES_RE.test(reste[reste.length - 1].trim())) reste.pop()
     const texte = reste.join('\n')
     sections.push({
       titre,
       libelleCourt: raccourcir(titre),
       ancre: ancrer(titre, index),
       corps: texte.trim(),
-      note,
       divergences,
       absences: (texte.match(ABSENCE_RE) ?? []).length,
     })

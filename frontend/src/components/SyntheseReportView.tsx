@@ -213,11 +213,6 @@ export function SyntheseReportView({ markdown, citations, onOuvrirDocument, docu
                       documentActif={documentActif}
                     />
                   )}
-                  {s.note && (
-                    <p className="border-t border-bord pt-2.5 font-mono text-[10.5px] leading-relaxed text-encre-3">
-                      {s.note.replace(/^_|_$/g, '')}
-                    </p>
-                  )}
                 </div>
               )}
             </section>

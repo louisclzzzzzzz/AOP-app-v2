@@ -130,7 +130,7 @@ def _fake_audit_call(monkeypatch):
             expose_situation="Le CCTP prévoit des semelles.",
             analyse_expert=["→ **Portance** : selon l'Eurocode 7…"],
             impact_assurabilite="Risque décennal élevé.",
-            recommandations=["Exiger la note de calcul."], source="CCTP",
+            recommandations=["Exiger la note de calcul."],
         )
         return response_model(risques=[risk]), "mistral-large-test-fake"
 

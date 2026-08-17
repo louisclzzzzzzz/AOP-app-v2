@@ -83,7 +83,6 @@ class RiskItem(BaseModel):
     analyse_expert: list[str]
     impact_assurabilite: str
     recommandations: list[str]
-    source: str
 
 
 class SectionRisks(BaseModel):
@@ -426,7 +425,6 @@ impropriété à destination) et avis sur l'acceptation du risque en souscriptio
 - recommandations : LISTE d'actions, une action par élément (plans d'exécution, notes de calcul, \
 certificats, essais, avis du bureau de contrôle à réclamer). Chaque élément est précis et \
 actionnable, et se suffit à lui-même.
-- source : nom des fichiers sources et articles/avis cités.
 
 Renvois aux documents (impératif) : chaque document du contexte porte une étiquette entre \
 crochets en tête de son bloc (« ### [D1] nom_du_fichier.pdf … ») et CHACUN de ses constats porte \
@@ -444,8 +442,7 @@ propos synthétise réellement l'ensemble du document ;
 inventée ni le nom du fichier à la place. Vérifie que le numéro après le point existe bien dans le \
 bloc du document ;
 - place-les en toute fin de bloc, après le point final, et nulle part ailleurs — ni dans \
-`synoptique_description`, ni dans `synoptique_preconisation`, ni dans `impact_assurabilite`, ni \
-dans `source` ;
+`synoptique_description`, ni dans `synoptique_preconisation`, ni dans `impact_assurabilite` ;
 - un bloc qui relève d'un raisonnement d'expert général (référentiel DTU/Eurocode, phénomène \
 physique) sans s'appuyer sur un document précis n'en porte aucune : mieux vaut pas d'étiquette \
 qu'une étiquette fausse.
@@ -770,29 +767,8 @@ def _render_risk_detail(r: RiskItem, resolve: Callable[[str], str]) -> str:
         f"**Exposé de la situation :** {resolve(r.expose_situation)}\n\n"
         f"**Analyse de l'Expert & Référentiel :**\n\n{analyse}\n\n"
         f"**Impact Assurabilité :** {strip_refs(r.impact_assurabilite)}\n\n"
-        f"**Recommandation de levée de doute :**\n\n{reco_block}\n\n"
-        f"**Source :** {strip_refs(r.source)}"
+        f"**Recommandation de levée de doute :**\n\n{reco_block}"
     )
-
-
-def _sources_note(outcome: SectionOutcome) -> str:
-    """Traçabilité sous une section : les fichiers réellement exploités, ceux lus sans élément
-    pertinent, et ceux tombés sur le repli « extrait brut »."""
-    if not outcome.candidates_count:
-        return ""
-    parts: list[str] = []
-    if outcome.documents_used:
-        parts.append("_Sources consultées : " + ", ".join(outcome.documents_used) + "_")
-    without_info = outcome.candidates_count - len(outcome.documents_used)
-    if without_info > 0:
-        parts.append(f"_(+{without_info} document(s) pivot(s) lu(s) sans élément pertinent pour cette section)_")
-    if outcome.documents_degraded:
-        parts.append(
-            "_(relevé indisponible, extrait brut tronqué utilisé pour : "
-            + ", ".join(outcome.documents_degraded)
-            + ")_"
-        )
-    return " ".join(parts)
 
 
 @dataclass(frozen=True)
@@ -834,9 +810,6 @@ def assemble_report(
             resolve = partial(allocator.resolve, scope=section.id, refs=outcome.citation_refs)
             blocks = [_render_risk_detail(r, resolve) for r in outcome.risks]
             body = "\n\n--------------------------------------------------------------------------------\n\n".join(blocks)
-            note = _sources_note(outcome)
-            if note:
-                body += "\n\n" + note
             detail_parts.append(body)
 
     sections.append("\n\n".join(detail_parts))

@@ -25,15 +25,17 @@ export interface Risque {
   analyse: string[]
   impact: string
   recommandations: string[]
-  source: string
-  /** Contenu non reconnu du bloc, conservé pour ne rien perdre d'un rapport hors format. */
+  /** Contenu non reconnu du bloc, conservé pour ne rien perdre d'un rapport hors format. Un champ
+   * `**Source :**` d'un rapport généré avant son retrait n'y atterrit pas : n'étant plus reconnu
+   * comme un champ à part, il est simplement absorbé sans être affiché — les pastilles de
+   * citation en font désormais office (§CitationChip.tsx). */
   brut: string
 }
 
 export interface SectionAudit {
   titre: string
   risques: Risque[]
-  /** Note de traçabilité en pied de section (« _Sources consultées : …_ ») ou message d'état
+  /** Message d'état de la section quand elle ne porte aucun risque
    * (« _Aucun risque saillant identifié…_ », « _Section non générée (erreur : …)._ »). */
   note: string | null
 }
@@ -60,7 +62,6 @@ const CHAMPS = [
   { cle: 'analyse', prefixe: "**Analyse de l'Expert & Référentiel :**" },
   { cle: 'impact', prefixe: '**Impact Assurabilité :**' },
   { cle: 'recommandations', prefixe: '**Recommandation de levée de doute :**' },
-  { cle: 'source', prefixe: '**Source :**' },
 ] as const
 
 type CleChamp = (typeof CHAMPS)[number]['cle']
@@ -121,7 +122,6 @@ function parseRisque(lignes: string[]): Risque | null {
     analyse: [],
     impact: [],
     recommandations: [],
-    source: [],
   }
   const brut: string[] = []
   let courant: CleChamp | null = null
@@ -154,13 +154,12 @@ function parseRisque(lignes: string[]): Risque | null {
     recommandations: sansPlaceholder(
       recommandations.length > 0 ? recommandations : paragraphes(parts.recommandations),
     ),
-    source: paragraphes(parts.source).join(' '),
     brut: brut.join('\n'),
   }
 }
 
 /** Découpe le corps d'une section en blocs de risque (séparés par la ligne de tirets) et en
- * récupère la note de pied éventuelle. */
+ * récupère le message d'état éventuel (section sans risque, ou en échec). */
 function parseSection(titre: string, lignes: string[]): SectionAudit {
   const blocs: string[][] = [[]]
   for (const ligne of lignes) {
@@ -173,9 +172,6 @@ function parseSection(titre: string, lignes: string[]): SectionAudit {
 
   const risques: Risque[] = []
   let note: string | null = null
-  const ajouterNote = (texte: string) => {
-    note = note ? `${note} ${texte}` : texte
-  }
 
   for (const bloc of blocs) {
     if (!bloc.some((l) => l.trim())) continue
@@ -183,22 +179,14 @@ function parseSection(titre: string, lignes: string[]): SectionAudit {
     // des autres (§`paragraphes`). Seule la recherche de l'en-tête ignore les vides de tête.
     const debut = bloc.findIndex((l) => RISK_HEADER_RE.test(l))
     if (debut < 0) {
-      // Pas d'en-tête de risque : c'est la note de section (« _Aucun risque saillant…_ »,
-      // « _Section non générée (erreur : …)._ », « _Sources consultées : …_ »).
+      // Pas d'en-tête de risque : c'est le message d'état de la section (« _Aucun risque
+      // saillant…_ », « _Section non générée (erreur : …)._ »).
       const utiles = bloc.map((l) => l.trim()).filter(Boolean)
-      ajouterNote(utiles.filter((l) => NOTE_RE.test(l)).join(' ') || utiles.join(' '))
+      const texte = utiles.filter((l) => NOTE_RE.test(l)).join(' ') || utiles.join(' ')
+      note = note ? `${note} ${texte}` : texte
       continue
     }
-    // La note de traçabilité est collée en fin du DERNIER bloc de risque, pas après un séparateur.
-    const corps: string[] = []
-    for (const ligne of bloc.slice(debut)) {
-      if (ligne.trim().startsWith('_Sources consultées')) {
-        ajouterNote(ligne.trim())
-        continue
-      }
-      corps.push(ligne)
-    }
-    const risque = parseRisque(corps)
+    const risque = parseRisque(bloc.slice(debut))
     if (risque) risques.push(risque)
   }
 

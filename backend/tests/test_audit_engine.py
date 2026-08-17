@@ -58,7 +58,6 @@ def _risk(**overrides) -> RiskItem:
         analyse_expert=["→ **Portance** : selon l'Eurocode 7…"],
         impact_assurabilite="Risque décennal élevé.",
         recommandations=["Exiger la note de calcul."],
-        source="CCTP Lot 09",
     )
     defaults.update(overrides)
     return RiskItem(**defaults)
@@ -377,16 +376,13 @@ def test_assemble_report_builds_synoptic_table_and_detail_in_schema_order():
     assert "**Recommandation de levée de doute :**" in report
 
 
-def test_assemble_report_renders_lists_as_bullets_and_keeps_source_on_its_own_line():
+def test_assemble_report_renders_lists_as_bullets():
     """`analyse_expert` et `recommandations` sont des listes (et non des textes multi-lignes, qui
-    déclenchaient une boucle dégénérée du décodage JSON). Le rendu doit les remettre en forme —
-    et `**Source :**` ne doit plus se retrouver collé à la dernière puce de la recommandation,
-    comme c'était le cas quand `recommandation` était un texte à puces embarquées."""
+    déclenchaient une boucle dégénérée du décodage JSON). Le rendu doit les remettre en forme."""
     schema = _schema()
     risk = _risk(
         analyse_expert=["→ **Portance** : premier point.", "→ **Drainage** : second point."],
         recommandations=["- Exiger la note de calcul.", "2. Réclamer le rapport G2 final."],
-        source="CCTP Lot 09, art. 3.2",
     )
     outcomes = [
         SectionOutcome(section_id="s1", risks=[risk], model_name="m", error=None, documents_used=["g.pdf"], candidates_count=1)
@@ -397,7 +393,6 @@ def test_assemble_report_renders_lists_as_bullets_and_keeps_source_on_its_own_li
     assert "- Exiger la note de calcul." in report
     assert "- Réclamer le rapport G2 final." in report  # puce/numérotation résiduelle non doublée
     assert "→ **Portance** : premier point.\n\n→ **Drainage** : second point." in report
-    assert "\n**Source :** CCTP Lot 09, art. 3.2" in report
 
 
 def test_assemble_report_handles_empty_lists_without_crashing():
