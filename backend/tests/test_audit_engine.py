@@ -179,8 +179,10 @@ def test_summarize_document_for_audit_covers_all_sections_in_one_untruncated_cal
     assert len(calls) == 1  # un appel par document, pas un par (document, section)
     assert long_text in calls[0]  # texte intégral, aucune troncature
     assert summary.error is None
+    # Liste, pas bloc recollé : c'est ce qui permet d'étiqueter chaque constat individuellement
+    # (`D1.1`, `D1.2`) au reduce. La puce résiduelle du modèle est retirée, jamais doublée.
     assert summary.constats_by_section == {
-        "fondations": "- Pieux forés ancrés dans les moraines.\n- Aucune note de calcul fournie."
+        "fondations": ["Pieux forés ancrés dans les moraines.", "Aucune note de calcul fournie."]
     }
     # `facades` est traitée mais sans élément : à distinguer d'une section non traitée (repli brut)
     assert summary.covered_section_ids == frozenset({"fondations", "facades"})
@@ -222,17 +224,20 @@ def test_build_section_context_keeps_every_pivot_document_attributed_to_its_file
         _doc(document_id=str(i), filename=f"{i}.pdf", final_category="TECH/RICT", content_excerpt="x" * 80_000)
         for i in range(12)
     ]
-    summaries = {d.document_id: _summary(d, constats_by_section={"fondations": "- Constat."}) for d in docs}
+    summaries = {d.document_id: _summary(d, constats_by_section={"fondations": ["Constat."]}) for d in docs}
 
     context = engine._build_section_context(section, docs, summaries)
 
     assert context.documents_used == [d.filename for d in docs]
     assert context.documents_degraded == []
     assert context.text.count("### [D") == 12
-    # Chaque document présent dans le prompt reçoit une étiquette de citation distincte, sur
-    # laquelle le LLM s'appuiera pour renvoyer au fichier qui fonde ce qu'il écrit.
-    assert [ref.document_id for ref in context.refs.values()] == [d.document_id for d in docs]
-    assert set(context.refs) == {f"D{i}" for i in range(1, 13)}
+    # Chaque document reçoit une étiquette, et CHACUN de ses constats une étiquette pointée : ces
+    # dernières sont ce qui permet au reduce de renvoyer à un fait précis plutôt qu'au fichier.
+    assert set(context.refs) == {f"D{i}" for i in range(1, 13)} | {f"D{i}.1" for i in range(1, 13)}
+    assert [context.refs[f"D{i}"].document_id for i in range(1, 13)] == [d.document_id for d in docs]
+    # L'étiquette pointée porte le constat SEUL — c'est lui qu'on cherchera dans le PDF.
+    assert context.refs["D1.1"].excerpt == "Constat."
+    assert "[D1.1] Constat." in context.text
 
 
 def test_build_section_context_falls_back_to_raw_excerpt_when_summary_is_missing():
@@ -241,7 +246,7 @@ def test_build_section_context_falls_back_to_raw_excerpt_when_summary_is_missing
     ko = _doc(document_id="b", filename="b.pdf", final_category="TECH/RICT", content_excerpt="TEXTE BRUT")
     muet = _doc(document_id="c", filename="c.pdf", final_category="TECH/RICT", content_excerpt="y")
     summaries = {
-        "a": _summary(ok, constats_by_section={"fondations": "- Constat."}),
+        "a": _summary(ok, constats_by_section={"fondations": ["Constat."]}),
         "b": _summary(ko, error="API indisponible"),
         "c": _summary(muet, constats_by_section={}, covered_section_ids=frozenset({"fondations"})),
     }
@@ -271,7 +276,7 @@ def test_generate_section_calls_llm_and_injects_georisques(monkeypatch):
     section = _section(id="fondations", georisques_aspects=["seisme"])
     doc = _doc(filename="RICT.pdf", final_category="TECH/RICT", content_excerpt="TEXTE BRUT DU RICT")
     geo = GeorisquesReport(address_queried="x", resolved_label="Commune", lon=1.0, lat=2.0, seisme="3 - MODÉRÉE")
-    summaries = {doc.document_id: _summary(doc, constats_by_section={"fondations": "- Avis suspendu n°190."})}
+    summaries = {doc.document_id: _summary(doc, constats_by_section={"fondations": ["Avis suspendu n°190."]})}
 
     outcome = generate_section(section, documents=[doc], georisques=geo, summaries=summaries)
 
@@ -622,7 +627,7 @@ def test_assemble_report_shows_the_normalized_filename_in_citations_when_availab
     context = engine._build_section_context(
         _section(id="s1", pivot_categories=["TECH/RICT"]),
         [_doc(document_id="a", filename="2024_0129_export.pdf", final_filename="LOT 01 - CCTP.pdf", final_category="TECH/RICT")],
-        {"a": _summary(_doc(document_id="a", final_category="TECH/RICT"), constats_by_section={"s1": "Constat."})},
+        {"a": _summary(_doc(document_id="a", final_category="TECH/RICT"), constats_by_section={"s1": ["Constat."]})},
     )
     assert context.refs["D1"].filename == "LOT 01 - CCTP.pdf"
 
@@ -634,6 +639,116 @@ def test_assemble_report_falls_back_to_the_original_filename_when_not_normalized
     context = engine._build_section_context(
         _section(id="s1", pivot_categories=["TECH/RICT"]),
         [_doc(document_id="a", filename="2024_0129_export.pdf", final_filename=None, final_category="TECH/RICT")],
-        {"a": _summary(_doc(document_id="a", final_category="TECH/RICT"), constats_by_section={"s1": "Constat."})},
+        {"a": _summary(_doc(document_id="a", final_category="TECH/RICT"), constats_by_section={"s1": ["Constat."]})},
     )
     assert context.refs["D1"].filename == "2024_0129_export.pdf"
+
+
+# --- Étiquettes pointées : un renvoi désigne UN constat, pas tout le document -------------------
+
+def test_two_constats_of_the_same_document_get_two_distinct_registry_entries():
+    """C'est la dédup qui décide si la précision des étiquettes pointées survit à l'assemblage :
+    regroupée sur (document, section), elle écraserait les deux constats en une seule entrée et
+    ramènerait la citation au niveau du fichier."""
+    schema = _schema()
+    refs = {
+        "D1": engine.CitationRef(document_id="a", filename="G2.pdf", excerpt="- Un.\n- Deux."),
+        "D1.1": engine.CitationRef(document_id="a", filename="G2.pdf", excerpt="Ancrage à 1,20 m."),
+        "D1.2": engine.CitationRef(document_id="a", filename="G2.pdf", excerpt="Nappe à 7,64 m NGF."),
+    }
+    risk = _risk(
+        expose_situation="L'ancrage est fixé. [D1.1]",
+        analyse_expert=["→ **Nappe** : le niveau est élevé. [D1.2]"],
+    )
+    outcomes = [SectionOutcome(section_id="s1", risks=[risk], model_name="m", error=None, citation_refs=refs)]
+
+    report = assemble_report(outcomes, schema, georisques=None)
+
+    assert len(report.citations) == 2
+    assert {c["excerpt"] for c in report.citations.values()} == {"Ancrage à 1,20 m.", "Nappe à 7,64 m NGF."}
+    # Chaque marqueur reste court : c'est ce qui rend la recherche par préfixe utile dans le PDF.
+    assert all(len(c["excerpt"]) < 400 for c in report.citations.values())
+
+
+def test_the_same_constat_cited_twice_keeps_a_single_registry_entry():
+    schema = _schema()
+    refs = {"D1.1": engine.CitationRef(document_id="a", filename="G2.pdf", excerpt="Ancrage à 1,20 m.")}
+    risk = _risk(
+        expose_situation="Première mention. [D1.1]",
+        recommandations=["Seconde mention. [D1.1]"],
+    )
+    outcomes = [SectionOutcome(section_id="s1", risks=[risk], model_name="m", error=None, citation_refs=refs)]
+
+    report = assemble_report(outcomes, schema, georisques=None)
+
+    assert list(report.citations) == ["c1"]
+    assert report.markdown.count("⟦cite:c1⟧") == 2
+
+
+def test_a_bare_document_label_still_resolves_as_a_fallback():
+    """Le modèle oublie parfois le suffixe pointé : `[D1]` doit rester exploitable, avec l'ensemble
+    des constats pour extrait — moins précis, mais jamais perdu."""
+    schema = _schema()
+    refs = {
+        "D1": engine.CitationRef(document_id="a", filename="G2.pdf", excerpt="- Un.\n- Deux."),
+        "D1.1": engine.CitationRef(document_id="a", filename="G2.pdf", excerpt="Un."),
+    }
+    risk = _risk(expose_situation="Le document dans son ensemble le montre. [D1]")
+    outcomes = [SectionOutcome(section_id="s1", risks=[risk], model_name="m", error=None, citation_refs=refs)]
+
+    report = assemble_report(outcomes, schema, georisques=None)
+
+    assert "⟦cite:c1⟧" in report.markdown
+    assert report.citations["c1"]["excerpt"] == "- Un.\n- Deux."
+
+
+def test_a_dotted_label_the_model_invented_is_dropped():
+    """Le modèle peut inventer un numéro de constat qui n'existe pas dans le bloc du document."""
+    schema = _schema()
+    refs = {"D1.1": engine.CitationRef(document_id="a", filename="G2.pdf", excerpt="Un.")}
+    risk = _risk(expose_situation="Affirmation sans source réelle. [D1.9]")
+    outcomes = [SectionOutcome(section_id="s1", risks=[risk], model_name="m", error=None, citation_refs=refs)]
+
+    report = assemble_report(outcomes, schema, georisques=None)
+
+    assert "[D1.9]" not in report.markdown
+    assert "⟦cite:" not in report.markdown
+    assert report.citations == {}
+
+
+# --- Garde-fou : une panne d'API ne doit pas détruire le rapport précédent ----------------------
+
+async def test_pipeline_keeps_the_previous_report_when_every_section_failed(isolated_workspace, monkeypatch):
+    """Vécu : un HTTP 402 de Mistral a fait échouer les 6 sections, et l'assemblage a quand même
+    persisté un rapport ne contenant que des messages d'erreur — écrasant un audit de 144 000
+    caractères par 1 900. Une panne doit se signaler, pas remplacer un livrable valide."""
+    import app.audit.pipeline as pipeline
+    from app.store.db import session_scope
+    from app.store.repository import create_dossier, get_dossier
+
+    with session_scope() as s:
+        dossier = create_dossier(s, original_filename="dce.zip")
+        dossier.audit_risques_md = "# Audit précédent, valide"
+        dossier.audit_risques_citations = '{"c1": {"document_id": "a", "filename": "G2.pdf", "excerpt": "x"}}'
+        dossier.audit_risques_status = "done"
+        dossier_id = dossier.id
+
+    monkeypatch.setattr(pipeline, "_document_signals", lambda _id: [])
+    monkeypatch.setattr(pipeline, "_chantier_address", lambda _id: None)
+    monkeypatch.setattr(pipeline, "build_georisques_report", lambda _addr: None)
+    monkeypatch.setattr(
+        pipeline,
+        "generate_section",
+        lambda section, **kwargs: SectionOutcome(
+            section_id=section.id, risks=[], model_name=None, error="Status 402 subscription"
+        ),
+    )
+
+    await pipeline.run_audit_pipeline(dossier_id)
+
+    with session_scope() as s:
+        d = get_dossier(s, dossier_id)
+        assert d.audit_risques_md == "# Audit précédent, valide"  # intact
+        assert "c1" in (d.audit_risques_citations or "")
+        assert d.audit_risques_status == "error"
+        assert "402" in (d.audit_risques_error or "")

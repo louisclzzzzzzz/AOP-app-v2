@@ -155,8 +155,10 @@ def test_summarize_document_covers_all_topics_in_a_single_untruncated_call(monke
     assert summary.error is None
     assert summary.model_name == "mistral-large-test"
     # Les constats sont recomposés en puces Markdown, et une puce déjà préfixée n'est pas doublée
+    # Liste, pas bloc recollé : c'est ce qui permet d'étiqueter chaque constat individuellement
+    # (`D1.1`, `D1.2`) au reduce. La puce résiduelle du modèle est retirée, jamais doublée.
     assert summary.summaries_by_topic == {
-        "synthese_rict": "- Avis suspendu n°12.\n- Mission L confiée à SOCOTEC."
+        "synthese_rict": ["Avis suspendu n°12.", "Mission L confiée à SOCOTEC."]
     }
     # `recit_sol` est traité mais sans information : à distinguer d'un thème non traité (repli brut)
     assert summary.covered_topic_ids == frozenset({"synthese_rict", "recit_sol"})
@@ -179,7 +181,7 @@ def test_summarize_document_ignores_unknown_theme_ids(monkeypatch):
 
     summary = summarize_document(_doc(final_category="TECH/RICT", content_excerpt="x"), [_topic(id="synthese_rict")])
 
-    assert summary.summaries_by_topic == {"synthese_rict": "- Avis suspendu."}
+    assert summary.summaries_by_topic == {"synthese_rict": ["Avis suspendu."]}
     assert "theme_invente" not in summary.covered_topic_ids
 
 
@@ -262,8 +264,8 @@ def test_build_topic_context_keeps_every_pivot_document_attributed_to_its_file()
         for i in range(30)
     ]
     summaries = _index(
-        _summary(arrete, summaries_by_topic={"destination_ambition": 'ERP "type O, catégorie 2".'}),
-        *(_summary(c, summaries_by_topic={"destination_ambition": 'ERP "5e catégorie".'}) for c in cctps),
+        _summary(arrete, summaries_by_topic={"destination_ambition": ['ERP "type O, catégorie 2".']}),
+        *(_summary(c, summaries_by_topic={"destination_ambition": ['ERP "5e catégorie".']}) for c in cctps),
     )
 
     context = engine._build_topic_context(topic, [arrete, *cctps], summaries)
@@ -272,10 +274,13 @@ def test_build_topic_context_keeps_every_pivot_document_attributed_to_its_file()
     assert context.documents_degraded == []
     assert "### [D1] arrete_pc.pdf" in context.text
     assert "### [D31] cctp_29.pdf" in context.text
-    # Chaque document du prompt reçoit une étiquette distincte, base des renvois du LLM — dans
-    # l'ordre où les blocs apparaissent, pour que le modèle puisse les recopier de visu.
-    assert [r.filename for r in context.refs.values()] == ["arrete_pc.pdf"] + [c.filename for c in cctps]
-    assert len(set(context.refs)) == 31
+    # Chaque document reçoit une étiquette, et CHACUN de ses constats une étiquette pointée : ces
+    # dernières sont ce qui permet au reduce de renvoyer à un fait précis plutôt qu'au fichier.
+    assert [context.refs[f"D{i}"].filename for i in range(1, 32)] == ["arrete_pc.pdf"] + [c.filename for c in cctps]
+    assert set(context.refs) == {f"D{i}" for i in range(1, 32)} | {f"D{i}.1" for i in range(1, 32)}
+    # L'étiquette pointée porte le constat SEUL — c'est lui qu'on cherchera dans le PDF.
+    assert context.refs["D1.1"].excerpt == 'ERP "type O, catégorie 2".'
+    assert '[D1.1] ERP "type O, catégorie 2".' in context.text
     assert 'ERP "type O, catégorie 2".' in context.text
 
 
@@ -287,7 +292,7 @@ def test_build_topic_context_groups_documents_without_information():
     doc_utile = _doc(document_id="a", filename="a.pdf", final_category="TECH/RICT", content_excerpt="x")
     doc_muet = _doc(document_id="b", filename="b.pdf", final_category="TECH/RICT", content_excerpt="y")
     summaries = _index(
-        _summary(doc_utile, summaries_by_topic={"t1": "Avis suspendu n°12."}),
+        _summary(doc_utile, summaries_by_topic={"t1": ["Avis suspendu n°12."]}),
         _summary(doc_muet, summaries_by_topic={}, covered_topic_ids=frozenset({"t1"})),
     )
 
@@ -308,7 +313,7 @@ def test_build_topic_context_falls_back_to_raw_excerpt_when_summary_is_missing()
     doc_ko = _doc(document_id="b", filename="b.pdf", final_category="TECH/RICT", content_excerpt="TEXTE BRUT " * 100)
     doc_absent = _doc(document_id="c", filename="c.pdf", final_category="TECH/RICT", content_excerpt="AUTRE BRUT")
     summaries = _index(
-        _summary(doc_ok, summaries_by_topic={"t1": "Relevé."}),
+        _summary(doc_ok, summaries_by_topic={"t1": ["Relevé."]}),
         _summary(doc_ko, error="API indisponible"),
         # `doc_absent` n'a aucune entrée : le LLM n'a pas traité ce thème pour ce document.
     )
@@ -328,7 +333,7 @@ def test_build_topic_context_bounds_the_raw_excerpt_fallback_only():
     doc_resume = _doc(document_id="a", filename="a.pdf", final_category="TECH/RICT", content_excerpt="x" * 100)
     doc_brut_1 = _doc(document_id="b", filename="b.pdf", final_category="TECH/RICT", content_excerpt="y" * 100)
     doc_brut_2 = _doc(document_id="c", filename="c.pdf", final_category="TECH/RICT", content_excerpt="z" * 100)
-    summaries = _index(_summary(doc_resume, summaries_by_topic={"t1": "Relevé conservé."}))
+    summaries = _index(_summary(doc_resume, summaries_by_topic={"t1": ["Relevé conservé."]}))
 
     context = engine._build_topic_context(
         topic,
@@ -357,7 +362,7 @@ def test_generate_topic_documents_source_calls_llm_with_summaries(monkeypatch):
 
     topic = _topic(id="synthese_rict", pivot_categories=["TECH/RICT"], grounding_field_ids=["existence_rict"])
     doc = _doc(final_category="TECH/RICT", content_excerpt="Texte brut intégral du RICT.")
-    summaries = _index(_summary(doc, summaries_by_topic={"synthese_rict": "Avis suspendu n°1 sur les fondations."}))
+    summaries = _index(_summary(doc, summaries_by_topic={"synthese_rict": ["Avis suspendu n°1 sur les fondations."]}))
 
     outcome = generate_topic(
         topic,
@@ -392,7 +397,7 @@ def test_generate_topic_documents_used_counts_every_candidate_it_could_exploit(m
         _doc(document_id=str(i), filename=f"{i}.pdf", final_category="TECH/RICT", content_excerpt="x" * 60_000)
         for i in range(69)
     ]
-    summaries = _index(*(_summary(d, summaries_by_topic={"t1": "Relevé."}) for d in docs))
+    summaries = _index(*(_summary(d, summaries_by_topic={"t1": ["Relevé."]}) for d in docs))
 
     outcome = generate_topic(topic, documents=docs, field_values={}, summaries=summaries)
 
@@ -421,7 +426,7 @@ def test_generate_topic_documents_source_llm_failure_surfaces_error(monkeypatch)
 
     topic = _topic(id="t1", pivot_categories=["TECH/RICT"])
     doc = _doc(final_category="TECH/RICT", content_excerpt="contenu")
-    summaries = _index(_summary(doc, summaries_by_topic={"t1": "Relevé."}))
+    summaries = _index(_summary(doc, summaries_by_topic={"t1": ["Relevé."]}))
 
     outcome = generate_topic(topic, documents=[doc], field_values={}, summaries=summaries)
 
@@ -624,7 +629,7 @@ def test_build_topic_context_shows_the_normalized_filename_in_citations_when_ava
     donc celui affiché par la pastille de citation."""
     topic = _topic(id="t1", pivot_categories=["TECH/RICT"])
     doc = _doc(document_id="a", filename="2024_0129_export.pdf", final_filename="RICT.pdf", final_category="TECH/RICT")
-    summaries = _index(_summary(doc, summaries_by_topic={"t1": "Constat."}))
+    summaries = _index(_summary(doc, summaries_by_topic={"t1": ["Constat."]}))
 
     context = engine._build_topic_context(topic, [doc], summaries)
 
@@ -634,7 +639,7 @@ def test_build_topic_context_shows_the_normalized_filename_in_citations_when_ava
 def test_build_topic_context_falls_back_to_the_original_filename_when_not_normalized():
     topic = _topic(id="t1", pivot_categories=["TECH/RICT"])
     doc = _doc(document_id="a", filename="2024_0129_export.pdf", final_filename=None, final_category="TECH/RICT")
-    summaries = _index(_summary(doc, summaries_by_topic={"t1": "Constat."}))
+    summaries = _index(_summary(doc, summaries_by_topic={"t1": ["Constat."]}))
 
     context = engine._build_topic_context(topic, [doc], summaries)
 

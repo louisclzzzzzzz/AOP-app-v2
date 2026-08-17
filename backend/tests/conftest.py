@@ -10,18 +10,25 @@ import pytest
 def isolated_workspace(tmp_path, monkeypatch):
     """Isole chaque test dans son propre workspace + base SQLite temporaires.
 
-    Neutralise aussi MISTRAL_API_KEY : le dépôt a un vrai `.env` (utilisé pour les
+    Neutralise aussi TOUTES les clés Mistral : le dépôt a un vrai `.env` (utilisé pour les
     vérifications manuelles via un serveur réel) et pydantic-settings le charge par défaut.
     Sans ce blindage, tout test qui déclenche le pipeline (ingestion -> classification
     étape 1) sans monkeypatcher explicitement l'appel LLM ferait un VRAI appel réseau vers
     l'API Mistral et pourrait bloquer plusieurs minutes (timeout x retries) si le sandbox
     n'a pas d'accès réseau — un test doit rester rapide et déterministe par défaut ; un test
-    qui veut vérifier le comportement avec une clé réelle doit la reposer explicitement."""
+    qui veut vérifier le comportement avec une clé réelle doit la reposer explicitement.
+
+    Les clés de SECOURS comptent autant que la principale (§app/settings.py
+    `MistralApiKeySettings.resolved_keys`) : n'en neutraliser qu'une laissait les autres fuiter
+    dès qu'un `.env` local en déclarait une — donc de vrais appels facturés depuis les tests."""
     workspace_dir = tmp_path / "workspace"
     workspace_dir.mkdir()
     monkeypatch.setenv("AOP_WORKSPACE_DIR", str(workspace_dir))
     monkeypatch.setenv("AOP_DATABASE_URL", f"sqlite:///{workspace_dir / 'test.db'}")
     monkeypatch.setenv("MISTRAL_API_KEY", "")
+    monkeypatch.setenv("MISTRAL_API_KEYS", "")
+    for numero in range(2, 6):
+        monkeypatch.setenv(f"MISTRAL_API_KEY_{numero}", "")
 
     from app.mistral.client import reset_slots_for_tests
     from app.settings import get_settings, get_models_config

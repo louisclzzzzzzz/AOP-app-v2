@@ -211,6 +211,25 @@ async def run_audit_pipeline(dossier_id: str) -> None:
         dossier_id, total_elapsed, len(map_jobs), len(schema.sections), total_risks,
     )
 
+    # Aucune section n'a abouti : c'est une panne (quota d'API épuisé, réseau coupé), pas un audit.
+    # L'assemblage produirait un rapport ne contenant que « _Section non générée (erreur : …)_ » —
+    # et l'écrire ÉCRASERAIT le rapport précédent, qui lui était valide. Vécu : un HTTP 402 de
+    # Mistral a détruit un audit de 144 000 caractères, remplacé par 1 900 caractères d'erreurs.
+    # On échoue donc explicitement, en gardant l'existant intact.
+    if outcomes and all(o.error for o in outcomes):
+        premiere_erreur = next(o.error for o in outcomes if o.error)
+        logger.error(
+            "Audit risques %s : les %d sections ont échoué — rapport précédent conservé (%s)",
+            dossier_id, len(outcomes), premiere_erreur,
+        )
+        await asyncio.to_thread(
+            _persist_status,
+            dossier_id,
+            status="error",
+            error=f"Aucune section n'a pu être générée : {premiere_erreur}",
+        )
+        return
+
     report = assemble_report(outcomes, schema, georisques=georisques)
     # Les deux étapes comptent : `audit_risques_model` doit refléter tous les modèles ayant
     # réellement contribué au rapport, pas seulement ceux de l'appel final.

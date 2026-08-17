@@ -68,6 +68,10 @@ FieldValues = dict[str, tuple[str, str]]
 class DocumentSummary:
     """Résultat de l'étape "map" pour UN document pivot.
 
+    Les constats restent une LISTE et ne sont pas recollés en un bloc : c'est ce qui permet de leur
+    attribuer une étiquette individuelle (`D1.7`) au moment du reduce, donc de remonter du texte
+    rédigé jusqu'à UN fait précis plutôt qu'au document entier.
+
     `summaries_by_topic` ne contient que les thèmes que ce document informe réellement ;
     `covered_topic_ids` liste tous les thèmes que le LLM a bel et bien traités — la différence
     entre les deux, c'est "ce document n'a rien à dire sur ce thème" (information utile en soi),
@@ -76,7 +80,7 @@ class DocumentSummary:
     document_id: str
     filename: str
     final_category: str | None
-    summaries_by_topic: dict[str, str] = field(default_factory=dict)
+    summaries_by_topic: dict[str, list[str]] = field(default_factory=dict)
     covered_topic_ids: frozenset[str] = frozenset()
     model_name: str | None = None
     error: str | None = None
@@ -135,6 +139,14 @@ aucune estimation, aucun ordre de grandeur « habituel », aucune complétion de
 - Conserve les données telles qu'écrites : chiffres, unités, dates, cotes, surfaces, montants, \
 noms de sociétés, classements réglementaires — ainsi que les références internes du document \
 (numéro d'article, d'avis, de lot, de mission, titre de section) chaque fois qu'il les donne.
+- ANCRE VERBATIM (impératif) : chaque constat doit contenir un extrait repris MOT POUR MOT du \
+document, encadré par des guillemets français « … ». C'est cet extrait qui permettra de retrouver \
+le passage dans le fichier d'origine et de le montrer à l'expert : un constat entièrement \
+reformulé n'est plus vérifiable. Choisis le segment le plus caractéristique — une dizaine de mots \
+suffit, recopiés exactement, sans corriger la ponctuation ni l'orthographe du document. Quand le \
+constat porte sur une ABSENCE, cite le passage qui aurait dû la lever (l'article incomplet, la \
+phrase qui renvoie à une étude ultérieure) ; à défaut de tout passage pertinent, cite le titre de \
+l'article ou de la section concernée.
 - Pour toute affirmation qu'un autre document du dossier pourrait contredire (classement ERP et \
 catégorie, nombre de niveaux, surfaces, montants, missions du bureau de contrôle, avis émis), \
 reprends la formulation exacte du document, encadrée par des guillemets français « … », au lieu \
@@ -235,7 +247,7 @@ def summarize_document(doc: DocumentSignal, topics: list[SynthesisTopic]) -> Doc
         )
 
     requested = {topic.id for topic in topics}
-    summaries: dict[str, str] = {}
+    summaries: dict[str, list[str]] = {}
     covered: set[str] = set()
     for item in parsed.resumes:
         topic_id = item.theme_id.strip()
@@ -247,12 +259,11 @@ def summarize_document(doc: DocumentSignal, topics: list[SynthesisTopic]) -> Doc
             )
             continue
         covered.add(topic_id)
-        # Les constats redeviennent ici un bloc Markdown à puces : c'est la forme attendue par le
-        # prompt de reduce, la liste n'existant que pour cadrer le décodage JSON du map.
+        # Les constats restent une liste jusqu'au reduce, qui les étiquette un par un.
         constats = [c.strip().lstrip("-•").strip() for c in item.constats]
         constats = [c for c in constats if c]
         if item.apporte_des_informations and constats:
-            summaries[topic_id] = "\n".join(f"- {c}" for c in constats)
+            summaries[topic_id] = constats
 
     missing = requested - covered
     if missing:
@@ -367,21 +378,36 @@ def _build_topic_context(
 
     # Seuls les documents RÉELLEMENT présents dans le prompt reçoivent une étiquette : le LLM ne
     # peut renvoyer qu'à ce qu'il voit.
-    def _header(doc: DocumentSignal, excerpt: str) -> str:
-        ref = f"D{len(refs) + 1}"
+    numero_document = 0
+
+    def _enregistrer(doc: DocumentSignal, etiquette: str, excerpt: str) -> None:
         # Le nom normalisé (étape 1) est celui que l'expert reconnaît dans l'arborescence : le nom
         # d'origine dans l'archive lui est souvent opaque (export horodaté, sigle de l'auteur…).
-        refs[ref] = CitationRef(
+        refs[etiquette] = CitationRef(
             document_id=doc.document_id, filename=doc.final_filename or doc.filename, excerpt=excerpt
         )
-        return f"### [{ref}] {doc.filename} (catégorie : {doc.final_category or 'inconnue'})"
+
+    def _header(doc: DocumentSignal, etiquette: str) -> str:
+        return f"### [{etiquette}] {doc.filename} (catégorie : {doc.final_category or 'inconnue'})"
 
     for doc in candidates:
         summary = summaries.get(doc.document_id)
 
         if summary is not None and topic.id in summary.summaries_by_topic:
-            releve = summary.summaries_by_topic[topic.id]
-            blocks.append(f"{_header(doc, releve)}\n{releve}")
+            constats = summary.summaries_by_topic[topic.id]
+            numero_document += 1
+            etiquette_doc = f"D{numero_document}"
+            # L'étiquette du document reste enregistrée : le modèle peut légitimement l'employer
+            # pour une affirmation qui synthétise tout le document, et c'est aussi le repli quand il
+            # oublie le suffixe pointé. Son extrait est l'ensemble des constats — trop long pour
+            # localiser un passage, mais honnête sur ce qui est réellement désigné.
+            _enregistrer(doc, etiquette_doc, "\n".join(f"- {c}" for c in constats))
+            lignes = []
+            for i, constat in enumerate(constats, start=1):
+                etiquette = f"{etiquette_doc}.{i}"
+                _enregistrer(doc, etiquette, constat)
+                lignes.append(f"[{etiquette}] {constat}")
+            blocks.append(f"{_header(doc, etiquette_doc)}\n" + "\n".join(lignes))
             used.append(doc.filename)
             continue
 
@@ -427,8 +453,14 @@ def _build_topic_context(
                 extra={"topic": topic.id},
             )
         # Repli « extrait brut » : le document reste citable (l'expert doit pouvoir l'ouvrir), mais
-        # sans relevé il n'y a pas de paragraphe propre à montrer au survol — d'où l'extrait vide.
-        blocks.append(f"{_header(doc, '')} — relevé indisponible, extrait brut du document (tronqué) :\n{excerpt}")
+        # sans relevé il n'y a ni constat à numéroter ni passage à montrer — d'où l'extrait vide et
+        # la seule étiquette de document.
+        numero_document += 1
+        etiquette_doc = f"D{numero_document}"
+        _enregistrer(doc, etiquette_doc, "")
+        blocks.append(
+            f"{_header(doc, etiquette_doc)} — relevé indisponible, extrait brut du document (tronqué) :\n{excerpt}"
+        )
         used.append(doc.filename)
         degraded.append(doc.filename)
         remaining -= len(excerpt)

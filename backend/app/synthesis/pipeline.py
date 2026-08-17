@@ -237,6 +237,30 @@ async def run_project_synthesis_pipeline(dossier_id: str) -> None:
         len(schema.topics),
     )
 
+    # Aucun thème LLM n'a abouti : c'est une panne (quota d'API épuisé, réseau coupé), pas une
+    # synthèse. L'écrire ÉCRASERAIT le rapport précédent, qui lui était valide — vécu : un HTTP 402
+    # de Mistral a réduit une synthèse de 40 000 caractères à 5 000 de messages d'erreur. Les thèmes
+    # `extraction_fields` sont exclus du compte : ils n'appellent aucun LLM, donc réussissent même
+    # quand l'API est morte, et masqueraient la panne.
+    def _appelle_le_llm(outcome) -> bool:
+        topic = schema.by_id(outcome.topic_id)
+        return topic is not None and topic.source != "extraction_fields"
+
+    themes_llm = [o for o in outcomes if _appelle_le_llm(o)]
+    if themes_llm and all(o.error for o in themes_llm):
+        premiere_erreur = next(o.error for o in themes_llm if o.error)
+        logger.error(
+            "Synthèse projet %s : les %d thèmes ont échoué — rapport précédent conservé (%s)",
+            dossier_id, len(themes_llm), premiere_erreur,
+        )
+        await asyncio.to_thread(
+            _persist_status,
+            dossier_id,
+            status="error",
+            error=f"Aucun thème n'a pu être généré : {premiere_erreur}",
+        )
+        return
+
     cartography_md = build_documents_cartography(list(signals_by_id.values()), taxonomy)
     report = assemble_report(outcomes, schema, cartography_md=cartography_md)
     # Les deux étapes (map et reduce) comptent : `synthese_projet_model` doit refléter tous les

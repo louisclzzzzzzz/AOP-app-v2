@@ -111,13 +111,17 @@ class DocumentAuditSummary:
     `constats_by_section` ne contient que les sections réellement documentées ;
     `covered_section_ids` liste celles que le LLM a traitées — la différence, c'est « ce document
     n'a rien à dire sur cette section » (information en soi) et non « ce document n'a pas pu être
-    analysé » (repli sur extrait brut)."""
+    analysé » (repli sur extrait brut).
+
+    Les constats restent une LISTE et ne sont pas recollés en un bloc : c'est ce qui permet de leur
+    attribuer une étiquette individuelle (`D1.7`) au moment du reduce, donc de remonter du texte
+    rédigé jusqu'à UN fait précis plutôt qu'au document entier."""
 
     document_id: str
     filename: str
     final_category: str | None
     final_lot: str | None = None
-    constats_by_section: dict[str, str] = field(default_factory=dict)
+    constats_by_section: dict[str, list[str]] = field(default_factory=dict)
     covered_section_ids: frozenset[str] = frozenset()
     model_name: str | None = None
     error: str | None = None
@@ -166,6 +170,14 @@ aucune valeur « habituelle », aucune complétion de ce qui manque.
 - Conserve les données telles qu'écrites : chiffres, unités, classes, épaisseurs, noms de produits \
 et de sociétés, ainsi que les références internes du document (numéro d'article, d'avis, de lot, \
 titre de section) chaque fois qu'il les donne.
+- ANCRE VERBATIM (impératif) : chaque constat doit contenir un extrait repris MOT POUR MOT du \
+document, encadré par des guillemets français « … ». C'est cet extrait qui permettra de retrouver \
+le passage dans le fichier d'origine et de le montrer à l'expert : un constat entièrement \
+reformulé n'est plus vérifiable. Choisis le segment le plus caractéristique — une dizaine de mots \
+suffit, recopiés exactement, sans corriger la ponctuation ni l'orthographe du document. Quand le \
+constat porte sur une ABSENCE, cite le passage qui aurait dû la lever (l'article incomplet, la \
+phrase qui renvoie à une étude ultérieure) ; à défaut de tout passage pertinent, cite le titre de \
+l'article ou de la section concernée.
 - Ne conclus pas, ne qualifie pas le risque, ne recommande rien : c'est l'étape suivante qui le \
 fera en confrontant tous les documents. Relève les faits.
 - Ne cite pas le nom du document dans tes constats : il est déjà attribué à sa source.
@@ -247,7 +259,7 @@ def summarize_document_for_audit(doc: DocumentSignal, sections: list[AuditSectio
         )
 
     requested = {s.id for s in sections}
-    constats_by_section: dict[str, str] = {}
+    constats_by_section: dict[str, list[str]] = {}
     covered: set[str] = set()
     for item in parsed.releves:
         section_id = item.section_id.strip()
@@ -261,7 +273,7 @@ def summarize_document_for_audit(doc: DocumentSignal, sections: list[AuditSectio
         covered.add(section_id)
         constats = _clean_items(item.constats)
         if item.concerne_cette_section and constats:
-            constats_by_section[section_id] = "\n".join(f"- {c}" for c in constats)
+            constats_by_section[section_id] = constats
 
     missing = requested - covered
     if missing:
@@ -417,14 +429,20 @@ actionnable, et se suffit à lui-même.
 - source : nom des fichiers sources et articles/avis cités.
 
 Renvois aux documents (impératif) : chaque document du contexte porte une étiquette entre \
-crochets en tête de son bloc (« ### [D1] nom_du_fichier.pdf … »). À la FIN de chaque bloc narratif \
-qui s'appuie sur un document — c'est-à-dire à la fin de `expose_situation`, à la fin de CHAQUE \
-élément de `analyse_expert` et à la fin de CHAQUE élément de `recommandations` — recopie \
-l'étiquette du ou des documents qui fondent ce que tu viens d'écrire, par exemple « … non validée \
-en phase exécution. [D1][D4] ». Règles :
-- une étiquette par crochet, collées entre elles : « [D1][D2] », JAMAIS « [D1, D2] » ni « [D1 D2] » ;
+crochets en tête de son bloc (« ### [D1] nom_du_fichier.pdf … ») et CHACUN de ses constats porte \
+la sienne, pointée (« [D1.1] », « [D1.2] »…). À la FIN de chaque bloc narratif qui s'appuie sur le \
+contexte — c'est-à-dire à la fin de `expose_situation`, à la fin de CHAQUE élément de \
+`analyse_expert` et à la fin de CHAQUE élément de `recommandations` — recopie l'étiquette de ce qui \
+fonde ce que tu viens d'écrire, par exemple « … non validée en phase exécution. [D1.7][D4.2] ». \
+Règles :
+- cite TOUJOURS l'étiquette POINTÉE du constat précis que tu utilises (« [D1.7] »), jamais \
+l'étiquette nue du document (« [D1] »). C'est elle qui permet de retrouver le passage exact dans le \
+fichier d'origine ; l'étiquette nue ne désigne qu'un fichier entier et n'est admise que si ton \
+propos synthétise réellement l'ensemble du document ;
+- une étiquette par crochet, collées entre elles : « [D1.2][D4.7] », JAMAIS « [D1.2, D4.7] » ;
 - n'utilise QUE des étiquettes réellement présentes dans le contexte fourni, jamais une étiquette \
-inventée ni le nom du fichier à la place ;
+inventée ni le nom du fichier à la place. Vérifie que le numéro après le point existe bien dans le \
+bloc du document ;
 - place-les en toute fin de bloc, après le point final, et nulle part ailleurs — ni dans \
 `synoptique_description`, ni dans `synoptique_preconisation`, ni dans `impact_assurabilite`, ni \
 dans `source` ;
@@ -500,7 +518,7 @@ class _SectionContext:
     documents_used: list[str]
     documents_degraded: list[str]
     documents_without_info: list[str]
-    # Étiquette (`D1`…) → document cité. Sert à résoudre les renvois du LLM à l'assemblage.
+    # Étiquette (`D1`, `D1.7`…) → ce qu'elle désigne. Sert à résoudre les renvois à l'assemblage.
     refs: dict[str, CitationRef] = field(default_factory=dict)
 
 
@@ -528,22 +546,33 @@ def _build_section_context(
 
     # Les étiquettes ne sont attribuées qu'aux documents RÉELLEMENT présents dans le prompt (un
     # document écarté faute de budget n'en reçoit pas) : le LLM ne peut renvoyer qu'à ce qu'il voit.
-    def _next_ref(doc: DocumentSignal, excerpt: str) -> str:
-        ref = f"D{len(refs) + 1}"
+    numero_document = 0
+
+    def _enregistrer(doc: DocumentSignal, etiquette: str, excerpt: str) -> None:
         # Le nom normalisé (étape 1) est celui que l'expert reconnaît dans l'arborescence : le nom
         # d'origine dans l'archive lui est souvent opaque (export horodaté, sigle de l'auteur…).
-        refs[ref] = CitationRef(
+        refs[etiquette] = CitationRef(
             document_id=doc.document_id, filename=doc.final_filename or doc.filename, excerpt=excerpt
         )
-        return ref
 
     for doc in candidates:
         summary = summaries.get(doc.document_id)
 
         if summary is not None and section.id in summary.constats_by_section:
             constats = summary.constats_by_section[section.id]
-            header = _document_header(doc, _next_ref(doc, constats))
-            blocks.append(f"{header}\n{constats}")
+            numero_document += 1
+            etiquette_doc = f"D{numero_document}"
+            # L'étiquette du document reste enregistrée : le modèle peut légitimement l'employer
+            # pour une affirmation qui synthétise tout le document, et c'est aussi le repli quand il
+            # oublie le suffixe pointé. Son extrait est l'ensemble des constats — trop long pour
+            # localiser un passage, mais honnête sur ce qui est réellement désigné.
+            _enregistrer(doc, etiquette_doc, "\n".join(f"- {c}" for c in constats))
+            lignes = []
+            for i, constat in enumerate(constats, start=1):
+                etiquette = f"{etiquette_doc}.{i}"
+                _enregistrer(doc, etiquette, constat)
+                lignes.append(f"[{etiquette}] {constat}")
+            blocks.append(f"{_document_header(doc, etiquette_doc)}\n" + "\n".join(lignes))
             used.append(doc.filename)
             continue
 
@@ -585,8 +614,12 @@ def _build_section_context(
                 extra={"section": section.id},
             )
         # Repli « extrait brut » : le document reste citable (l'expert doit pouvoir l'ouvrir), mais
-        # sans relevé il n'y a pas de paragraphe propre à montrer au survol — d'où l'extrait vide.
-        header = _document_header(doc, _next_ref(doc, ""))
+        # sans relevé il n'y a ni constat à numéroter ni passage à montrer — d'où l'extrait vide et
+        # la seule étiquette de document.
+        numero_document += 1
+        etiquette_doc = f"D{numero_document}"
+        _enregistrer(doc, etiquette_doc, "")
+        header = _document_header(doc, etiquette_doc)
         blocks.append(f"{header} — relevé indisponible, extrait brut du document (tronqué) :\n{excerpt}")
         used.append(doc.filename)
         degraded.append(doc.filename)

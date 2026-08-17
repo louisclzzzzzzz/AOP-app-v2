@@ -183,3 +183,33 @@ def test_locate_in_ocr_pages_also_accepts_a_stitched_citation():
 
     assert location is not None
     assert location.page == 1
+
+
+def test_locate_prefers_the_verbatim_passage_inside_a_paraphrased_constat(tmp_path):
+    """Cas réel des rapports IA : le constat est rédigé par le modèle, seul le passage entre
+    guillemets français est repris mot pour mot du document. Cherché en entier, il est introuvable ;
+    ses préfixes commencent par la partie reformulée, donc échouent aussi. Le verbatim doit passer
+    en premier."""
+    path = _pdf(tmp_path, [["Les ouvrages seront realises en beton arme de classe XA2 minimum."]])
+
+    constat = (
+        "Article 3.2 : le CCTP impose une protection chimique renforcee des fondations, "
+        "precisant que les ouvrages « seront realises en beton arme de classe XA2 minimum »"
+    )
+    location = locate_in_pdf(path, constat)
+
+    assert location is not None
+    assert location.page == 0
+    assert location.rects  # le passage est bien encadré, pas seulement la page
+
+
+def test_locate_still_prefers_a_whole_citation_that_matches_literally(tmp_path):
+    """La priorité donnée au verbatim ne doit pas dégrader le cas nominal de l'étape 3, où la
+    citation entière figure telle quelle dans le document."""
+    path = _pdf(tmp_path, [["Le montant total des travaux est fixe a 104,6 M EUR TTC."]])
+
+    location = locate_in_pdf(path, "Le montant total des travaux est fixe a 104,6 M EUR TTC.")
+
+    assert location is not None
+    assert location.page == 0
+    assert location.rects
