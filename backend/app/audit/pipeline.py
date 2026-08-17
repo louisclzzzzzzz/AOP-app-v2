@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime as dt
+import json
 import logging
 import time
 
@@ -73,6 +74,7 @@ def _document_signals(dossier_id: str) -> list[DocumentSignal]:
             {
                 "id": d.id,
                 "filename": d.filename,
+                "final_filename": d.final_filename,
                 "final_category": d.final_category,
                 "final_lot": d.final_lot,
                 "classification_confidence": d.classification_confidence,
@@ -209,7 +211,26 @@ async def run_audit_pipeline(dossier_id: str) -> None:
         dossier_id, total_elapsed, len(map_jobs), len(schema.sections), total_risks,
     )
 
-    report_md = assemble_report(outcomes, schema, georisques=georisques)
+    # Aucune section n'a abouti : c'est une panne (quota d'API épuisé, réseau coupé), pas un audit.
+    # L'assemblage produirait un rapport ne contenant que « _Section non générée (erreur : …)_ » —
+    # et l'écrire ÉCRASERAIT le rapport précédent, qui lui était valide. Vécu : un HTTP 402 de
+    # Mistral a détruit un audit de 144 000 caractères, remplacé par 1 900 caractères d'erreurs.
+    # On échoue donc explicitement, en gardant l'existant intact.
+    if outcomes and all(o.error for o in outcomes):
+        premiere_erreur = next(o.error for o in outcomes if o.error)
+        logger.error(
+            "Audit risques %s : les %d sections ont échoué — rapport précédent conservé (%s)",
+            dossier_id, len(outcomes), premiere_erreur,
+        )
+        await asyncio.to_thread(
+            _persist_status,
+            dossier_id,
+            status="error",
+            error=f"Aucune section n'a pu être générée : {premiere_erreur}",
+        )
+        return
+
+    report = assemble_report(outcomes, schema, georisques=georisques)
     # Les deux étapes comptent : `audit_risques_model` doit refléter tous les modèles ayant
     # réellement contribué au rapport, pas seulement ceux de l'appel final.
     model_names = {o.model_name for o in outcomes if o.model_name}
@@ -219,7 +240,8 @@ async def run_audit_pipeline(dossier_id: str) -> None:
         with session_scope() as s:
             dossier = get_dossier(s, dossier_id)
             assert dossier is not None
-            dossier.audit_risques_md = report_md
+            dossier.audit_risques_md = report.markdown
+            dossier.audit_risques_citations = json.dumps(report.citations, ensure_ascii=False)
             dossier.audit_risques_model = ", ".join(sorted(model_names)) if model_names else None
             dossier.audit_risques_status = "done"
             dossier.audit_risques_error = None

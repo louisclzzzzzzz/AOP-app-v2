@@ -20,7 +20,9 @@ from __future__ import annotations
 import logging
 import re
 import unicodedata
+from collections.abc import Callable
 from dataclasses import dataclass, field
+from functools import partial
 from typing import Literal
 
 from pydantic import BaseModel
@@ -30,6 +32,10 @@ from app.audit.schema import LOT_FILTERED_CATEGORIES, AuditSchema, AuditSection
 from app.ingestion.document_signal import DocumentSignal
 from app.mistral import call_log
 from app.mistral.client import call_structured_chat, document_summary_max_tokens
+# `REFS_PROMPT_RULES` n'est pas repris ici : l'audit produit des CHAMPS structurés, donc sa consigne
+# nomme précisément lesquels doivent porter un renvoi (§_SYSTEM_PROMPT) — la formulation générique
+# du module partagé sert la synthèse, qui rédige en prose libre.
+from app.reports.citations import CitationAllocator, CitationRef, strip_refs
 
 logger = logging.getLogger(__name__)
 
@@ -105,13 +111,17 @@ class DocumentAuditSummary:
     `constats_by_section` ne contient que les sections réellement documentées ;
     `covered_section_ids` liste celles que le LLM a traitées — la différence, c'est « ce document
     n'a rien à dire sur cette section » (information en soi) et non « ce document n'a pas pu être
-    analysé » (repli sur extrait brut)."""
+    analysé » (repli sur extrait brut).
+
+    Les constats restent une LISTE et ne sont pas recollés en un bloc : c'est ce qui permet de leur
+    attribuer une étiquette individuelle (`D1.7`) au moment du reduce, donc de remonter du texte
+    rédigé jusqu'à UN fait précis plutôt qu'au document entier."""
 
     document_id: str
     filename: str
     final_category: str | None
     final_lot: str | None = None
-    constats_by_section: dict[str, str] = field(default_factory=dict)
+    constats_by_section: dict[str, list[str]] = field(default_factory=dict)
     covered_section_ids: frozenset[str] = frozenset()
     model_name: str | None = None
     error: str | None = None
@@ -160,6 +170,14 @@ aucune valeur « habituelle », aucune complétion de ce qui manque.
 - Conserve les données telles qu'écrites : chiffres, unités, classes, épaisseurs, noms de produits \
 et de sociétés, ainsi que les références internes du document (numéro d'article, d'avis, de lot, \
 titre de section) chaque fois qu'il les donne.
+- ANCRE VERBATIM (impératif) : chaque constat doit contenir un extrait repris MOT POUR MOT du \
+document, encadré par des guillemets français « … ». C'est cet extrait qui permettra de retrouver \
+le passage dans le fichier d'origine et de le montrer à l'expert : un constat entièrement \
+reformulé n'est plus vérifiable. Choisis le segment le plus caractéristique — une dizaine de mots \
+suffit, recopiés exactement, sans corriger la ponctuation ni l'orthographe du document. Quand le \
+constat porte sur une ABSENCE, cite le passage qui aurait dû la lever (l'article incomplet, la \
+phrase qui renvoie à une étude ultérieure) ; à défaut de tout passage pertinent, cite le titre de \
+l'article ou de la section concernée.
 - Ne conclus pas, ne qualifie pas le risque, ne recommande rien : c'est l'étape suivante qui le \
 fera en confrontant tous les documents. Relève les faits.
 - Ne cite pas le nom du document dans tes constats : il est déjà attribué à sa source.
@@ -241,7 +259,7 @@ def summarize_document_for_audit(doc: DocumentSignal, sections: list[AuditSectio
         )
 
     requested = {s.id for s in sections}
-    constats_by_section: dict[str, str] = {}
+    constats_by_section: dict[str, list[str]] = {}
     covered: set[str] = set()
     for item in parsed.releves:
         section_id = item.section_id.strip()
@@ -255,7 +273,7 @@ def summarize_document_for_audit(doc: DocumentSignal, sections: list[AuditSectio
         covered.add(section_id)
         constats = _clean_items(item.constats)
         if item.concerne_cette_section and constats:
-            constats_by_section[section_id] = "\n".join(f"- {c}" for c in constats)
+            constats_by_section[section_id] = constats
 
     missing = requested - covered
     if missing:
@@ -346,6 +364,9 @@ class SectionOutcome:
     documents_used: list[str] = field(default_factory=list)
     candidates_count: int = 0
     documents_degraded: list[str] = field(default_factory=list)
+    # Étiquettes (`D1`…) proposées au LLM pour CETTE section : elles sont locales à la section, donc
+    # ré-attribuées globalement à l'assemblage (§`assemble_report`).
+    citation_refs: dict[str, CitationRef] = field(default_factory=dict)
 
 
 _SYSTEM_PROMPT = """Tu es un Expert Senior en Ingénierie des Risques Construction, en charge de \
@@ -407,6 +428,28 @@ certificats, essais, avis du bureau de contrôle à réclamer). Chaque élément
 actionnable, et se suffit à lui-même.
 - source : nom des fichiers sources et articles/avis cités.
 
+Renvois aux documents (impératif) : chaque document du contexte porte une étiquette entre \
+crochets en tête de son bloc (« ### [D1] nom_du_fichier.pdf … ») et CHACUN de ses constats porte \
+la sienne, pointée (« [D1.1] », « [D1.2] »…). À la FIN de chaque bloc narratif qui s'appuie sur le \
+contexte — c'est-à-dire à la fin de `expose_situation`, à la fin de CHAQUE élément de \
+`analyse_expert` et à la fin de CHAQUE élément de `recommandations` — recopie l'étiquette de ce qui \
+fonde ce que tu viens d'écrire, par exemple « … non validée en phase exécution. [D1.7][D4.2] ». \
+Règles :
+- cite TOUJOURS l'étiquette POINTÉE du constat précis que tu utilises (« [D1.7] »), jamais \
+l'étiquette nue du document (« [D1] »). C'est elle qui permet de retrouver le passage exact dans le \
+fichier d'origine ; l'étiquette nue ne désigne qu'un fichier entier et n'est admise que si ton \
+propos synthétise réellement l'ensemble du document ;
+- une étiquette par crochet, collées entre elles : « [D1.2][D4.7] », JAMAIS « [D1.2, D4.7] » ;
+- n'utilise QUE des étiquettes réellement présentes dans le contexte fourni, jamais une étiquette \
+inventée ni le nom du fichier à la place. Vérifie que le numéro après le point existe bien dans le \
+bloc du document ;
+- place-les en toute fin de bloc, après le point final, et nulle part ailleurs — ni dans \
+`synoptique_description`, ni dans `synoptique_preconisation`, ni dans `impact_assurabilite`, ni \
+dans `source` ;
+- un bloc qui relève d'un raisonnement d'expert général (référentiel DTU/Eurocode, phénomène \
+physique) sans s'appuyer sur un document précis n'en porte aucune : mieux vaut pas d'étiquette \
+qu'une étiquette fausse.
+
 Format des valeurs texte (impératif) : n'insère JAMAIS de retour à la ligne, de puce (« - ») en \
 tête ni de numérotation (« 1. ») à l'intérieur d'une valeur — ce sont les listes `analyse_expert` \
 et `recommandations` qui structurent le propos, un élément par point. N'utilise pas non plus de \
@@ -461,9 +504,9 @@ def select_section_documents(section: AuditSection, documents: list[DocumentSign
     return selected
 
 
-def _document_header(doc: DocumentSignal) -> str:
+def _document_header(doc: DocumentSignal, ref: str) -> str:
     return (
-        f"### Document : {doc.filename} (catégorie : {doc.final_category or 'inconnue'}"
+        f"### [{ref}] {doc.filename} (catégorie : {doc.final_category or 'inconnue'}"
         + (f", lot : {doc.final_lot}" if doc.final_lot else "")
         + ")"
     )
@@ -475,6 +518,8 @@ class _SectionContext:
     documents_used: list[str]
     documents_degraded: list[str]
     documents_without_info: list[str]
+    # Étiquette (`D1`, `D1.7`…) → ce qu'elle désigne. Sert à résoudre les renvois à l'assemblage.
+    refs: dict[str, CitationRef] = field(default_factory=dict)
 
 
 def _build_section_context(
@@ -496,14 +541,38 @@ def _build_section_context(
     used: list[str] = []
     degraded: list[str] = []
     without_info: list[str] = []
+    refs: dict[str, CitationRef] = {}
     remaining = fallback_total_budget
+
+    # Les étiquettes ne sont attribuées qu'aux documents RÉELLEMENT présents dans le prompt (un
+    # document écarté faute de budget n'en reçoit pas) : le LLM ne peut renvoyer qu'à ce qu'il voit.
+    numero_document = 0
+
+    def _enregistrer(doc: DocumentSignal, etiquette: str, excerpt: str) -> None:
+        # Le nom normalisé (étape 1) est celui que l'expert reconnaît dans l'arborescence : le nom
+        # d'origine dans l'archive lui est souvent opaque (export horodaté, sigle de l'auteur…).
+        refs[etiquette] = CitationRef(
+            document_id=doc.document_id, filename=doc.final_filename or doc.filename, excerpt=excerpt
+        )
 
     for doc in candidates:
         summary = summaries.get(doc.document_id)
-        header = _document_header(doc)
 
         if summary is not None and section.id in summary.constats_by_section:
-            blocks.append(f"{header}\n{summary.constats_by_section[section.id]}")
+            constats = summary.constats_by_section[section.id]
+            numero_document += 1
+            etiquette_doc = f"D{numero_document}"
+            # L'étiquette du document reste enregistrée : le modèle peut légitimement l'employer
+            # pour une affirmation qui synthétise tout le document, et c'est aussi le repli quand il
+            # oublie le suffixe pointé. Son extrait est l'ensemble des constats — trop long pour
+            # localiser un passage, mais honnête sur ce qui est réellement désigné.
+            _enregistrer(doc, etiquette_doc, "\n".join(f"- {c}" for c in constats))
+            lignes = []
+            for i, constat in enumerate(constats, start=1):
+                etiquette = f"{etiquette_doc}.{i}"
+                _enregistrer(doc, etiquette, constat)
+                lignes.append(f"[{etiquette}] {constat}")
+            blocks.append(f"{_document_header(doc, etiquette_doc)}\n" + "\n".join(lignes))
             used.append(doc.filename)
             continue
 
@@ -544,6 +613,13 @@ def _build_section_context(
                 limit_value=cap,
                 extra={"section": section.id},
             )
+        # Repli « extrait brut » : le document reste citable (l'expert doit pouvoir l'ouvrir), mais
+        # sans relevé il n'y a ni constat à numéroter ni passage à montrer — d'où l'extrait vide et
+        # la seule étiquette de document.
+        numero_document += 1
+        etiquette_doc = f"D{numero_document}"
+        _enregistrer(doc, etiquette_doc, "")
+        header = _document_header(doc, etiquette_doc)
         blocks.append(f"{header} — relevé indisponible, extrait brut du document (tronqué) :\n{excerpt}")
         used.append(doc.filename)
         degraded.append(doc.filename)
@@ -559,6 +635,7 @@ def _build_section_context(
         documents_used=used,
         documents_degraded=degraded,
         documents_without_info=without_info,
+        refs=refs,
     )
 
 
@@ -627,6 +704,7 @@ def generate_section(
             documents_used=context.documents_used,
             candidates_count=len(candidates),
             documents_degraded=context.documents_degraded,
+            citation_refs=context.refs,
         )
 
     return SectionOutcome(
@@ -637,6 +715,7 @@ def generate_section(
         documents_used=context.documents_used,
         candidates_count=len(candidates),
         documents_degraded=context.documents_degraded,
+        citation_refs=context.refs,
     )
 
 
@@ -655,8 +734,9 @@ def _synoptic_table(outcomes: list[SectionOutcome]) -> str:
             any_row = True
             risque_alea = f"{r.risque} / {r.alea}" if r.alea else r.risque
             lines.append(
-                f"| **{_escape_cell(r.element_ouvrage)}** | {_escape_cell(risque_alea)} | "
-                f"{_escape_cell(r.synoptique_description)} | {_escape_cell(r.synoptique_preconisation)} | {r.statut} |"
+                f"| **{_escape_cell(strip_refs(r.element_ouvrage))}** | {_escape_cell(strip_refs(risque_alea))} | "
+                f"{_escape_cell(strip_refs(r.synoptique_description))} | "
+                f"{_escape_cell(strip_refs(r.synoptique_preconisation))} | {r.statut} |"
             )
     if not any_row:
         return "_Aucun risque identifié — voir les sections ci-dessous et l'état des documents du dossier._"
@@ -675,20 +755,23 @@ def _clean_items(items: list[str]) -> list[str]:
     return cleaned
 
 
-def _render_risk_detail(r: RiskItem) -> str:
-    header = f"[STATUT : {r.statut}] | [{r.element_ouvrage}] | [{r.risque} / {r.alea}]" if r.alea else f"[STATUT : {r.statut}] | [{r.element_ouvrage}] | [{r.risque}]"
+def _render_risk_detail(r: RiskItem, resolve: Callable[[str], str]) -> str:
+    element = strip_refs(r.element_ouvrage)
+    risque = strip_refs(r.risque)
+    alea = strip_refs(r.alea)
+    header = f"[STATUT : {r.statut}] | [{element}] | [{risque} / {alea}]" if alea else f"[STATUT : {r.statut}] | [{element}] | [{risque}]"
     # `analyse_expert` : un paragraphe par point de vérification (les éléments commencent déjà par
     # « → »), donc séparés par une ligne vide plutôt que rendus en puces.
-    analyse = "\n\n".join(_clean_items(r.analyse_expert)) or "_Non renseigné._"
-    recommandations = _clean_items(r.recommandations)
+    analyse = "\n\n".join(resolve(item) for item in _clean_items(r.analyse_expert)) or "_Non renseigné._"
+    recommandations = [resolve(item) for item in _clean_items(r.recommandations)]
     reco_block = "\n".join(f"- {item}" for item in recommandations) if recommandations else "_Non renseignée._"
     return (
         f"{header}\n\n"
-        f"**Exposé de la situation :** {r.expose_situation}\n\n"
+        f"**Exposé de la situation :** {resolve(r.expose_situation)}\n\n"
         f"**Analyse de l'Expert & Référentiel :**\n\n{analyse}\n\n"
-        f"**Impact Assurabilité :** {r.impact_assurabilite}\n\n"
+        f"**Impact Assurabilité :** {strip_refs(r.impact_assurabilite)}\n\n"
         f"**Recommandation de levée de doute :**\n\n{reco_block}\n\n"
-        f"**Source :** {r.source}"
+        f"**Source :** {strip_refs(r.source)}"
     )
 
 
@@ -712,12 +795,23 @@ def _sources_note(outcome: SectionOutcome) -> str:
     return " ".join(parts)
 
 
+@dataclass(frozen=True)
+class AssembledReport:
+    markdown: str
+    # Clé de marqueur (`c1`…) → {document_id, filename, excerpt}. Livré à côté du Markdown plutôt
+    # qu'encodé dedans : le rapport reste lisible tel quel, et les exports Word/PDF n'ont qu'à
+    # effacer les marqueurs sans avoir à démêler un extrait de plusieurs centaines de caractères
+    # au milieu d'une phrase.
+    citations: dict[str, dict[str, str]]
+
+
 def assemble_report(
     outcomes: list[SectionOutcome],
     schema: AuditSchema,
     *,
     georisques: GeorisquesReport | None = None,
-) -> str:
+) -> AssembledReport:
+    allocator = CitationAllocator()
     by_id = {o.section_id: o for o in outcomes}
     sections: list[str] = ["# Audit des risques — Phase 2"]
 
@@ -737,7 +831,8 @@ def assemble_report(
         if not outcome.risks:
             detail_parts.append("_Aucun risque saillant identifié pour cette section dans le corpus fourni._")
         else:
-            blocks = [_render_risk_detail(r) for r in outcome.risks]
+            resolve = partial(allocator.resolve, scope=section.id, refs=outcome.citation_refs)
+            blocks = [_render_risk_detail(r, resolve) for r in outcome.risks]
             body = "\n\n--------------------------------------------------------------------------------\n\n".join(blocks)
             note = _sources_note(outcome)
             if note:
@@ -745,4 +840,4 @@ def assemble_report(
             detail_parts.append(body)
 
     sections.append("\n\n".join(detail_parts))
-    return "\n\n".join(sections) + "\n"
+    return AssembledReport(markdown="\n\n".join(sections) + "\n", citations=allocator.registry)

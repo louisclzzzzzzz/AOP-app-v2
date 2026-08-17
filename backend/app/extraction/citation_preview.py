@@ -159,14 +159,32 @@ def _find_in_page(page_text: str, needle: str) -> tuple[int, int] | None:
 _FRAGMENT_SEPARATORS = re.compile(r"\[\s*\.\.\.\s*\]|\[\s*…\s*\]|\.\.\.|…|\s/\s")
 
 
+# Passage que le LLM signale comme repris mot pour mot du document. Les prompts de relevé le lui
+# demandent explicitement pour toute donnée contestable (§app/audit/engine.py `_MAP_SYSTEM_PROMPT`,
+# app/synthesis/engine.py idem) : c'est donc le seul morceau d'un constat dont on sait qu'il figure
+# TEL QUEL dans le fichier. Extrait avant normalisation, qui efface les guillemets.
+_QUOTED_RE = re.compile(r"«([^»]+)»")
+
+
 def _citation_fragments(citation: str) -> list[str]:
-    """Citation entière d'abord, puis ses morceaux — du plus probable au plus permissif."""
-    whole = normalize(citation)
-    fragments = [whole] if len(whole) >= _MIN_MATCH_CHARS else []
-    for part in _FRAGMENT_SEPARATORS.split(citation):
-        piece = normalize(part)
-        if len(piece) >= _MIN_MATCH_CHARS and piece != whole:
+    """Fragments à chercher, du plus fiable au plus permissif.
+
+    Les passages entre guillemets français passent en premier : dans un constat de rapport, le
+    reste est une reformulation du modèle, qui ne se retrouve pas littéralement dans le PDF. Sans
+    cette priorité, une citation dont seul le verbatim est localisable échouait sur la recherche du
+    constat entier, puis sur ses préfixes — qui commencent par la partie reformulée."""
+    fragments: list[str] = []
+
+    def _ajouter(brut: str) -> None:
+        piece = normalize(brut)
+        if len(piece) >= _MIN_MATCH_CHARS and piece not in fragments:
             fragments.append(piece)
+
+    for quoted in _QUOTED_RE.findall(citation):
+        _ajouter(quoted)
+    _ajouter(citation)
+    for part in _FRAGMENT_SEPARATORS.split(citation):
+        _ajouter(part)
     return fragments
 
 

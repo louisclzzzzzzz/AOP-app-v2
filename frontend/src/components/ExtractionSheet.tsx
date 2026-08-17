@@ -9,7 +9,7 @@ import {
 } from '../api'
 import type { Dossier, DocumentItem, DossierStatus, ExtractionEntry, ExtractionSource } from '../types'
 import { isAtOrAfter } from '../statusFlow'
-import { telechargerRapportDocx } from '../rapport'
+import { RapportDownloadMenu } from './RapportDownloadMenu'
 import {
   BTN,
   BTN_PRIMAIRE,
@@ -68,7 +68,6 @@ export function ExtractionSheet({ dossierId, dossier, documents, onApplied }: Pr
   const status = dossier.status
   const [entries, setEntries] = useState<ExtractionEntry[] | null>(null)
   const [running, setRunning] = useState(false)
-  const [downloadingReport, setDownloadingReport] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   // Champ dont on affiche la preuve visuelle (page du PDF, passage surligné) dans le volet de
@@ -203,18 +202,6 @@ export function ExtractionSheet({ dossierId, dossier, documents, onApplied }: Pr
     onApplied()
   }, [dossierId, onApplied])
 
-  const handleDownloadReport = useCallback(async () => {
-    setDownloadingReport(true)
-    setError(null)
-    try {
-      await telechargerRapportDocx(dossierId, dossier)
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Échec de la génération du rapport')
-    } finally {
-      setDownloadingReport(false)
-    }
-  }, [dossierId, dossier])
-
   if (!isAtOrAfter(status, 'completeness_validated')) {
     return null
   }
@@ -319,9 +306,7 @@ export function ExtractionSheet({ dossierId, dossier, documents, onApplied }: Pr
     <div className="grid min-h-0 flex-1 grid-cols-1 xl:grid-cols-[minmax(0,1fr)_minmax(28rem,34%)]">
       <div className="min-w-0 px-6 py-5">
         <div className="mb-3 flex flex-wrap items-center justify-end gap-2">
-          <button onClick={handleDownloadReport} disabled={downloadingReport} className={BTN}>
-            {downloadingReport ? 'Génération…' : 'Télécharger le rapport (.docx)'}
-          </button>
+          <RapportDownloadMenu dossierId={dossierId} dossier={dossier} onError={setError} />
           {/* Lien direct plutôt qu'un fetch + Blob : le serveur régénère le classeur à la volée
               depuis l'état courant, y compris les corrections manuelles en cours de validation. */}
           <a

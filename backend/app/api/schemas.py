@@ -3,7 +3,16 @@ from __future__ import annotations
 
 import datetime as dt
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+
+
+class CitationOut(BaseModel):
+    """Une citation d'un rapport IA : le document qui fonde un passage rédigé, et le relevé
+    factuel qui en a été tiré (affiché au survol de la pastille, §frontend CitationChip)."""
+
+    document_id: str
+    filename: str
+    excerpt: str = ""
 
 
 class CountersOut(BaseModel):
@@ -38,11 +47,13 @@ class DossierOut(BaseModel):
     extraction_validated_at: dt.datetime | None = None
     synthese_ia: str | None = None
     synthese_projet_md: str | None = None
+    synthese_projet_citations: dict[str, CitationOut] = Field(default_factory=dict)
     synthese_projet_model: str | None = None
     synthese_projet_status: str = "not_generated"
     synthese_projet_error: str | None = None
     synthese_projet_generated_at: dt.datetime | None = None
     audit_risques_md: str | None = None
+    audit_risques_citations: dict[str, CitationOut] = Field(default_factory=dict)
     audit_risques_model: str | None = None
     audit_risques_status: str = "not_generated"
     audit_risques_error: str | None = None

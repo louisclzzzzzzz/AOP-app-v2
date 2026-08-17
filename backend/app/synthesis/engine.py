@@ -40,6 +40,7 @@ from app.classify.taxonomy import Taxonomy
 from app.ingestion.document_signal import DocumentSignal
 from app.mistral import call_log
 from app.mistral.client import call_structured_chat, document_summary_max_tokens
+from app.reports.citations import REFS_PROMPT_RULES, CitationAllocator, CitationRef
 from app.synthesis.schema import SynthesisSchema, SynthesisTopic
 
 logger = logging.getLogger(__name__)
@@ -67,6 +68,10 @@ FieldValues = dict[str, tuple[str, str]]
 class DocumentSummary:
     """Résultat de l'étape "map" pour UN document pivot.
 
+    Les constats restent une LISTE et ne sont pas recollés en un bloc : c'est ce qui permet de leur
+    attribuer une étiquette individuelle (`D1.7`) au moment du reduce, donc de remonter du texte
+    rédigé jusqu'à UN fait précis plutôt qu'au document entier.
+
     `summaries_by_topic` ne contient que les thèmes que ce document informe réellement ;
     `covered_topic_ids` liste tous les thèmes que le LLM a bel et bien traités — la différence
     entre les deux, c'est "ce document n'a rien à dire sur ce thème" (information utile en soi),
@@ -75,7 +80,7 @@ class DocumentSummary:
     document_id: str
     filename: str
     final_category: str | None
-    summaries_by_topic: dict[str, str] = field(default_factory=dict)
+    summaries_by_topic: dict[str, list[str]] = field(default_factory=dict)
     covered_topic_ids: frozenset[str] = frozenset()
     model_name: str | None = None
     error: str | None = None
@@ -90,6 +95,9 @@ class TopicOutcome:
     documents_used: list[str] = field(default_factory=list)
     candidates_count: int = 0
     documents_degraded: list[str] = field(default_factory=list)
+    # Étiquettes (`D1`…) proposées au LLM pour CE thème : locales au thème, donc ré-attribuées
+    # globalement à l'assemblage (§`assemble_report`).
+    citation_refs: dict[str, CitationRef] = field(default_factory=dict)
 
 
 class _TopicResponse(BaseModel):
@@ -131,6 +139,14 @@ aucune estimation, aucun ordre de grandeur « habituel », aucune complétion de
 - Conserve les données telles qu'écrites : chiffres, unités, dates, cotes, surfaces, montants, \
 noms de sociétés, classements réglementaires — ainsi que les références internes du document \
 (numéro d'article, d'avis, de lot, de mission, titre de section) chaque fois qu'il les donne.
+- ANCRE VERBATIM (impératif) : chaque constat doit contenir un extrait repris MOT POUR MOT du \
+document, encadré par des guillemets français « … ». C'est cet extrait qui permettra de retrouver \
+le passage dans le fichier d'origine et de le montrer à l'expert : un constat entièrement \
+reformulé n'est plus vérifiable. Choisis le segment le plus caractéristique — une dizaine de mots \
+suffit, recopiés exactement, sans corriger la ponctuation ni l'orthographe du document. Quand le \
+constat porte sur une ABSENCE, cite le passage qui aurait dû la lever (l'article incomplet, la \
+phrase qui renvoie à une étude ultérieure) ; à défaut de tout passage pertinent, cite le titre de \
+l'article ou de la section concernée.
 - Pour toute affirmation qu'un autre document du dossier pourrait contredire (classement ERP et \
 catégorie, nombre de niveaux, surfaces, montants, missions du bureau de contrôle, avis émis), \
 reprends la formulation exacte du document, encadrée par des guillemets français « … », au lieu \
@@ -231,7 +247,7 @@ def summarize_document(doc: DocumentSignal, topics: list[SynthesisTopic]) -> Doc
         )
 
     requested = {topic.id for topic in topics}
-    summaries: dict[str, str] = {}
+    summaries: dict[str, list[str]] = {}
     covered: set[str] = set()
     for item in parsed.resumes:
         topic_id = item.theme_id.strip()
@@ -243,12 +259,11 @@ def summarize_document(doc: DocumentSignal, topics: list[SynthesisTopic]) -> Doc
             )
             continue
         covered.add(topic_id)
-        # Les constats redeviennent ici un bloc Markdown à puces : c'est la forme attendue par le
-        # prompt de reduce, la liste n'existant que pour cadrer le décodage JSON du map.
+        # Les constats restent une liste jusqu'au reduce, qui les étiquette un par un.
         constats = [c.strip().lstrip("-•").strip() for c in item.constats]
         constats = [c for c in constats if c]
         if item.apporte_des_informations and constats:
-            summaries[topic_id] = "\n".join(f"- {c}" for c in constats)
+            summaries[topic_id] = constats
 
     missing = requested - covered
     if missing:
@@ -292,8 +307,9 @@ l'inventer.
 (classement ERP, nombre de niveaux, surfaces, montants, avis émis…), signale la divergence \
 explicitement en nommant les deux fichiers sources, au lieu de trancher en silence.
 - Indique la source de chaque donnée factuelle. Dans un tableau, c'est le rôle de la colonne \
-"Source" : n'y remets pas le mot « Source », juste le nom du fichier. Hors tableau, mets le nom \
-du fichier entre parenthèses.
+"Source" : n'y remets pas le mot « Source », juste le nom du fichier. Hors tableau, n'écris PAS le \
+nom du fichier entre parenthèses — utilise les étiquettes de renvoi décrites ci-dessous, qui \
+deviennent des liens vers le document à l'écran.
 
 Règles impératives — forme. Ce rapport est un outil de travail pour un souscripteur, pas une \
 note de synthèse rédigée : il doit se lire et se vérifier vite.
@@ -313,7 +329,9 @@ ou avec un titre de niveau 4 (####) au maximum.
 ailleurs", "il convient de noter que", "en résumé"), les adjectifs d'appréciation ("ambitieux", \
 "remarquable", "notable") et toute analyse que les documents ne portent pas.
 - Réponds uniquement avec le contenu Markdown de cette section, sans reprendre le titre de la \
-section (déjà affiché séparément dans le rapport)."""
+section (déjà affiché séparément dans le rapport).
+
+""" + REFS_PROMPT_RULES
 
 
 def select_topic_documents(topic: SynthesisTopic, documents: list[DocumentSignal]) -> list[DocumentSignal]:
@@ -332,6 +350,8 @@ class _TopicContext:
     documents_used: list[str]
     documents_degraded: list[str]
     documents_without_info: list[str]
+    # Étiquette (`D1`…) → document cité, pour résoudre les renvois du LLM à l'assemblage.
+    refs: dict[str, CitationRef] = field(default_factory=dict)
 
 
 def _build_topic_context(
@@ -353,14 +373,41 @@ def _build_topic_context(
     used: list[str] = []
     degraded: list[str] = []
     without_info: list[str] = []
+    refs: dict[str, CitationRef] = {}
     remaining = fallback_total_budget
+
+    # Seuls les documents RÉELLEMENT présents dans le prompt reçoivent une étiquette : le LLM ne
+    # peut renvoyer qu'à ce qu'il voit.
+    numero_document = 0
+
+    def _enregistrer(doc: DocumentSignal, etiquette: str, excerpt: str) -> None:
+        # Le nom normalisé (étape 1) est celui que l'expert reconnaît dans l'arborescence : le nom
+        # d'origine dans l'archive lui est souvent opaque (export horodaté, sigle de l'auteur…).
+        refs[etiquette] = CitationRef(
+            document_id=doc.document_id, filename=doc.final_filename or doc.filename, excerpt=excerpt
+        )
+
+    def _header(doc: DocumentSignal, etiquette: str) -> str:
+        return f"### [{etiquette}] {doc.filename} (catégorie : {doc.final_category or 'inconnue'})"
 
     for doc in candidates:
         summary = summaries.get(doc.document_id)
-        header = f"### Document : {doc.filename} (catégorie : {doc.final_category or 'inconnue'})"
 
         if summary is not None and topic.id in summary.summaries_by_topic:
-            blocks.append(f"{header}\n{summary.summaries_by_topic[topic.id]}")
+            constats = summary.summaries_by_topic[topic.id]
+            numero_document += 1
+            etiquette_doc = f"D{numero_document}"
+            # L'étiquette du document reste enregistrée : le modèle peut légitimement l'employer
+            # pour une affirmation qui synthétise tout le document, et c'est aussi le repli quand il
+            # oublie le suffixe pointé. Son extrait est l'ensemble des constats — trop long pour
+            # localiser un passage, mais honnête sur ce qui est réellement désigné.
+            _enregistrer(doc, etiquette_doc, "\n".join(f"- {c}" for c in constats))
+            lignes = []
+            for i, constat in enumerate(constats, start=1):
+                etiquette = f"{etiquette_doc}.{i}"
+                _enregistrer(doc, etiquette, constat)
+                lignes.append(f"[{etiquette}] {constat}")
+            blocks.append(f"{_header(doc, etiquette_doc)}\n" + "\n".join(lignes))
             used.append(doc.filename)
             continue
 
@@ -405,7 +452,15 @@ def _build_topic_context(
                 limit_value=cap,
                 extra={"topic": topic.id},
             )
-        blocks.append(f"{header} — relevé indisponible, extrait brut du document (tronqué) :\n{excerpt}")
+        # Repli « extrait brut » : le document reste citable (l'expert doit pouvoir l'ouvrir), mais
+        # sans relevé il n'y a ni constat à numéroter ni passage à montrer — d'où l'extrait vide et
+        # la seule étiquette de document.
+        numero_document += 1
+        etiquette_doc = f"D{numero_document}"
+        _enregistrer(doc, etiquette_doc, "")
+        blocks.append(
+            f"{_header(doc, etiquette_doc)} — relevé indisponible, extrait brut du document (tronqué) :\n{excerpt}"
+        )
         used.append(doc.filename)
         degraded.append(doc.filename)
         remaining -= len(excerpt)
@@ -420,6 +475,7 @@ def _build_topic_context(
         documents_used=used,
         documents_degraded=degraded,
         documents_without_info=without_info,
+        refs=refs,
     )
 
 
@@ -543,6 +599,7 @@ def generate_topic(
             documents_used=context.documents_used,
             candidates_count=len(candidates),
             documents_degraded=context.documents_degraded,
+            citation_refs=context.refs,
         )
 
     return TopicOutcome(
@@ -553,6 +610,7 @@ def generate_topic(
         documents_used=context.documents_used,
         candidates_count=len(candidates),
         documents_degraded=context.documents_degraded,
+        citation_refs=context.refs,
     )
 
 
@@ -619,9 +677,18 @@ def _sources_note(outcome: TopicOutcome) -> str:
     return " ".join(parts)
 
 
+@dataclass(frozen=True)
+class AssembledReport:
+    markdown: str
+    # Clé de marqueur (`c1`…) → {document_id, filename, excerpt}, livré à côté du Markdown —
+    # même contrat que l'audit (§app/audit/engine.py `AssembledReport`).
+    citations: dict[str, dict[str, str]]
+
+
 def assemble_report(
     outcomes: list[TopicOutcome], schema: SynthesisSchema, *, cartography_md: str | None = None
-) -> str:
+) -> AssembledReport:
+    allocator = CitationAllocator()
     sections: list[str] = ["# Synthèse projet — Phase 1"]
     if cartography_md:
         sections.append("## Cartographie des documents pivots\n\n" + cartography_md)
@@ -634,10 +701,16 @@ def assemble_report(
         if outcome.error:
             body = f"_Section non générée (erreur : {outcome.error})._"
         else:
-            body = outcome.content_md or "_Aucune donnée disponible._"
+            # Les thèmes `extraction_fields` sont un reformatage déterministe sans appel LLM : ils
+            # n'ont pas d'étiquette, `resolve` les traverse donc sans rien changer.
+            body = allocator.resolve(
+                outcome.content_md or "_Aucune donnée disponible._",
+                scope=topic.id,
+                refs=outcome.citation_refs,
+            )
             note = _sources_note(outcome)
             if note:
                 body += "\n\n" + note
         sections.append(f"## {topic.titre}\n\n{body}")
 
-    return "\n\n".join(sections) + "\n"
+    return AssembledReport(markdown="\n\n".join(sections) + "\n", citations=allocator.registry)

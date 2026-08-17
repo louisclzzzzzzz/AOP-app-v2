@@ -28,6 +28,12 @@ class DocumentSignal:
     classification_confidence: float | None
     content_excerpt: str
     ocr_confidence: float | None
+    # Nom normalisé par la classification (étape 1), distinct de `filename` (nom d'origine dans
+    # l'archive) — §OrganizedTree.tsx affiche déjà les deux dans l'arborescence. `filename` reste
+    # la valeur utilisée pour l'appariement aux sections/thèmes (mots-clés de lot, notamment) : ne
+    # JAMAIS y substituer `final_filename`, la normalisation pourrait casser ce matching. Ce champ
+    # ne sert qu'à l'affichage (§app/audit/engine.py, app/synthesis/engine.py `CitationRef`).
+    final_filename: str | None = None
 
 
 def build_document_signal(doc_snapshot: dict) -> DocumentSignal:
@@ -49,6 +55,7 @@ def build_document_signal(doc_snapshot: dict) -> DocumentSignal:
         classification_confidence=doc_snapshot["classification_confidence"],
         content_excerpt=content_excerpt,
         ocr_confidence=ocr_confidence,
+        final_filename=doc_snapshot.get("final_filename"),
     )
 
 
@@ -109,4 +116,5 @@ def ensure_document_ocr(dossier_id: str, doc: DocumentSignal) -> DocumentSignal:
         classification_confidence=doc.classification_confidence,
         content_excerpt=outcome.combined_text,
         ocr_confidence=outcome.avg_confidence,
+        final_filename=doc.final_filename,
     )

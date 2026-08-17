@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 
 from app.api.schemas import (
     CitationLocationOut,
+    CitationOut,
     CitationRectOut,
     CountersOut,
     DocumentOut,
@@ -47,6 +48,23 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/dossiers", tags=["dossiers"])
 
 
+def _parse_citations(raw: str | None) -> dict[str, CitationOut]:
+    """Registre de citations d'un rapport IA, stocké en JSON (§app/audit/engine.py
+    `AssembledReport`). Tolérant : un rapport généré avant l'introduction des citations n'a rien à
+    parser, et un JSON abîmé ne doit pas rendre le dossier entier illisible — dans les deux cas le
+    rapport s'affiche simplement sans pastilles."""
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        logger.warning("Registre de citations illisible, ignoré")
+        return {}
+    if not isinstance(parsed, dict):
+        return {}
+    return {key: CitationOut(**value) for key, value in parsed.items() if isinstance(value, dict)}
+
+
 def dossier_to_out(d: Dossier) -> DossierOut:
     return DossierOut(
         id=d.id,
@@ -78,11 +96,13 @@ def dossier_to_out(d: Dossier) -> DossierOut:
         extraction_validated_at=d.extraction_validated_at,
         synthese_ia=d.synthese_ia,
         synthese_projet_md=d.synthese_projet_md,
+        synthese_projet_citations=_parse_citations(d.synthese_projet_citations),
         synthese_projet_model=d.synthese_projet_model,
         synthese_projet_status=d.synthese_projet_status,
         synthese_projet_error=d.synthese_projet_error,
         synthese_projet_generated_at=d.synthese_projet_generated_at,
         audit_risques_md=d.audit_risques_md,
+        audit_risques_citations=_parse_citations(d.audit_risques_citations),
         audit_risques_model=d.audit_risques_model,
         audit_risques_status=d.audit_risques_status,
         audit_risques_error=d.audit_risques_error,

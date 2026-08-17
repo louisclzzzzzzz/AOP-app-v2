@@ -56,6 +56,8 @@ _NEW_DOSSIER_COLUMNS = {
     "audit_risques_error": "TEXT",
     "audit_risques_generated_at": "DATETIME",
     "owner_user_id": "VARCHAR(64)",
+    "synthese_projet_citations": "TEXT",
+    "audit_risques_citations": "TEXT",
 }
 
 _NEW_DOCUMENT_COLUMNS = {

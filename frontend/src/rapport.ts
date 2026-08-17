@@ -1,5 +1,6 @@
 import {
   exportReportDocx,
+  exportReportPdf,
   getCompleteness,
   getDossierDocuments,
   getExtraction,
@@ -8,8 +9,12 @@ import {
 import type { Dossier, ExtractionEntry } from './types'
 import { CERTAINTY_LABELS, PRESENCE_LABELS } from './components/CompletenessChecklist'
 import { reorgReportEntriesToTree, treeToMarkdownFoldersOnly } from './components/OrganizedTree'
+import { remplacerMarqueursParFichiers } from './components/CitationChip'
 
-/** Construction du rapport d'analyse complet (.docx).
+/** Construction du rapport d'analyse complet, dans les trois formats proposés au téléchargement
+ * (.md, .docx, .pdf) — le Markdown assemblé est identique dans les trois cas, seule sa conversion
+ * finale diffère (aucune pour le .md, §app/reports/docx_export.py et §app/reports/pdf_export.py
+ * pour les deux autres).
  *
  * Vit ici plutôt que dans `ExtractionSheet` : le rapport couvre tout le dossier
  * (arborescence, pièces, extraction, synthèse, audit), donc il se télécharge aussi
@@ -55,7 +60,9 @@ function downloadBlob(filename: string, blob: Blob) {
   URL.revokeObjectURL(url)
 }
 
-export async function telechargerRapportDocx(dossierId: string, dossier: Dossier): Promise<void> {
+/** Assemble le Markdown du rapport composite — partagé par les trois formats de téléchargement
+ * (.md direct, .docx et .pdf convertis côté serveur) pour qu'ils restent toujours identiques. */
+async function buildRapportMarkdown(dossierId: string, dossier: Dossier): Promise<{ md: string; safeName: string }> {
   const [reorgReport, completenessEntries, entries, documents] = await Promise.all([
     getReorganizationReport(dossierId).catch(() => null),
     getCompleteness(dossierId).catch(() => []),
@@ -121,11 +128,20 @@ export async function telechargerRapportDocx(dossierId: string, dossier: Dossier
   // La synthèse projet et l'audit des risques portent déjà leur propre titre `# ...` en
   // première ligne : on le retire pour que le titre de section `##` ci-dessous fasse
   // office de titre unique, cohérent avec le reste du rapport.
+  // Chaque rapport numérote SES marqueurs à partir de `c1` : ils doivent donc être résolus avec
+  // LEUR propre registre, avant d'être concaténés dans le rapport composite — sinon le `c1` de
+  // l'audit serait résolu avec le document du `c1` de la synthèse.
   const syntheseMd = dossier.synthese_projet_md
-    ? stripLeadingHeading(dossier.synthese_projet_md)
+    ? remplacerMarqueursParFichiers(
+        stripLeadingHeading(dossier.synthese_projet_md),
+        dossier.synthese_projet_citations ?? {},
+      )
     : '_Synthèse projet non générée._'
   const auditMd = dossier.audit_risques_md
-    ? stripLeadingHeading(dossier.audit_risques_md)
+    ? remplacerMarqueursParFichiers(
+        stripLeadingHeading(dossier.audit_risques_md),
+        dossier.audit_risques_citations ?? {},
+      )
     : '_Audit des risques non généré._'
 
   const md = `# Rapport d'analyse — ${dossier.original_filename}
@@ -155,6 +171,22 @@ ${auditMd}
 `
 
   const safeName = dossier.original_filename.replace(/\.[^./]+$/, '').replace(/[^a-zA-Z0-9._-]+/g, '_')
+  return { md, safeName }
+}
+
+export async function telechargerRapportMarkdown(dossierId: string, dossier: Dossier): Promise<void> {
+  const { md, safeName } = await buildRapportMarkdown(dossierId, dossier)
+  downloadBlob(`rapport_${safeName}.md`, new Blob([md], { type: 'text/markdown;charset=utf-8' }))
+}
+
+export async function telechargerRapportDocx(dossierId: string, dossier: Dossier): Promise<void> {
+  const { md, safeName } = await buildRapportMarkdown(dossierId, dossier)
   const blob = await exportReportDocx(dossierId, md)
   downloadBlob(`rapport_${safeName}.docx`, blob)
+}
+
+export async function telechargerRapportPdf(dossierId: string, dossier: Dossier): Promise<void> {
+  const { md, safeName } = await buildRapportMarkdown(dossierId, dossier)
+  const blob = await exportReportPdf(dossierId, md)
+  downloadBlob(`rapport_${safeName}.pdf`, blob)
 }

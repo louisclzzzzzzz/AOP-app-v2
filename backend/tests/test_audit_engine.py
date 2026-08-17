@@ -179,8 +179,10 @@ def test_summarize_document_for_audit_covers_all_sections_in_one_untruncated_cal
     assert len(calls) == 1  # un appel par document, pas un par (document, section)
     assert long_text in calls[0]  # texte intégral, aucune troncature
     assert summary.error is None
+    # Liste, pas bloc recollé : c'est ce qui permet d'étiqueter chaque constat individuellement
+    # (`D1.1`, `D1.2`) au reduce. La puce résiduelle du modèle est retirée, jamais doublée.
     assert summary.constats_by_section == {
-        "fondations": "- Pieux forés ancrés dans les moraines.\n- Aucune note de calcul fournie."
+        "fondations": ["Pieux forés ancrés dans les moraines.", "Aucune note de calcul fournie."]
     }
     # `facades` est traitée mais sans élément : à distinguer d'une section non traitée (repli brut)
     assert summary.covered_section_ids == frozenset({"fondations", "facades"})
@@ -222,13 +224,20 @@ def test_build_section_context_keeps_every_pivot_document_attributed_to_its_file
         _doc(document_id=str(i), filename=f"{i}.pdf", final_category="TECH/RICT", content_excerpt="x" * 80_000)
         for i in range(12)
     ]
-    summaries = {d.document_id: _summary(d, constats_by_section={"fondations": "- Constat."}) for d in docs}
+    summaries = {d.document_id: _summary(d, constats_by_section={"fondations": ["Constat."]}) for d in docs}
 
     context = engine._build_section_context(section, docs, summaries)
 
     assert context.documents_used == [d.filename for d in docs]
     assert context.documents_degraded == []
-    assert context.text.count("### Document : ") == 12
+    assert context.text.count("### [D") == 12
+    # Chaque document reçoit une étiquette, et CHACUN de ses constats une étiquette pointée : ces
+    # dernières sont ce qui permet au reduce de renvoyer à un fait précis plutôt qu'au fichier.
+    assert set(context.refs) == {f"D{i}" for i in range(1, 13)} | {f"D{i}.1" for i in range(1, 13)}
+    assert [context.refs[f"D{i}"].document_id for i in range(1, 13)] == [d.document_id for d in docs]
+    # L'étiquette pointée porte le constat SEUL — c'est lui qu'on cherchera dans le PDF.
+    assert context.refs["D1.1"].excerpt == "Constat."
+    assert "[D1.1] Constat." in context.text
 
 
 def test_build_section_context_falls_back_to_raw_excerpt_when_summary_is_missing():
@@ -237,7 +246,7 @@ def test_build_section_context_falls_back_to_raw_excerpt_when_summary_is_missing
     ko = _doc(document_id="b", filename="b.pdf", final_category="TECH/RICT", content_excerpt="TEXTE BRUT")
     muet = _doc(document_id="c", filename="c.pdf", final_category="TECH/RICT", content_excerpt="y")
     summaries = {
-        "a": _summary(ok, constats_by_section={"fondations": "- Constat."}),
+        "a": _summary(ok, constats_by_section={"fondations": ["Constat."]}),
         "b": _summary(ko, error="API indisponible"),
         "c": _summary(muet, constats_by_section={}, covered_section_ids=frozenset({"fondations"})),
     }
@@ -267,7 +276,7 @@ def test_generate_section_calls_llm_and_injects_georisques(monkeypatch):
     section = _section(id="fondations", georisques_aspects=["seisme"])
     doc = _doc(filename="RICT.pdf", final_category="TECH/RICT", content_excerpt="TEXTE BRUT DU RICT")
     geo = GeorisquesReport(address_queried="x", resolved_label="Commune", lon=1.0, lat=2.0, seisme="3 - MODÉRÉE")
-    summaries = {doc.document_id: _summary(doc, constats_by_section={"fondations": "- Avis suspendu n°190."})}
+    summaries = {doc.document_id: _summary(doc, constats_by_section={"fondations": ["Avis suspendu n°190."]})}
 
     outcome = generate_section(section, documents=[doc], georisques=geo, summaries=summaries)
 
@@ -353,7 +362,7 @@ def test_assemble_report_builds_synoptic_table_and_detail_in_schema_order():
         SectionOutcome(section_id="s1", risks=[_risk(element_ouvrage="FONDATIONS")], model_name="m", error=None, documents_used=["g.pdf"], candidates_count=1),
     ]
 
-    report = assemble_report(outcomes, schema, georisques=None)
+    report = assemble_report(outcomes, schema, georisques=None).markdown
 
     # ordre des sections = ordre du schéma
     assert report.index("Section 1") < report.index("Section 2")
@@ -383,7 +392,7 @@ def test_assemble_report_renders_lists_as_bullets_and_keeps_source_on_its_own_li
         SectionOutcome(section_id="s1", risks=[risk], model_name="m", error=None, documents_used=["g.pdf"], candidates_count=1)
     ]
 
-    report = assemble_report(outcomes, schema, georisques=None)
+    report = assemble_report(outcomes, schema, georisques=None).markdown
 
     assert "- Exiger la note de calcul." in report
     assert "- Réclamer le rapport G2 final." in report  # puce/numérotation résiduelle non doublée
@@ -401,7 +410,7 @@ def test_assemble_report_handles_empty_lists_without_crashing():
         )
     ]
 
-    report = assemble_report(outcomes, schema, georisques=None)
+    report = assemble_report(outcomes, schema, georisques=None).markdown
 
     assert "_Non renseigné._" in report
     assert "_Non renseignée._" in report
@@ -410,7 +419,7 @@ def test_assemble_report_handles_empty_lists_without_crashing():
 def test_assemble_report_shows_error_note_for_failed_section():
     schema = AuditSchema(sections=[_section(id="s1", titre="Section 1")])
     outcomes = [SectionOutcome(section_id="s1", risks=[], model_name=None, error="API indisponible")]
-    report = assemble_report(outcomes, schema)
+    report = assemble_report(outcomes, schema).markdown
     assert "Section non générée" in report
     assert "API indisponible" in report
 
@@ -419,7 +428,7 @@ def test_assemble_report_escapes_pipes_in_synoptic_cells():
     schema = AuditSchema(sections=[_section(id="s1", titre="Section 1")])
     risk = _risk(synoptique_description="A | B contradiction")
     outcomes = [SectionOutcome(section_id="s1", risks=[risk], model_name="m", error=None, documents_used=["d.pdf"], candidates_count=1)]
-    report = assemble_report(outcomes, schema)
+    report = assemble_report(outcomes, schema).markdown
     assert "A \\| B contradiction" in report
 
 
@@ -470,6 +479,276 @@ def test_assemble_report_includes_georisques_context_section():
     schema = AuditSchema(sections=[_section(id="s1", titre="Section 1")])
     outcomes = [SectionOutcome(section_id="s1", risks=[], model_name=None, error=None)]
     geo = GeorisquesReport(address_queried="8 rue X", resolved_label="8 rue X 80000 Ville", lon=2.0, lat=49.0, seisme="1 - TRES FAIBLE")
-    report = assemble_report(outcomes, schema, georisques=geo)
+    report = assemble_report(outcomes, schema, georisques=geo).markdown
     assert "Contexte réglementaire — Risques naturels (Géorisques)" in report
     assert "1 - TRES FAIBLE" in report
+
+
+# --- Citations : renvois [Dn] du LLM → marqueurs globaux + registre -----------------------------
+
+def test_assemble_report_resolves_llm_refs_into_citation_markers_and_registry():
+    """Le LLM renvoie aux documents par l'étiquette qu'il a sous les yeux (`[D1]`) ; l'assemblage la
+    remplace par un marqueur global résoluble et publie le registre correspondant."""
+    schema = _schema()
+    refs = {
+        "D1": engine.CitationRef(document_id="doc-a", filename="G2.pdf", excerpt="- Ancrage 1,20 m."),
+        "D2": engine.CitationRef(document_id="doc-b", filename="CCTP.pdf", excerpt="- Ancrage 0,80 m."),
+    }
+    risk = _risk(
+        expose_situation="La G2 impose 1,20 m alors que le CCTP retient 0,80 m. [D1][D2]",
+        analyse_expert=["→ **Tassement** : l'écart expose au retrait d'argile. [D1]"],
+        recommandations=["Exiger une note de calcul. [D2]"],
+    )
+    outcomes = [
+        SectionOutcome(section_id="s1", risks=[risk], model_name="m", error=None, citation_refs=refs),
+    ]
+
+    report = assemble_report(outcomes, schema, georisques=None)
+
+    assert "[D1]" not in report.markdown and "[D2]" not in report.markdown
+    assert "⟦cite:c1⟧⟦cite:c2⟧" in report.markdown
+    assert report.citations == {
+        "c1": {"document_id": "doc-a", "filename": "G2.pdf", "excerpt": "- Ancrage 1,20 m."},
+        "c2": {"document_id": "doc-b", "filename": "CCTP.pdf", "excerpt": "- Ancrage 0,80 m."},
+    }
+
+
+def test_assemble_report_reuses_one_citation_key_per_document_and_section():
+    """Un document cité dix fois dans la même section n'occupe qu'une entrée du registre."""
+    schema = _schema()
+    refs = {"D1": engine.CitationRef(document_id="doc-a", filename="G2.pdf", excerpt="- Constat.")}
+    risk = _risk(
+        expose_situation="Première mention. [D1]",
+        analyse_expert=["→ **Point** : deuxième mention. [D1]"],
+        recommandations=["Troisième mention. [D1]"],
+    )
+    outcomes = [SectionOutcome(section_id="s1", risks=[risk], model_name="m", error=None, citation_refs=refs)]
+
+    report = assemble_report(outcomes, schema, georisques=None)
+
+    assert list(report.citations) == ["c1"]
+    assert report.markdown.count("⟦cite:c1⟧") == 3
+
+
+def test_assemble_report_drops_refs_the_model_invented():
+    """Une étiquette absente du contexte ne doit jamais fuiter à l'écran : on l'efface plutôt que
+    de produire un marqueur non résoluble."""
+    schema = _schema()
+    refs = {"D1": engine.CitationRef(document_id="doc-a", filename="G2.pdf", excerpt="- Constat.")}
+    risk = _risk(expose_situation="Affirmation sans source réelle. [D7]")
+    outcomes = [SectionOutcome(section_id="s1", risks=[risk], model_name="m", error=None, citation_refs=refs)]
+
+    report = assemble_report(outcomes, schema, georisques=None)
+
+    assert "[D7]" not in report.markdown
+    assert "⟦cite:" not in report.markdown
+    assert report.citations == {}
+
+
+def test_assemble_report_strips_refs_from_synoptic_cells():
+    """Le prompt interdit les renvois dans les champs du tableau récapitulatif, mais un modèle en
+    glisse parfois un — il ne doit pas apparaître dans la cellule."""
+    schema = _schema()
+    refs = {"D1": engine.CitationRef(document_id="doc-a", filename="G2.pdf", excerpt="- Constat.")}
+    risk = _risk(synoptique_description="Tassement différentiel possible. [D1]", expose_situation="Exposé.")
+    outcomes = [SectionOutcome(section_id="s1", risks=[risk], model_name="m", error=None, citation_refs=refs)]
+
+    report = assemble_report(outcomes, schema, georisques=None)
+    synoptic = report.markdown.split("## Analyse détaillée")[0]
+
+    assert "[D1]" not in synoptic
+    assert "⟦cite:" not in synoptic
+    assert "Tassement différentiel possible." in synoptic
+
+
+def test_citations_are_numbered_across_sections_without_collision():
+    """Chaque section renumérote ses étiquettes à partir de D1 : deux sections citant chacune leur
+    D1 doivent recevoir deux clés globales distinctes."""
+    schema = _schema()
+    outcomes = [
+        SectionOutcome(
+            section_id="s1", risks=[_risk(expose_situation="Section 1. [D1]")], model_name="m", error=None,
+            citation_refs={"D1": engine.CitationRef(document_id="doc-a", filename="a.pdf", excerpt="A")},
+        ),
+        SectionOutcome(
+            section_id="s2", risks=[_risk(expose_situation="Section 2. [D1]")], model_name="m", error=None,
+            citation_refs={"D1": engine.CitationRef(document_id="doc-b", filename="b.pdf", excerpt="B")},
+        ),
+    ]
+
+    report = assemble_report(outcomes, schema, georisques=None)
+
+    assert {c["document_id"] for c in report.citations.values()} == {"doc-a", "doc-b"}
+    assert len(report.citations) == 2
+
+
+def test_assemble_report_accepts_the_parenthesised_comma_form_the_model_actually_produces():
+    """Le prompt exige « [D1][D2] », mais le modèle écrit régulièrement « (D1, D5) » — 57 fois sur
+    le premier audit réel. Non reconnues, ces étiquettes s'affichaient en texte brut et leurs
+    citations étaient perdues."""
+    schema = _schema()
+    refs = {
+        "D1": engine.CitationRef(document_id="doc-a", filename="G2.pdf", excerpt="A"),
+        "D5": engine.CitationRef(document_id="doc-b", filename="CCTP.pdf", excerpt="B"),
+    }
+    risk = _risk(expose_situation="Les plus hautes eaux sont à 7,64 m NGF (D1, D5).")
+    outcomes = [SectionOutcome(section_id="s1", risks=[risk], model_name="m", error=None, citation_refs=refs)]
+
+    report = assemble_report(outcomes, schema, georisques=None)
+
+    assert "(D1, D5)" not in report.markdown
+    assert "7,64 m NGF ⟦cite:c1⟧⟦cite:c2⟧." in report.markdown
+    assert {c["filename"] for c in report.citations.values()} == {"G2.pdf", "CCTP.pdf"}
+
+
+def test_assemble_report_leaves_untouched_a_parenthesis_that_is_not_a_citation():
+    """« (D1) » peut désigner un repère de plan ou une zone dans un texte technique : quand aucune
+    étiquette du groupe n'existe, la forme parenthésée est laissée telle quelle — seule la forme
+    canonique entre crochets est effacée comme étiquette inventée."""
+    schema = _schema()
+    refs = {"D9": engine.CitationRef(document_id="doc-a", filename="G2.pdf", excerpt="A")}
+    risk = _risk(
+        expose_situation="La zone (D1) du plan est concernée.",
+        impact_assurabilite="Risque décennal [D4].",
+    )
+    outcomes = [SectionOutcome(section_id="s1", risks=[risk], model_name="m", error=None, citation_refs=refs)]
+
+    report = assemble_report(outcomes, schema, georisques=None)
+
+    assert "La zone (D1) du plan" in report.markdown  # parenthèses : intactes
+    assert "[D4]" not in report.markdown  # crochets : effacés
+
+
+def test_assemble_report_shows_the_normalized_filename_in_citations_when_available():
+    """Le nom d'origine dans l'archive (`filename`) est souvent opaque pour l'expert — c'est le
+    nom normalisé à l'étape 1 (`final_filename`) qu'il reconnaît dans l'arborescence, donc celui
+    que la pastille de citation doit afficher."""
+    schema = _schema()
+    context = engine._build_section_context(
+        _section(id="s1", pivot_categories=["TECH/RICT"]),
+        [_doc(document_id="a", filename="2024_0129_export.pdf", final_filename="LOT 01 - CCTP.pdf", final_category="TECH/RICT")],
+        {"a": _summary(_doc(document_id="a", final_category="TECH/RICT"), constats_by_section={"s1": ["Constat."]})},
+    )
+    assert context.refs["D1"].filename == "LOT 01 - CCTP.pdf"
+
+
+def test_assemble_report_falls_back_to_the_original_filename_when_not_normalized():
+    """Un document non encore normalisé (final_filename absent) garde son nom d'origine plutôt que
+    de laisser la pastille sans nom."""
+    schema = _schema()
+    context = engine._build_section_context(
+        _section(id="s1", pivot_categories=["TECH/RICT"]),
+        [_doc(document_id="a", filename="2024_0129_export.pdf", final_filename=None, final_category="TECH/RICT")],
+        {"a": _summary(_doc(document_id="a", final_category="TECH/RICT"), constats_by_section={"s1": ["Constat."]})},
+    )
+    assert context.refs["D1"].filename == "2024_0129_export.pdf"
+
+
+# --- Étiquettes pointées : un renvoi désigne UN constat, pas tout le document -------------------
+
+def test_two_constats_of_the_same_document_get_two_distinct_registry_entries():
+    """C'est la dédup qui décide si la précision des étiquettes pointées survit à l'assemblage :
+    regroupée sur (document, section), elle écraserait les deux constats en une seule entrée et
+    ramènerait la citation au niveau du fichier."""
+    schema = _schema()
+    refs = {
+        "D1": engine.CitationRef(document_id="a", filename="G2.pdf", excerpt="- Un.\n- Deux."),
+        "D1.1": engine.CitationRef(document_id="a", filename="G2.pdf", excerpt="Ancrage à 1,20 m."),
+        "D1.2": engine.CitationRef(document_id="a", filename="G2.pdf", excerpt="Nappe à 7,64 m NGF."),
+    }
+    risk = _risk(
+        expose_situation="L'ancrage est fixé. [D1.1]",
+        analyse_expert=["→ **Nappe** : le niveau est élevé. [D1.2]"],
+    )
+    outcomes = [SectionOutcome(section_id="s1", risks=[risk], model_name="m", error=None, citation_refs=refs)]
+
+    report = assemble_report(outcomes, schema, georisques=None)
+
+    assert len(report.citations) == 2
+    assert {c["excerpt"] for c in report.citations.values()} == {"Ancrage à 1,20 m.", "Nappe à 7,64 m NGF."}
+    # Chaque marqueur reste court : c'est ce qui rend la recherche par préfixe utile dans le PDF.
+    assert all(len(c["excerpt"]) < 400 for c in report.citations.values())
+
+
+def test_the_same_constat_cited_twice_keeps_a_single_registry_entry():
+    schema = _schema()
+    refs = {"D1.1": engine.CitationRef(document_id="a", filename="G2.pdf", excerpt="Ancrage à 1,20 m.")}
+    risk = _risk(
+        expose_situation="Première mention. [D1.1]",
+        recommandations=["Seconde mention. [D1.1]"],
+    )
+    outcomes = [SectionOutcome(section_id="s1", risks=[risk], model_name="m", error=None, citation_refs=refs)]
+
+    report = assemble_report(outcomes, schema, georisques=None)
+
+    assert list(report.citations) == ["c1"]
+    assert report.markdown.count("⟦cite:c1⟧") == 2
+
+
+def test_a_bare_document_label_still_resolves_as_a_fallback():
+    """Le modèle oublie parfois le suffixe pointé : `[D1]` doit rester exploitable, avec l'ensemble
+    des constats pour extrait — moins précis, mais jamais perdu."""
+    schema = _schema()
+    refs = {
+        "D1": engine.CitationRef(document_id="a", filename="G2.pdf", excerpt="- Un.\n- Deux."),
+        "D1.1": engine.CitationRef(document_id="a", filename="G2.pdf", excerpt="Un."),
+    }
+    risk = _risk(expose_situation="Le document dans son ensemble le montre. [D1]")
+    outcomes = [SectionOutcome(section_id="s1", risks=[risk], model_name="m", error=None, citation_refs=refs)]
+
+    report = assemble_report(outcomes, schema, georisques=None)
+
+    assert "⟦cite:c1⟧" in report.markdown
+    assert report.citations["c1"]["excerpt"] == "- Un.\n- Deux."
+
+
+def test_a_dotted_label_the_model_invented_is_dropped():
+    """Le modèle peut inventer un numéro de constat qui n'existe pas dans le bloc du document."""
+    schema = _schema()
+    refs = {"D1.1": engine.CitationRef(document_id="a", filename="G2.pdf", excerpt="Un.")}
+    risk = _risk(expose_situation="Affirmation sans source réelle. [D1.9]")
+    outcomes = [SectionOutcome(section_id="s1", risks=[risk], model_name="m", error=None, citation_refs=refs)]
+
+    report = assemble_report(outcomes, schema, georisques=None)
+
+    assert "[D1.9]" not in report.markdown
+    assert "⟦cite:" not in report.markdown
+    assert report.citations == {}
+
+
+# --- Garde-fou : une panne d'API ne doit pas détruire le rapport précédent ----------------------
+
+async def test_pipeline_keeps_the_previous_report_when_every_section_failed(isolated_workspace, monkeypatch):
+    """Vécu : un HTTP 402 de Mistral a fait échouer les 6 sections, et l'assemblage a quand même
+    persisté un rapport ne contenant que des messages d'erreur — écrasant un audit de 144 000
+    caractères par 1 900. Une panne doit se signaler, pas remplacer un livrable valide."""
+    import app.audit.pipeline as pipeline
+    from app.store.db import session_scope
+    from app.store.repository import create_dossier, get_dossier
+
+    with session_scope() as s:
+        dossier = create_dossier(s, original_filename="dce.zip")
+        dossier.audit_risques_md = "# Audit précédent, valide"
+        dossier.audit_risques_citations = '{"c1": {"document_id": "a", "filename": "G2.pdf", "excerpt": "x"}}'
+        dossier.audit_risques_status = "done"
+        dossier_id = dossier.id
+
+    monkeypatch.setattr(pipeline, "_document_signals", lambda _id: [])
+    monkeypatch.setattr(pipeline, "_chantier_address", lambda _id: None)
+    monkeypatch.setattr(pipeline, "build_georisques_report", lambda _addr: None)
+    monkeypatch.setattr(
+        pipeline,
+        "generate_section",
+        lambda section, **kwargs: SectionOutcome(
+            section_id=section.id, risks=[], model_name=None, error="Status 402 subscription"
+        ),
+    )
+
+    await pipeline.run_audit_pipeline(dossier_id)
+
+    with session_scope() as s:
+        d = get_dossier(s, dossier_id)
+        assert d.audit_risques_md == "# Audit précédent, valide"  # intact
+        assert "c1" in (d.audit_risques_citations or "")
+        assert d.audit_risques_status == "error"
+        assert "402" in (d.audit_risques_error or "")
