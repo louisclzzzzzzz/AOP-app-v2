@@ -13,8 +13,8 @@ renumérotant depuis D1) sont ré-attribuées en clés globales et remplacées p
 `⟦cite:cN⟧`, livrés avec le registre qui les résout.
 
 Les délimiteurs ⟦ ⟧ n'apparaissent jamais dans un texte rédigé en français : aucun risque de
-confondre un marqueur avec une vraie parenthèse du rapport, et les exports n'ont qu'à les effacer
-(§frontend `retirerMarqueursCitation`)."""
+confondre un marqueur avec une vraie parenthèse du rapport, et les exports n'ont qu'à les résoudre
+en noms de fichiers (§frontend `remplacerMarqueursParFichiers`)."""
 from __future__ import annotations
 
 import re

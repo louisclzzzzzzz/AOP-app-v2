@@ -75,8 +75,9 @@ backend/
 │   ├── classify/            # étape 1 : taxonomie, moteur 3 signaux, renommage, copie triée
 │   ├── completeness/        # étape 2 : checklist de pièces, moteur 3 couches
 │   ├── extraction/          # étape 3 : schéma de champs, moteur d'extraction + recoupement
-│   ├── synthesis/           # Phase 1 : synthèse narrative (13 thèmes)
+│   ├── synthesis/           # Phase 1 : synthèse narrative (15 thèmes)
 │   ├── audit/                # Phase 2 : audit des risques (6 sections) + intégration Géorisques
+│   ├── reports/               # citations (Phases 1/2), export du rapport composite (.docx/.pdf)
 │   ├── mistral/              # wrapper bas niveau du SDK (retry, throttle, upload, chat structuré)
 │   └── store/                 # modèles SQLAlchemy, session, repository (accès DB)
 ├── config/                   # *.yaml : toute la connaissance métier, jamais en dur dans le code
@@ -112,7 +113,9 @@ erDiagram
   (`total_files`, `pieces_selected/checked/present/absent`, `fields_total/extracted/present/...`),
   chemins des rapports générés (JSON+Markdown) à chaque checkpoint, et les champs des deux phases
   d'analyse (`synthese_projet_md/status/error/model/generated_at`,
-  `audit_risques_md/status/error/model/generated_at`).
+  `audit_risques_md/status/error/model/generated_at`) — chacune accompagnée de son **registre de
+  citations** (`synthese_projet_citations` / `audit_risques_citations`, JSON), qui fait remonter
+  chaque affirmation du rapport au passage précis du document source qui la fonde (§9, §10).
 - **`Document`** — une ligne par fichier inventorié. Suit le pattern **`proposed_*` / `final_*`**
   systématiquement : la proposition du moteur (classification 3-signaux) n'est **jamais
   écrasée** — elle reste tracée comme décision d'origine — tandis que `final_*` (= la proposition
@@ -188,7 +191,7 @@ flowchart TD
     F --> G{{"Checkpoint humain<br/>validation de la complétude"}}
     G --> H["Étape 3 — Extraction<br/>~29 champs, 1 appel LLM/document de réf."]
     H --> I{{"Checkpoint humain<br/>validation des valeurs extraites"}}
-    I -.à la demande.-> J["Phase 1 — Synthèse narrative<br/>13 thèmes"]
+    I -.à la demande.-> J["Phase 1 — Synthèse narrative<br/>15 thèmes"]
     I -.à la demande.-> K["Phase 2 — Audit des risques DO/TRC<br/>6 sections + Géorisques"]
 
     style D fill:#fff3cd,stroke:#333
@@ -450,27 +453,27 @@ résultats identiques (aucune valeur perdue, 0 erreur).
 
 ```mermaid
 flowchart TD
-    TRIGGER["Déclenchement à la demande<br/>POST .../synthese-projet/generate"] --> OCRPHASE["OCR à la demande<br/>union dédupliquée des documents pivots<br/>de TOUS les 13 thèmes (1 seule fois/document)"]
+    TRIGGER["Déclenchement à la demande<br/>POST .../synthese-projet/generate"] --> OCRPHASE["OCR à la demande<br/>union dédupliquée des documents pivots<br/>de TOUS les 15 thèmes (1 seule fois/document)"]
     OCRPHASE --> SPLIT{{"Mode du thème"}}
     SPLIT -->|"extraction_fields (1 thème)"| FMT["Reformatage déterministe<br/>valeurs déjà validées étape 3 — SANS LLM"]
-    SPLIT -->|"documents (12 thèmes)"| SEM["asyncio.Semaphore(16)<br/>concurrence bornée"]
+    SPLIT -->|"documents (14 thèmes)"| SEM["asyncio.Semaphore(16)<br/>concurrence bornée"]
     SEM --> CTX["Contexte : documents pivots ordonnés<br/>60k car/doc · 300k car total"]
     CTX --> GROUND["+ grounding : valeurs étape 3<br/>('base à ne pas contredire sans le signaler')"]
     GROUND --> LLMCALL["1 appel LLM par thème<br/>mistral-large-2512, Structured Output"]
     LLMCALL --> SECTION["Section Markdown + sources citées"]
 
-    FMT --> ASSEMBLE["Assemblage : cartographie documentaire<br/>+ 13 sections"]
+    FMT --> ASSEMBLE["Assemblage : cartographie documentaire<br/>+ 15 sections"]
     SECTION --> ASSEMBLE
     ASSEMBLE --> REPORT["synthese_projet_md<br/>(best-effort : 1 thème en échec n'affecte pas les autres)"]
 ```
 
-Rapport en **13 thèmes narratifs** (`config/synthese_projet_schema.yaml`), déclenché explicitement
+Rapport en **15 thèmes narratifs** (`config/synthese_projet_schema.yaml`), déclenché explicitement
 par l'expert une fois l'étape 3 lancée (`extraction_review`/`extraction_validated`), jamais
 enchaîné automatiquement — best-effort et jamais bloquant (son propre statut
 `synthese_projet_status`, un échec n'affecte jamais `Dossier.status`).
 
 Un thème reformate simplement des valeurs déjà validées (identité de l'opération, sans appel LLM)
-; les 12 autres relisent le texte intégral des documents pivots du thème via un appel LLM dédié,
+; les 14 autres relisent le texte intégral des documents pivots du thème via un appel LLM dédié,
 avec un bloc de **grounding** optionnel (valeurs étape 3 déjà validées, à ne pas contredire sans
 le signaler). Budgets de contexte calibrés sur la fenêtre ~128k tokens de `mistral-large-2512` :
 60 000 caractères/document, 300 000 caractères au total par thème — l'**ordre** des catégories
@@ -478,12 +481,20 @@ pivots déclarées est significatif (au-delà du budget, un candidat supplément
 absent du prompt).
 
 OCR fait une seule fois en amont sur l'union dédupliquée des documents candidats de tous les
-thèmes (un document partagé comme le RICT n'est pas ré-OCRisé par thème). Les 13 thèmes sont
+thèmes (un document partagé comme le RICT n'est pas ré-OCRisé par thème). Les 15 thèmes sont
 générés en **concurrence bornée** (`asyncio.Semaphore(16)`) plutôt qu'en séquence stricte (ancien
 temps : 190-400s/dossier, somme de 12 appels indépendants) — voir §11.5 pour la mesure empirique
 qui a fait passer ce chiffre de 4 à 8 puis à 16.
 
-*Détail complet (prompts, grille de sélection documentaire, exemples de bugs corrigés) :
+**Citations** : chaque constat produit à l'étape « map » reçoit une étiquette individuelle
+(`D1.7`) recopiée par le reduce en fin de phrase, résolue à l'assemblage en marqueur
+(`⟦cite:cN⟧`) + entrée d'un registre (`synthese_projet_citations`) — c'est ce qui permet à l'écran
+d'ouvrir, pour une affirmation donnée, le PDF exact à la page exacte (mécanisme partagé avec la
+Phase 2, détaillé ci-dessous). Un échec **total** de tous les thèmes LLM (panne d'API) ne remplace
+jamais un rapport existant : le pipeline signale l'erreur et conserve l'ancien.
+
+*Détail complet (prompts, grille de sélection documentaire, mécanisme de citation, exemples de
+bugs corrigés) :
 [PHASES_ANALYSE.md §2](PHASES_ANALYSE.md#2-phase-1--synthèse-narrative-du-projet).*
 
 ---
@@ -525,7 +536,16 @@ argiles, radon, inondation/GASPAR, cavités, mouvements de terrain). Toute la ch
 échec. Chaque section ne reçoit que les aspects Géorisques qu'elle a explicitement déclarés
 pertinents.
 
-*Détail complet (grille de risques métier, prompts, endpoints Géorisques) :
+**Citations** : même mécanisme qu'en Phase 1 (`app/reports/citations.py`), avec une contrainte
+supplémentaire côté prompt — seuls `expose_situation`, chaque élément de `analyse_expert` et
+chaque élément de `recommandations` portent une étiquette, jamais le tableau synoptique ni
+`impact_assurabilite`/`source`. Le prompt de map exige désormais une **ancre verbatim** (un
+extrait entre guillemets français repris mot pour mot) dans chaque constat — sans quoi la
+localisation dans le PDF échoue sur la partie reformulée. Mesuré sur un dossier réel : taux de
+localisation d'une citation dans le PDF passé de 15 % à 80 % après l'introduction de ces deux
+mécanismes (étiquettes pointées + ancre verbatim).
+
+*Détail complet (grille de risques métier, prompts, mécanisme de citation, endpoints Géorisques) :
 [PHASES_ANALYSE.md §3](PHASES_ANALYSE.md#3-phase-2--audit-des-risques-do--trc).*
 
 ---
@@ -589,7 +609,7 @@ d'appels sans perdre en pertinence :
 | Classification | 1 appel par **lot** de documents ambigus (batch_size=10) |
 | Complétude | 1 appel par **document** candidat, couvrant plusieurs pièces à la fois |
 | Extraction | 1 appel par **document** de référence, couvrant plusieurs champs à la fois |
-| Phase 1 | 1 appel par **thème** (12 thèmes sur 13, le 13e sans LLM) |
+| Phase 1 | 1 appel par **thème** (14 thèmes sur 15, le 15e sans LLM) |
 | Phase 2 | 1 appel par **section** (6 sections) |
 
 Et une règle avant l'appel LLM à chaque fois que c'est possible : classification par règles
@@ -696,19 +716,30 @@ fichiers statiques montés par FastAPI) ; en dev, serveur Vite séparé avec pro
 | Composant | Rôle |
 |---|---|
 | `App.tsx` | Racine, routage entre liste des dossiers et détail d'un dossier |
+| `LoginForm.tsx`, `auth.ts` | Authentification par session (mode multi-utilisateur, `AOP_REQUIRE_AUTH`) |
+| `ApiKeyGuide.tsx` | Guide de configuration d'une clé API Mistral personnelle |
+| `WelcomeTour.tsx`, `tour.ts` | Tutoriel de découverte au premier lancement (état « vu » côté navigateur) |
 | `UploadDropzone.tsx` | Dépôt du ZIP |
 | `DossierList.tsx` | Liste des dossiers déjà traités |
-| `DossierProgress.tsx` | Écran de suivi live (branché sur le WebSocket de progression) |
+| `DossierProgress.tsx` | Écran de suivi live (branché sur le WebSocket de progression), routage des 5 onglets (étapes 1-3 + Phases 1/2) |
 | `StatusBadge.tsx` | Affichage du statut courant du dossier |
 | `ReorganizationPlan.tsx` | Écran de validation du plan de classement (étape 1) |
 | `OrganizedTree.tsx` | Arborescence de la copie triée |
 | `CompletenessChecklist.tsx` | Sélection des pièces + validation des résultats (étape 2) |
-| `ExtractionSheet.tsx` | Résultats d'extraction (étape 3), déclenchement des Phases 1/2, affichage des rapports, fusion + téléchargement du rapport combiné |
-| `DossierSummary.tsx` | Synthèse IA courte affichée en tête de dossier |
-| `Markdown.tsx` | Rendu Markdown des rapports (Phase 1/2, synthèse) |
+| `ExtractionSheet.tsx` | Tableau d'extraction (étape 3), déclenchement des Phases 1/2, bouton d'export du rapport composite |
+| `RapportPanel.tsx` | Écran des onglets Phase 1/Phase 2 : bascule affichage ↔ génération, volet de preuve à droite |
+| `AuditReportView.tsx`, `auditReport.ts` | Écran + parseur dédiés de l'audit des risques (bandeau de statuts filtrant, risques en accordéon) |
+| `SyntheseReportView.tsx`, `syntheseReport.ts` | Écran + parseur dédiés de la synthèse projet (index de saut entre thèmes, divergences en évidence) |
+| `CitationChip.tsx` | Pastilles de citation inline (icône + compte de sources, menu en portail) et résolution pour l'export |
+| `CitationPreview.tsx`, `PdfViewer.tsx` | Volet de preuve : localisation d'une citation + rendu PDF à défilement continu (partagé avec l'étape 3) |
+| `RapportDownloadMenu.tsx`, `rapport.ts` | Bouton d'export du rapport composite (menu Markdown/Word/PDF) |
+| `DossierSummary.tsx` | Synthèse IA courte affichée en tête de dossier (`Dossier.synthese_ia`, distincte de la Phase 1) |
+| `Markdown.tsx` | Rendu Markdown minimal (titres, tableaux GFM, listes, gras), avec ou sans résolution de citations |
+| `VeillePanel.tsx` | Veille BOAMP/JOUE — suivi d'avis de marché, indépendant des dossiers déjà déposés |
 | `ReopenButton.tsx` | Bouton générique de réouverture d'un checkpoint |
 | `CollapsiblePanel.tsx` | Panneau repliable réutilisable |
 | `statusFlow.ts` | Logique de progression/dérivation d'état à partir de `DossierStatus` côté client |
+| `ui.ts` | Classes Tailwind partagées (boutons, badges, jetons de source…) |
 | `api.ts` / `types.ts` | Client HTTP + types partagés avec le backend |
 
 Pattern de communication : WebSocket pour la progression live des étapes 0-3 (un écouteur par
@@ -729,7 +760,7 @@ en cache (`lru_cache`) pour ne pas relire le disque à chaque appel.
 | `taxonomy.yaml` | 31 catégories de classement (étape 1) | `classify/` |
 | `pieces_checklist.yaml` | 16 pièces de complétude, phases A/B/C (étape 2) | `completeness/` |
 | `extraction_schema.yaml` | 29 champs à extraire (étape 3) | `extraction/` |
-| `synthese_projet_schema.yaml` | 13 thèmes narratifs (Phase 1) | `synthesis/` |
+| `synthese_projet_schema.yaml` | 15 thèmes narratifs (Phase 1) | `synthesis/` |
 | `audit_risques_schema.yaml` | 6 sections A→G, grille de risques (Phase 2) | `audit/` |
 | `models.yaml` | Modèles Mistral épinglés, seuils, budgets, concurrence, feature flags | tous |
 
@@ -777,6 +808,11 @@ Un module de test par domaine (`backend/tests/test_*.py`), plus des tests d'int�
 sont simulés par `monkeypatch` pour les cas nécessitant de l'OCR/LLM ; certains scénarios de bout
 en bout sont validés via l'API réelle sur des documents à texte natif dense (aucun OCR déclenché,
 donc pas de coût/clé requis pour ces cas-là non plus en pratique de CI).
+
+Le fixture `isolated_workspace` (`conftest.py`) neutralise **toutes** les variables de clé Mistral
+(`MISTRAL_API_KEY`, `MISTRAL_API_KEYS`, `MISTRAL_API_KEY_2` à `_5`) — pas seulement la principale.
+Un `.env` local déclarant une clé de secours (usage courant : basculer dessus après épuisement de
+la clé principale) aurait sinon fuité dans les tests, avec de vrais appels facturés à la clé.
 
 ---
 
