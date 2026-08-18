@@ -38,13 +38,15 @@ flowchart LR
 
 ```mermaid
 flowchart TD
-    U["👤 Expert souscripteur"] --> WEB["🖥️ Interface web<br/>(navigateur)"]
-    WEB <--> SRV["⚙️ Application locale<br/>(un seul serveur)"]
-    SRV <--> DB["💾 Base de données locale<br/>(rien envoyé à l'extérieur)"]
+    U["👤 Expert souscripteur"] --> WEB["🖥️ Interface web<br/>React + TypeScript"]
+    WEB <-->|"REST + WebSocket<br/>(suivi en direct)"| SRV["⚙️ Serveur applicatif<br/>Python (FastAPI)"]
+    SRV <--> DB["💾 Base de données locale<br/>SQLite — rien envoyé à l'extérieur"]
     SRV <--> IA["☁️ IA Mistral<br/>(uniquement le texte des documents)"]
+    SRV -.déploiement.-> DEPLOY["📦 Docker / Fly.io<br/>ou .exe Windows autonome"]
 
     style IA fill:#ffe8cc,stroke:#333
     style DB fill:#e2f0ff,stroke:#333
+    style DEPLOY fill:#f0f0f0,stroke:#333
 ```
 
 ## D3 — Étape 1 : classement automatique (simplifié)

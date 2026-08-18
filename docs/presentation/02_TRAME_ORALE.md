@@ -41,11 +41,14 @@ Prévoir ~20-25 min de diapos + ~10-15 min de démo live + questions.
 
 ### Diapo 6 — Stack technique
 
-- Rester très haut niveau ici, l'audience est technique mais ce n'est pas le sujet du jour.
+- Nommer les briques sans s'y attarder (l'audience est technique, mais ce n'est pas le sujet du
+  jour) : interface en React/TypeScript, serveur en Python (FastAPI), base de données SQLite en
+  local, communication en REST + WebSocket pour le suivi en direct de la progression.
 - Un seul message à retenir : l'app est **locale/autonome**, seul le texte des documents part
   vers l'IA Mistral — rien d'autre n'est hébergé ailleurs.
 - Mentionner l'exécutable Windows autonome si pertinent pour l'audience (facilite les tests par
-  des collègues non techniques, sans installation).
+  des collègues non techniques, sans installation), et l'option Docker/Fly.io pour un déploiement
+  serveur classique.
 
 ### Diapo 7 — Étape 1 : classement
 
