@@ -189,7 +189,7 @@ flowchart TD
     D --> E["Copie triée appliquée<br/>(action explicite)"]
     E --> F["Étape 2 — Complétude<br/>sélection des pièces + vérif. 3 couches"]
     F --> G{{"Checkpoint humain<br/>validation de la complétude"}}
-    G --> H["Étape 3 — Extraction<br/>~29 champs, 1 appel LLM/document de réf."]
+    G --> H["Étape 3 — Extraction<br/>~50 champs, 1 appel LLM/document de réf."]
     H --> I{{"Checkpoint humain<br/>validation des valeurs extraites"}}
     I -.à la demande.-> J["Phase 1 — Synthèse narrative<br/>15 thèmes"]
     I -.à la demande.-> K["Phase 2 — Audit des risques DO/TRC<br/>6 sections + Géorisques"]
@@ -293,7 +293,7 @@ flowchart TD
     APPLY --> REPORT["Rapport JSON + Markdown<br/>mapping source → cible, confiance, justification"]
 ```
 
-**Taxonomie** (`config/taxonomy.yaml`, `app/classify/taxonomy.py`) — 31 catégories (ex.
+**Taxonomie** (`config/taxonomy.yaml`, `app/classify/taxonomy.py`) — 32 catégories (ex.
 `ADMIN/RC`, `ASS/CCAP`, `TECH/CCTP TRAVAUX`, `TECH/ETUDE DE SOL`, `TECH/RICT`...), chacune avec
 `filename_keywords`/`content_indices` (regex), `alt_names`, `lot_aware` (crée un sous-dossier
 `LOT <n>` si un numéro de lot est détecté), `doc_type_hint` (code court pour le renommage) et
@@ -379,12 +379,12 @@ confiance OCR (0.80) et LLM (0.75) configurés dans `models.yaml`.
 
 ```mermaid
 flowchart TD
-    START["29 champs du schéma<br/>(23 principaux + 6 complémentaires)"] --> L1["Couche 1 : 1 appel LLM par DOCUMENT<br/>de référence (mistral-large)<br/>couvre tous les champs pertinents pour ce document"]
+    START["50 champs du schéma<br/>(11 sections thématiques)"] --> L1["Couche 1 : 1 appel LLM par DOCUMENT<br/>de référence (mistral-large)<br/>couvre tous les champs pertinents pour ce document"]
     L1 --> EXCERPT["Sélection de l'extrait pertinent<br/>(scoring mots-clés, ≤ 6000 car., pas de troncature aveugle)"]
     EXCERPT --> RESOLVE{{"Valeur confirmée par<br/>≥ 1 document de référence ?"}}
     RESOLVE -->|"oui, champ critique"| CROSS["Recoupement PROGRAMMATIQUE<br/>(≤ 2 sources) : single_source / coherent / incoherent"]
     RESOLVE -->|"oui, champ non critique"| FIRST["1ère valeur confirmée retenue"]
-    RESOLVE -->|non| L2["Couche 2 : recherche élargie AUTOMATIQUE<br/>tout le dossier, mots-clés, ≤ 3 candidats"]
+    RESOLVE -->|non| L2["Couche 2 : recherche élargie AUTOMATIQUE<br/>tout le dossier, mots-clés + sémantique (embeddings)"]
     L2 --> RESOLVE2{{"Valeur trouvée ?"}}
     RESOLVE2 -->|oui| FOUND2["Valeur retenue"]
     RESOLVE2 -->|non| ABSENT["Champ déclaré absent<br/>+ justification explicite"]
@@ -398,10 +398,14 @@ flowchart TD
     style CP fill:#fff3cd,stroke:#333
 ```
 
-**Schéma** (`config/extraction_schema.yaml`, source `refs/donnees_de_ref.md` Feuil2) — 29 champs :
-23 en section « principale » (montants HT/TTC, garanties demandées, équipe MOE, dates, nombre de
-niveaux/bâtiments, missions du bureau de contrôle...) et 6 en section « complémentaire »
-(distance des avoisinants, référé préventif, stratigraphie...). Chaque champ déclare des
+**Schéma** (`config/extraction_schema.yaml`, source `refs/donnes_ref_v2.md` Feuil2) — 50 champs
+regroupés en 11 sections thématiques (identification, garanties, ouvrage, économie, équipe projet,
+dates, contrôle technique...) — la Feuil2 v2 est une liste à plat d'une cinquantaine de données,
+illisible à ce volume sans ce regroupement. Trois lignes de la Feuil2 ne sont volontairement pas
+des champs d'extraction : les rédactions longues (nature/fonction de l'ouvrage, objectifs
+spécifiques, description de l'opération) sont couvertes par la Phase 1 (§9, thèmes dédiés), et la
+présence de risques naturels (inondation, séisme, RGA, radon...) provient de l'API Géorisques et
+non des documents du dossier, couverte par la Phase 2 (§10). Chaque champ déclare des
 `reference_categories` (catégories taxonomie où le chercher en priorité) et des `indices`
 (mots-clés pour la recherche élargie).
 
@@ -415,9 +419,19 @@ demandés), plafonné à 6000 caractères par appel.
 **2 couches :**
 1. **Couche 1** — un appel par document de référence (`reference_categories`).
 2. **Couche 2** — pour tout champ resté introuvable après la couche 1, une **recherche élargie
-   automatique** par mots-clés sur l'**ensemble du dossier** (pas seulement les catégories de
-   référence), plafonnée à 3 documents candidats — déclenchée automatiquement dans le run
-   standard, sans action de l'expert. Seuls les champs encore introuvables après la couche 2 sont
+   automatique** sur l'**ensemble du dossier** (pas seulement les catégories de référence),
+   déclenchée automatiquement dans le run standard, sans action de l'expert. Les candidats sont
+   choisis en **fusionnant deux classements** : un score par mots-clés (`indices` du champ,
+   plafonné à `MAX_LLM_CANDIDATES=3` documents) et un classement sémantique par embeddings
+   (`mistral-embed-2312`, `app/extraction/semantic_retrieval.py`) qui ordonne tous les documents du
+   dossier par proximité de sens — y compris ceux qu'un score mots-clés nul aurait écartés (une
+   formulation synonyme ou un terme technique non anticipé par les `indices`). La fusion est
+   **strictement additive** (`append_semantic_candidates`) : les candidats mots-clés restent en
+   tête inchangés, la recherche sémantique ne fait qu'**ajouter** jusqu'à 2 documents de plus
+   (`extra_semantic_candidates`), jamais en remplacement — une première version qui fusionnait les
+   deux classements à plafond constant faisait régresser un champ déjà trouvé par mots-clés sur un
+   dossier réel. Dégradation silencieuse vers les mots-clés seuls si les embeddings sont
+   désactivés ou l'API indisponible. Seuls les champs encore introuvables après la couche 2 sont
    déclarés absents.
 
 **Recoupement (cross-check)** — pour les champs critiques
@@ -560,6 +574,7 @@ mécanismes (étiquettes pointées + ancre verbatim).
 | `mistral-small-2603` | Classification batchée (étape 1) | tâche jugée facile — moins cher, n'entame pas le quota du grand modèle |
 | `mistral-medium-2604` | Fallback multimodal (documents à forte composante image) | remplace Pixtral, retiré du catalogue Mistral |
 | `mistral-ocr-2512` | OCR de tous les documents scannés | modèle dédié |
+| `mistral-embed-2312` | Recherche sémantique de la couche 2 de l'extraction (étape 3) | complète le scoring mots-clés sans le remplacer (§8), voit les documents formulés autrement que ne l'anticipent les `indices` |
 
 Versions **datées et épinglées** en prod (reproductibilité — une version `-latest` peut changer
 sans préavis) ; `-latest` reste disponible pour le dev via `fallback_latest`.
@@ -757,9 +772,9 @@ en cache (`lru_cache`) pour ne pas relire le disque à chaque appel.
 
 | Fichier | Modélise | Consommé par |
 |---|---|---|
-| `taxonomy.yaml` | 31 catégories de classement (étape 1) | `classify/` |
+| `taxonomy.yaml` | 32 catégories de classement (étape 1) | `classify/` |
 | `pieces_checklist.yaml` | 16 pièces de complétude, phases A/B/C (étape 2) | `completeness/` |
-| `extraction_schema.yaml` | 29 champs à extraire (étape 3) | `extraction/` |
+| `extraction_schema.yaml` | 50 champs à extraire (étape 3), groupés en 11 sections | `extraction/` |
 | `synthese_projet_schema.yaml` | 15 thèmes narratifs (Phase 1) | `synthesis/` |
 | `audit_risques_schema.yaml` | 6 sections A→G, grille de risques (Phase 2) | `audit/` |
 | `models.yaml` | Modèles Mistral épinglés, seuils, budgets, concurrence, feature flags | tous |
