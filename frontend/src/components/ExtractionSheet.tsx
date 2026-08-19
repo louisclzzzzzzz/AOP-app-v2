@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   extractionExcelUrl,
   getExtraction,
@@ -56,6 +56,44 @@ function matchFiltre(entry: ExtractionEntry, filtre: Filtre): boolean {
   if (filtre === 'recoupes') return entry.cross_check_status === 'coherent'
   if (filtre === 'incoherents') return entry.cross_check_status === 'incoherent'
   return true
+}
+
+// Champs dont `resultat_attendu` (extraction_schema.yaml) demande une paire « libellé : valeur »
+// par ligne (garantie → montant, bâtiment → niveaux, …) — dans les DCE sources, ces données sont
+// elles-mêmes présentées en tableau ; en ligne continue elles deviennent illisibles au-delà de 2-3
+// paires. Liste figée plutôt que détection automatique du format : plus prévisible, au prix d'un
+// ajout manuel si un futur champ du schéma prend la même forme.
+const CHAMPS_TABULAIRES = new Set([
+  'montants_garanties_demandes',
+  'equipe_moe',
+  'stratigraphie',
+  'nombre_niveaux_par_batiment',
+  'niveaux_sous_sol',
+  'niveau_hautes_eaux',
+])
+
+interface LigneTabulaire {
+  label: string | null
+  valeur: string
+}
+
+/** Découpe "Label : valeur ; Label : valeur" en lignes pour un rendu en mini-tableau. Un champ
+ * tabulaire n'a pas toujours un « : » sur chaque segment (ex. équipe MOE : nom, adresse et
+ * contact peuvent alterner des segments simples et des paires) — ceux sans « : » gardent leur
+ * texte tel quel, sur une ligne à cellule unique. Retourne null en dessous de 2 segments : un
+ * texte qui n'a pas au moins deux points-virgules n'apporte rien en tableau.
+ */
+function parseValeurTabulaire(value: string): LigneTabulaire[] | null {
+  const segments = value
+    .split(';')
+    .map((s) => s.trim())
+    .filter(Boolean)
+  if (segments.length < 2) return null
+  return segments.map((segment) => {
+    const i = segment.indexOf(':')
+    if (i === -1) return { label: null, valeur: segment }
+    return { label: segment.slice(0, i).trim(), valeur: segment.slice(i + 1).trim() }
+  })
 }
 
 /** Source retenue par défaut à l'ouverture d'un champ : la plus confiante — c'est elle que le
@@ -361,6 +399,10 @@ export function ExtractionSheet({ dossierId, dossier, documents, onApplied }: Pr
                   // désaccord sans même ouvrir le volet de preuve, et chacune est cliquable
                   // séparément pour y basculer directement (§comparateur dans le volet).
                   const rowSources = incoherent ? entry.sources : entry.sources.slice(0, 1)
+                  const tabularRows =
+                    entry.final_value && CHAMPS_TABULAIRES.has(entry.field_id)
+                      ? parseValeurTabulaire(entry.final_value)
+                      : null
                   return (
                     // `div role="button"` et non `<button>` : une ligne incohérente imbrique un
                     // bouton par source (ci-dessous), or un <button> ne peut pas en contenir.
@@ -384,9 +426,32 @@ export function ExtractionSheet({ dossierId, dossier, documents, onApplied }: Pr
                     >
                       <span className="min-w-0 text-[13px] text-encre-2">{entry.libelle}</span>
 
-                      <span className="min-w-0 text-[13.5px]">
+                      <div className={`min-w-0 text-[13.5px] ${tabularRows ? 'self-start' : ''}`}>
                         {entry.final_value ? (
-                          <span className="font-semibold">{entry.final_value}</span>
+                          tabularRows ? (
+                            // Grille à 2 colonnes partagées par toutes les lignes (et non un flex
+                            // par ligne) : sans ça, la largeur de la colonne « libellé » suit son
+                            // propre contenu ligne par ligne, et la colonne « valeur » ne démarre
+                            // plus au même endroit d'une ligne à l'autre.
+                            <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,1.4fr)] overflow-hidden rounded-md border border-bord">
+                              {tabularRows.map((ligne, i) => {
+                                const dernier = i === tabularRows.length - 1
+                                const bordure = dernier ? '' : 'border-b border-surface-3'
+                                return ligne.label ? (
+                                  <Fragment key={i}>
+                                    <span className={`px-1.5 py-1 text-encre-3 ${bordure}`}>{ligne.label}</span>
+                                    <span className={`px-1.5 py-1 font-semibold ${bordure}`}>{ligne.valeur}</span>
+                                  </Fragment>
+                                ) : (
+                                  <span key={i} className={`col-span-2 px-1.5 py-1 font-semibold ${bordure}`}>
+                                    {ligne.valeur}
+                                  </span>
+                                )
+                              })}
+                            </div>
+                          ) : (
+                            <span className="font-semibold">{entry.final_value}</span>
+                          )
                         ) : (
                           <span className="italic text-encre-3">Non trouvée</span>
                         )}
@@ -395,7 +460,7 @@ export function ExtractionSheet({ dossierId, dossier, documents, onApplied }: Pr
                             corrigé
                           </span>
                         )}
-                      </span>
+                      </div>
 
                       {/* Les jetons se rangent contre le bord droit : ils forment ainsi une
                           colonne franche, au lieu de flotter au gré de la longueur du nom. */}

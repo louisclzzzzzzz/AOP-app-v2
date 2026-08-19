@@ -189,7 +189,7 @@ flowchart TD
     D --> E["Copie triée appliquée<br/>(action explicite)"]
     E --> F["Étape 2 — Complétude<br/>sélection des pièces + vérif. 3 couches"]
     F --> G{{"Checkpoint humain<br/>validation de la complétude"}}
-    G --> H["Étape 3 — Extraction<br/>~29 champs, 1 appel LLM/document de réf."]
+    G --> H["Étape 3 — Extraction<br/>~50 champs, 1 appel LLM/document de réf."]
     H --> I{{"Checkpoint humain<br/>validation des valeurs extraites"}}
     I -.à la demande.-> J["Phase 1 — Synthèse narrative<br/>15 thèmes"]
     I -.à la demande.-> K["Phase 2 — Audit des risques DO/TRC<br/>6 sections + Géorisques"]
@@ -293,7 +293,7 @@ flowchart TD
     APPLY --> REPORT["Rapport JSON + Markdown<br/>mapping source → cible, confiance, justification"]
 ```
 
-**Taxonomie** (`config/taxonomy.yaml`, `app/classify/taxonomy.py`) — 31 catégories (ex.
+**Taxonomie** (`config/taxonomy.yaml`, `app/classify/taxonomy.py`) — 32 catégories (ex.
 `ADMIN/RC`, `ASS/CCAP`, `TECH/CCTP TRAVAUX`, `TECH/ETUDE DE SOL`, `TECH/RICT`...), chacune avec
 `filename_keywords`/`content_indices` (regex), `alt_names`, `lot_aware` (crée un sous-dossier
 `LOT <n>` si un numéro de lot est détecté), `doc_type_hint` (code court pour le renommage) et
@@ -325,6 +325,23 @@ cas de collision dans le même dossier cible.
 explicitement après le checkpoint. Un rapport JSON + Markdown trace intégralement le mapping
 source → cible avec confiance, justification et modèle utilisé. Idempotent — peut être réappliqué
 après une correction du plan.
+
+**Prompt** (extrait, `_BATCH_SYSTEM_PROMPT`, `app/classify/engine.py`) — un seul appel pour tout
+un lot de documents ambigus, jamais un par document :
+
+```text
+Tu es un assistant expert en classement de dossiers de consultation des entreprises (DCE) pour
+l'underwriting assurance construction (SMABTP). Ta tâche : classer PLUSIEURS documents en une
+seule réponse, chacun dans l'une des catégories de la taxonomie fournie, détecter un éventuel
+numéro de lot par document, et proposer un libellé court normalisé par document.
+
+Règles impératives :
+- Réponds avec EXACTEMENT une décision par document reçu, en reprenant son `index` tel quel.
+- Choisis TOUJOURS une catégorie parmi la liste fournie (jamais une catégorie inventée).
+- Si aucune catégorie ne correspond avec certitude pour un document, choisis "AUTRES" et indique
+une confiance basse pour ce document.
+[...]
+```
 
 ---
 
@@ -373,18 +390,35 @@ Présence renvoyée : `present` / `partial` (passage évoquant le sujet sans pre
 `absent`, toujours avec citation exacte du passage probant. Certitude dérivée des seuils de
 confiance OCR (0.80) et LLM (0.75) configurés dans `models.yaml`.
 
+**Prompt** (extrait, `_DOCUMENT_SYSTEM_PROMPT`, `app/completeness/engine.py`) — un appel par
+document candidat, toutes les pièces qu'il pourrait couvrir demandées d'un coup :
+
+```text
+Tu es un assistant expert en analyse de complétude de dossiers de consultation des entreprises
+(DCE) pour l'underwriting assurance construction (SMABTP). Ta tâche : déterminer, en une seule
+réponse, si CE document confirme la présence de PLUSIEURS pièces attendues, chacune éventuellement
+noyée dans un document plus large (ex. une attestation d'assurance incluse dans un marché signé).
+
+Règles impératives :
+- Réponds avec EXACTEMENT une décision par pièce demandée, en reprenant son `piece_id` tel quel.
+- Ne confirme la présence ("present") que si le passage fourni contient réellement une preuve
+claire de CETTE pièce précise — indépendamment des autres pièces demandées.
+- Si le passage évoque le sujet sans être une preuve suffisante, réponds "partial".
+[...]
+```
+
 ---
 
 ## 8. Étape 3 — Extraction
 
 ```mermaid
 flowchart TD
-    START["29 champs du schéma<br/>(23 principaux + 6 complémentaires)"] --> L1["Couche 1 : 1 appel LLM par DOCUMENT<br/>de référence (mistral-large)<br/>couvre tous les champs pertinents pour ce document"]
+    START["50 champs du schéma<br/>(11 sections thématiques)"] --> L1["Couche 1 : 1 appel LLM par DOCUMENT<br/>de référence (mistral-large)<br/>couvre tous les champs pertinents pour ce document"]
     L1 --> EXCERPT["Sélection de l'extrait pertinent<br/>(scoring mots-clés, ≤ 6000 car., pas de troncature aveugle)"]
     EXCERPT --> RESOLVE{{"Valeur confirmée par<br/>≥ 1 document de référence ?"}}
     RESOLVE -->|"oui, champ critique"| CROSS["Recoupement PROGRAMMATIQUE<br/>(≤ 2 sources) : single_source / coherent / incoherent"]
     RESOLVE -->|"oui, champ non critique"| FIRST["1ère valeur confirmée retenue"]
-    RESOLVE -->|non| L2["Couche 2 : recherche élargie AUTOMATIQUE<br/>tout le dossier, mots-clés, ≤ 3 candidats"]
+    RESOLVE -->|non| L2["Couche 2 : recherche élargie AUTOMATIQUE<br/>tout le dossier, mots-clés + sémantique (embeddings)"]
     L2 --> RESOLVE2{{"Valeur trouvée ?"}}
     RESOLVE2 -->|oui| FOUND2["Valeur retenue"]
     RESOLVE2 -->|non| ABSENT["Champ déclaré absent<br/>+ justification explicite"]
@@ -398,10 +432,14 @@ flowchart TD
     style CP fill:#fff3cd,stroke:#333
 ```
 
-**Schéma** (`config/extraction_schema.yaml`, source `refs/donnees_de_ref.md` Feuil2) — 29 champs :
-23 en section « principale » (montants HT/TTC, garanties demandées, équipe MOE, dates, nombre de
-niveaux/bâtiments, missions du bureau de contrôle...) et 6 en section « complémentaire »
-(distance des avoisinants, référé préventif, stratigraphie...). Chaque champ déclare des
+**Schéma** (`config/extraction_schema.yaml`, source `refs/donnes_ref_v2.md` Feuil2) — 50 champs
+regroupés en 11 sections thématiques (identification, garanties, ouvrage, économie, équipe projet,
+dates, contrôle technique...) — la Feuil2 v2 est une liste à plat d'une cinquantaine de données,
+illisible à ce volume sans ce regroupement. Trois lignes de la Feuil2 ne sont volontairement pas
+des champs d'extraction : les rédactions longues (nature/fonction de l'ouvrage, objectifs
+spécifiques, description de l'opération) sont couvertes par la Phase 1 (§9, thèmes dédiés), et la
+présence de risques naturels (inondation, séisme, RGA, radon...) provient de l'API Géorisques et
+non des documents du dossier, couverte par la Phase 2 (§10). Chaque champ déclare des
 `reference_categories` (catégories taxonomie où le chercher en priorité) et des `indices`
 (mots-clés pour la recherche élargie).
 
@@ -415,9 +453,19 @@ demandés), plafonné à 6000 caractères par appel.
 **2 couches :**
 1. **Couche 1** — un appel par document de référence (`reference_categories`).
 2. **Couche 2** — pour tout champ resté introuvable après la couche 1, une **recherche élargie
-   automatique** par mots-clés sur l'**ensemble du dossier** (pas seulement les catégories de
-   référence), plafonnée à 3 documents candidats — déclenchée automatiquement dans le run
-   standard, sans action de l'expert. Seuls les champs encore introuvables après la couche 2 sont
+   automatique** sur l'**ensemble du dossier** (pas seulement les catégories de référence),
+   déclenchée automatiquement dans le run standard, sans action de l'expert. Les candidats sont
+   choisis en **fusionnant deux classements** : un score par mots-clés (`indices` du champ,
+   plafonné à `MAX_LLM_CANDIDATES=3` documents) et un classement sémantique par embeddings
+   (`mistral-embed-2312`, `app/extraction/semantic_retrieval.py`) qui ordonne tous les documents du
+   dossier par proximité de sens — y compris ceux qu'un score mots-clés nul aurait écartés (une
+   formulation synonyme ou un terme technique non anticipé par les `indices`). La fusion est
+   **strictement additive** (`append_semantic_candidates`) : les candidats mots-clés restent en
+   tête inchangés, la recherche sémantique ne fait qu'**ajouter** jusqu'à 2 documents de plus
+   (`extra_semantic_candidates`), jamais en remplacement — une première version qui fusionnait les
+   deux classements à plafond constant faisait régresser un champ déjà trouvé par mots-clés sur un
+   dossier réel. Dégradation silencieuse vers les mots-clés seuls si les embeddings sont
+   désactivés ou l'API indisponible. Seuls les champs encore introuvables après la couche 2 sont
    déclarés absents.
 
 **Recoupement (cross-check)** — pour les champs critiques
@@ -446,6 +494,37 @@ concernés lancée d'un coup (`asyncio.gather`, dédupliquée par document, born
 — voir §11.5 pour la justification du chiffre 8. Mesuré sur `dce_grand_pic2.zip` (36 fichiers,
 50 champs) : 729,6s en séquentiel → 141,8s en parallèle à cache OCR égal, soit ~5,15x plus rapide,
 résultats identiques (aucune valeur perdue, 0 erreur).
+
+**Prompt** (extrait, `_DOCUMENT_SYSTEM_PROMPT`, `app/extraction/engine.py`) — un appel par
+document de référence, toutes les données pertinentes pour ce document demandées d'un coup :
+
+```text
+Tu es un assistant expert en extraction de données depuis des dossiers de consultation des
+entreprises (DCE) pour l'underwriting assurance construction (SMABTP). Ta tâche : extraire, en
+une seule réponse, la valeur de PLUSIEURS données précises depuis un même document, chacune avec
+une preuve.
+
+Règles impératives :
+- Réponds avec EXACTEMENT une décision par donnée demandée, en reprenant son `field_id` tel quel.
+- Ne renvoie found=true pour une donnée que si sa valeur est explicitement présente dans le
+passage fourni.
+- Cite le passage exact qui justifie chaque valeur (`citation`) — jamais une paraphrase.
+[...]
+```
+
+Le prompt de la **synthèse IA courte** (`_SYNTHESIS_SYSTEM_PROMPT`, même fichier) est beaucoup
+plus court — il ne reçoit que des valeurs déjà validées, jamais de texte brut :
+
+```text
+Tu es un assistant expert en assurance construction (SMABTP). À partir de données déjà extraites
+et validées d'un dossier de consultation des entreprises (DCE), rédige une courte synthèse
+textuelle donnant une vision globale du projet.
+
+Règles impératives :
+- 2 à 4 phrases, en français, style neutre et factuel.
+- N'utilise QUE les données fournies ci-dessous — n'invente et ne suppose jamais une donnée
+absente de la liste.
+```
 
 ---
 
@@ -493,8 +572,50 @@ d'ouvrir, pour une affirmation donnée, le PDF exact à la page exacte (mécanis
 Phase 2, détaillé ci-dessous). Un échec **total** de tous les thèmes LLM (panne d'API) ne remplace
 jamais un rapport existant : le pipeline signale l'erreur et conserve l'ancien.
 
-*Détail complet (prompts, grille de sélection documentaire, mécanisme de citation, exemples de
-bugs corrigés) :
+**Prompt du map** (extrait, `_MAP_SYSTEM_PROMPT`, `app/synthesis/engine.py`) — un appel par
+document pivot, tous les thèmes dont il est pivot demandés d'un coup, avec l'exigence d'ancre
+verbatim qui rend chaque constat vérifiable :
+
+```text
+Tu es un expert en audit technique et souscription assurance construction (SMABTP). On te donne
+le texte intégral d'UN document d'un dossier de consultation des entreprises (DCE), et la liste
+des thèmes d'analyse pour lesquels ce document fait référence.
+
+Ta tâche : pour CHAQUE thème demandé, produire un relevé factuel dense de ce que CE document — et
+lui seul — apporte à CE thème. [...]
+
+- ANCRE VERBATIM (impératif) : chaque constat doit contenir un extrait repris MOT POUR MOT du
+document, encadré par des guillemets français « … ». C'est cet extrait qui permettra de retrouver
+le passage dans le fichier d'origine et de le montrer à l'expert : un constat entièrement
+reformulé n'est plus vérifiable.
+[...]
+- Sois EXHAUSTIF : ce relevé remplace le document pour la suite de l'analyse, tout ce que tu
+n'écris pas sera définitivement perdu. Compte en dizaines de constats, pas en unités.
+[...]
+```
+
+**Prompt du reduce** (extrait, `_TOPIC_SYSTEM_PROMPT`, même fichier) — un appel par thème,
+alimenté par les relevés du map plutôt que par du texte brut :
+
+```text
+Tu es un expert en audit technique et souscription assurance construction (SMABTP), en train de
+rédiger la Phase 1 (synthèse projet) d'un rapport d'analyse de dossier de consultation des
+entreprises (DCE).
+
+Le contexte fourni n'est pas le texte brut du dossier : c'est, pour chaque document pivot de ce
+thème, un relevé factuel de ce que CE document apporte à CE thème [...]
+
+Règles impératives — fidélité :
+- N'utilise QUE les informations présentes dans les relevés fournis ci-dessous et les données
+déjà validées — n'invente jamais une donnée absente.
+- Confronte les relevés entre eux : si deux documents se contredisent sur une même donnée
+(classement ERP, nombre de niveaux, surfaces, montants, avis émis…), signale la divergence
+explicitement en nommant les deux fichiers sources, au lieu de trancher en silence.
+[...]
+```
+
+*Détail complet (prompts intégraux, grille de sélection documentaire, mécanisme de citation,
+exemples de bugs corrigés) :
 [PHASES_ANALYSE.md §2](PHASES_ANALYSE.md#2-phase-1--synthèse-narrative-du-projet).*
 
 ---
@@ -545,7 +666,58 @@ localisation dans le PDF échoue sur la partie reformulée. Mesuré sur un dossi
 localisation d'une citation dans le PDF passé de 15 % à 80 % après l'introduction de ces deux
 mécanismes (étiquettes pointées + ancre verbatim).
 
-*Détail complet (grille de risques métier, prompts, mécanisme de citation, endpoints Géorisques) :
+**Prompt du map** (extrait, `_MAP_SYSTEM_PROMPT`, `app/audit/engine.py`) — même structure que la
+Phase 1, mais orienté détection de risque (prescriptions, réserves, lacunes) plutôt que relevé
+narratif :
+
+```text
+Tu es un Expert Senior en Ingénierie des Risques Construction (souscription Dommages-Ouvrage et
+Tous Risques Chantier, SMABTP). On te donne le texte intégral d'UN document d'un dossier de
+consultation des entreprises (DCE), et les sections d'audit pour lesquelles ce document fait
+référence.
+
+Ce document a DÉJÀ été rattaché au périmètre de chacune des sections listées ci-dessous, par la
+classification du dossier. Ne remets pas ce rattachement en cause [...]
+
+Commence TOUJOURS par ce que le document dit, avant de regarder ce qu'il ne dit pas [...]
+
+Puis, seulement ensuite, les LACUNES — et uniquement sur ce que CE document aurait dû préciser au
+vu de son PROPRE objet [...] Une telle lacune est un signal de risque aussi important qu'une
+prescription.
+
+Ne relève JAMAIS l'absence d'un sujet étranger à l'objet du document. Qu'un CCTP Ascenseurs ne
+parle pas de photovoltaïque n'est pas une lacune : c'est hors de son périmètre [...]
+```
+
+**Prompt du reduce** (extrait, `_SYSTEM_PROMPT`, même fichier) — un appel par section, qui
+transforme les relevés du map en risques structurés notés 🔴/🟠/🟡/🟢 :
+
+```text
+Tu es un Expert Senior en Ingénierie des Risques Construction, en charge de la souscription des
+polices Dommages-Ouvrage (DO) et Tous Risques Chantier (TRC) chez SMABTP. Tu réalises la Phase 2
+(évaluation des risques) d'un audit technique de dossier de consultation des entreprises (DCE).
+
+Le contexte fourni [...] c'est, pour chaque document pivot de la section, un relevé factuel de ses
+prescriptions, réserves et LACUNES [...] Une lacune relevée (prescription absente, performance non
+chiffrée, détail non défini) est un signal de risque à part entière, à traiter comme tel.
+
+Méthode et raisonnement :
+- Approche narrative : ne te limite pas à des constats brefs. Développe ton raisonnement, explique
+les phénomènes physiques (corrosion, poinçonnement, tassement différentiel...) et projette les
+scénarios de sinistres possibles.
+- Matérialité : concentre-toi sur les risques réellement STRUCTURANTS pour la souscription — vise
+2 à 5 risques par section, pas un inventaire exhaustif de micro-points.
+
+Codes couleur du statut (impératif) :
+- 🔴 : risque critique / point de blocage en souscription (aléa décennal majeur, lacune bloquante,
+non-conformité réglementaire).
+- 🟠 : risque modéré à élevé / point d'attention à lever avant engagement.
+- 🟢 : risque maîtrisé (aléa purgé, conception conforme, avis favorable du contrôleur).
+[...]
+```
+
+*Détail complet (grille de risques métier, prompts intégraux, mécanisme de citation, endpoints
+Géorisques) :
 [PHASES_ANALYSE.md §3](PHASES_ANALYSE.md#3-phase-2--audit-des-risques-do--trc).*
 
 ---
@@ -560,6 +732,7 @@ mécanismes (étiquettes pointées + ancre verbatim).
 | `mistral-small-2603` | Classification batchée (étape 1) | tâche jugée facile — moins cher, n'entame pas le quota du grand modèle |
 | `mistral-medium-2604` | Fallback multimodal (documents à forte composante image) | remplace Pixtral, retiré du catalogue Mistral |
 | `mistral-ocr-2512` | OCR de tous les documents scannés | modèle dédié |
+| `mistral-embed-2312` | Recherche sémantique de la couche 2 de l'extraction (étape 3) | complète le scoring mots-clés sans le remplacer (§8), voit les documents formulés autrement que ne l'anticipent les `indices` |
 
 Versions **datées et épinglées** en prod (reproductibilité — une version `-latest` peut changer
 sans préavis) ; `-latest` reste disponible pour le dev via `fallback_latest`.
@@ -757,9 +930,9 @@ en cache (`lru_cache`) pour ne pas relire le disque à chaque appel.
 
 | Fichier | Modélise | Consommé par |
 |---|---|---|
-| `taxonomy.yaml` | 31 catégories de classement (étape 1) | `classify/` |
+| `taxonomy.yaml` | 32 catégories de classement (étape 1) | `classify/` |
 | `pieces_checklist.yaml` | 16 pièces de complétude, phases A/B/C (étape 2) | `completeness/` |
-| `extraction_schema.yaml` | 29 champs à extraire (étape 3) | `extraction/` |
+| `extraction_schema.yaml` | 50 champs à extraire (étape 3), groupés en 11 sections | `extraction/` |
 | `synthese_projet_schema.yaml` | 15 thèmes narratifs (Phase 1) | `synthesis/` |
 | `audit_risques_schema.yaml` | 6 sections A→G, grille de risques (Phase 2) | `audit/` |
 | `models.yaml` | Modèles Mistral épinglés, seuils, budgets, concurrence, feature flags | tous |

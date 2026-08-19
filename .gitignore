@@ -25,6 +25,9 @@ workspace/*
 # (confidentialité + volumétrie, cf. test-runs/README.md pour l'index local)
 test-runs/
 
+# Support de présentation (soutenance/passation) - local uniquement, jamais versionné
+docs/presentation/
+
 # Codes d'accès réels (AOP_ACCESS_CODES) - jamais versionnés
 acces-code
 
