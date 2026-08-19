@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   extractionExcelUrl,
   getExtraction,
@@ -429,13 +429,25 @@ export function ExtractionSheet({ dossierId, dossier, documents, onApplied }: Pr
                       <div className={`min-w-0 text-[13.5px] ${tabularRows ? 'self-start' : ''}`}>
                         {entry.final_value ? (
                           tabularRows ? (
-                            <div className="divide-y divide-surface-3 overflow-hidden rounded-md border border-bord">
-                              {tabularRows.map((ligne, i) => (
-                                <div key={i} className="flex gap-2 px-1.5 py-1">
-                                  {ligne.label && <span className="shrink-0 text-encre-3">{ligne.label}</span>}
-                                  <span className="font-semibold">{ligne.valeur}</span>
-                                </div>
-                              ))}
+                            // Grille à 2 colonnes partagées par toutes les lignes (et non un flex
+                            // par ligne) : sans ça, la largeur de la colonne « libellé » suit son
+                            // propre contenu ligne par ligne, et la colonne « valeur » ne démarre
+                            // plus au même endroit d'une ligne à l'autre.
+                            <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,1.4fr)] overflow-hidden rounded-md border border-bord">
+                              {tabularRows.map((ligne, i) => {
+                                const dernier = i === tabularRows.length - 1
+                                const bordure = dernier ? '' : 'border-b border-surface-3'
+                                return ligne.label ? (
+                                  <Fragment key={i}>
+                                    <span className={`px-1.5 py-1 text-encre-3 ${bordure}`}>{ligne.label}</span>
+                                    <span className={`px-1.5 py-1 font-semibold ${bordure}`}>{ligne.valeur}</span>
+                                  </Fragment>
+                                ) : (
+                                  <span key={i} className={`col-span-2 px-1.5 py-1 font-semibold ${bordure}`}>
+                                    {ligne.valeur}
+                                  </span>
+                                )
+                              })}
                             </div>
                           ) : (
                             <span className="font-semibold">{entry.final_value}</span>
